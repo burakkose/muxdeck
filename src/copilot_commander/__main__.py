@@ -1,14 +1,13 @@
-"""Console entrypoint for the bootstrap scaffold."""
+"""Console entrypoint for copilot commander."""
 
 from __future__ import annotations
 
+from copilot_commander.app import run_app
+
 
 def main() -> int:
-    """Run the minimal bootstrap placeholder."""
-    print(
-        "copilot-commander bootstrap scaffold is installed; runtime features land in later todos."
-    )
-    return 0
+    """Launch the Textual operator shell."""
+    return run_app()
 
 
 if __name__ == "__main__":
