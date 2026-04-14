@@ -1,1 +1,61 @@
-"""Controller package scaffold."""
+from copilot_commander.controllers.agent_controller import (
+    AgentActionResult,
+    AgentController,
+    AgentIntentView,
+    AgentTargetView,
+)
+from copilot_commander.controllers.dashboard_controller import (
+    DashboardAgentListItemView,
+    DashboardAlertView,
+    DashboardController,
+    DashboardFilterState,
+    DashboardHealthSummary,
+    DashboardLogLineView,
+    DashboardMetricView,
+    DashboardSelectedAgentView,
+    DashboardSort,
+    DashboardState,
+)
+from copilot_commander.controllers.replay_controller import (
+    ReplayController,
+    ReplayExportIntent,
+    ReplayJumpMarkerView,
+    ReplayStateView,
+    ReplayTranscriptEntryView,
+)
+from copilot_commander.controllers.worktree_controller import (
+    WorktreeActionView,
+    WorktreeConflictView,
+    WorktreeController,
+    WorktreeDetailView,
+    WorktreeStartAgentIntent,
+    WorktreeSummaryView,
+)
+
+__all__ = [
+    "AgentActionResult",
+    "AgentController",
+    "AgentIntentView",
+    "AgentTargetView",
+    "DashboardAgentListItemView",
+    "DashboardAlertView",
+    "DashboardController",
+    "DashboardFilterState",
+    "DashboardHealthSummary",
+    "DashboardLogLineView",
+    "DashboardMetricView",
+    "DashboardSelectedAgentView",
+    "DashboardSort",
+    "DashboardState",
+    "ReplayController",
+    "ReplayExportIntent",
+    "ReplayJumpMarkerView",
+    "ReplayStateView",
+    "ReplayTranscriptEntryView",
+    "WorktreeActionView",
+    "WorktreeConflictView",
+    "WorktreeController",
+    "WorktreeDetailView",
+    "WorktreeStartAgentIntent",
+    "WorktreeSummaryView",
+]
