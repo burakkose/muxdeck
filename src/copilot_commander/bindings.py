@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from textual.binding import Binding
+
+
+@dataclass(frozen=True, slots=True)
+class KeyHint:
+    key: str
+    label: str
+
+
+GLOBAL_BINDINGS = (
+    Binding("1", "show_dashboard", "Dashboard", show=False, priority=True, system=True),
+    Binding("2", "show_worktrees", "Worktrees", show=False, priority=True, system=True),
+    Binding("3", "show_replay", "Replay", show=False, priority=True, system=True),
+    Binding("question_mark", "show_help", "Help", show=False, priority=True, system=True),
+    Binding("r", "refresh_screen", "Refresh", show=False, priority=True, system=True),
+    Binding("tab", "focus_next", "Next focus", show=False, priority=True, system=True),
+    Binding("shift+tab", "focus_previous", "Prev focus", show=False, priority=True, system=True),
+    Binding("q", "quit", "Quit", show=False, priority=True, system=True),
+)
+
+GLOBAL_HINTS = (
+    KeyHint("1", "dashboard"),
+    KeyHint("2", "worktrees"),
+    KeyHint("3", "replay"),
+    KeyHint("?", "help"),
+    KeyHint("r", "refresh"),
+    KeyHint("q", "quit"),
+)
+
+DASHBOARD_BINDINGS = (
+    Binding("j", "cursor_down", "Next agent", show=False),
+    Binding("k", "cursor_up", "Prev agent", show=False),
+    Binding("slash", "focus_filter", "Filter", show=False),
+    Binding("a", "toggle_attention", "Attention only", show=False),
+    Binding("x", "toggle_completed", "Hide completed", show=False),
+    Binding("s", "cycle_sort", "Sort", show=False),
+    Binding("c", "mark_complete", "Mark complete", show=False),
+    Binding("i", "interrupt_agent", "Interrupt", show=False),
+    Binding("p", "open_pane", "Pane target", show=False),
+    Binding("w", "open_worktree", "Worktree", show=False),
+)
+
+DASHBOARD_HINTS = (
+    KeyHint("j/k", "move"),
+    KeyHint("/", "filter"),
+    KeyHint("a", "attention"),
+    KeyHint("x", "completed"),
+    KeyHint("s", "sort"),
+    KeyHint("c", "complete"),
+    KeyHint("i", "interrupt"),
+    KeyHint("p", "pane"),
+    KeyHint("w", "worktree"),
+)
+
+WORKTREE_BINDINGS = (
+    Binding("j", "cursor_down", "Next worktree", show=False),
+    Binding("k", "cursor_up", "Prev worktree", show=False),
+    Binding("enter", "preview_start_agent", "Start intent", show=False),
+    Binding("s", "preview_start_agent", "Start intent", show=False),
+)
+
+WORKTREE_HINTS = (
+    KeyHint("j/k", "move"),
+    KeyHint("s", "start intent"),
+    KeyHint("enter", "preview"),
+)
+
+REPLAY_BINDINGS = (
+    Binding("j", "cursor_down", "Next entry", show=False),
+    Binding("k", "cursor_up", "Prev entry", show=False),
+    Binding("m", "focus_markers", "Markers", show=False),
+    Binding("t", "focus_transcript", "Transcript", show=False),
+    Binding("e", "cycle_export_format", "Export", show=False),
+    Binding("g", "load_latest", "Latest session", show=False),
+)
+
+REPLAY_HINTS = (
+    KeyHint("j/k", "move"),
+    KeyHint("m", "markers"),
+    KeyHint("t", "transcript"),
+    KeyHint("e", "export"),
+    KeyHint("g", "latest"),
+)
+
+HELP_BINDINGS = (
+    Binding("escape", "show_dashboard", "Dashboard", show=False),
+)
+
+HELP_HINTS = (
+    KeyHint("esc", "dashboard"),
+)
+
+ALL_HINT_GROUPS = {
+    "dashboard": DASHBOARD_HINTS,
+    "worktrees": WORKTREE_HINTS,
+    "replay": REPLAY_HINTS,
+    "help": HELP_HINTS,
+}
+
+__all__ = [
+    "ALL_HINT_GROUPS",
+    "DASHBOARD_BINDINGS",
+    "DASHBOARD_HINTS",
+    "GLOBAL_BINDINGS",
+    "GLOBAL_HINTS",
+    "HELP_BINDINGS",
+    "HELP_HINTS",
+    "REPLAY_BINDINGS",
+    "REPLAY_HINTS",
+    "WORKTREE_BINDINGS",
+    "WORKTREE_HINTS",
+    "KeyHint",
+]
