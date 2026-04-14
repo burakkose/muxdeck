@@ -1,0 +1,446 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Literal, Protocol
+
+from copilot_commander.adapters.sqlite_store import SessionContextRecord
+from copilot_commander.domain.enums import AgentStatus
+from copilot_commander.domain.events import Event, LogChunk
+from copilot_commander.domain.models import Agent, Session, Worktree
+from copilot_commander.domain.value_objects import utc_now
+from copilot_commander.types import Clock
+
+DashboardSortField = Literal["last_seen", "name", "status", "cost", "idle_seconds", "started_at"]
+HealthTone = Literal["healthy", "warning", "critical"]
+AlertSeverity = Literal["info", "warning", "error"]
+
+
+class DashboardStorePort(Protocol):
+    def list_agents(self) -> Sequence[Agent]: ...
+
+    def list_sessions(self, agent_id: str | None = None, /) -> Sequence[Session]: ...
+
+    def get_session_context(self, session_id: str, /) -> SessionContextRecord | None: ...
+
+    def list_events_for_session(self, session_id: str, /) -> Sequence[Event]: ...
+
+    def list_log_chunks(self, session_id: str, /) -> Sequence[LogChunk]: ...
+
+    def get_worktree(self, worktree_id: str, /) -> Worktree | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardFilterState:
+    statuses: tuple[AgentStatus, ...] = ()
+    attention_only: bool = False
+    text_query: str | None = None
+    include_completed: bool = True
+
+    def normalized_query(self) -> str | None:
+        if self.text_query is None:
+            return None
+        query = self.text_query.strip().lower()
+        return query or None
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardSort:
+    field: DashboardSortField = "last_seen"
+    descending: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardMetricView:
+    key: str
+    label: str
+    value: int
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardAlertView:
+    agent_id: str
+    agent_name: str
+    severity: AlertSeverity
+    title: str
+    message: str
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardHealthSummary:
+    tone: HealthTone
+    message: str
+    total_agents: int
+    active_agents: int
+    attention_agents: int
+    waiting_input_agents: int
+    blocked_agents: int
+    error_agents: int
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardLogLineView:
+    captured_at: datetime
+    source: str
+    sequence_no: int
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardAgentListItemView:
+    agent_id: str
+    name: str
+    status: AgentStatus
+    branch: str | None
+    task_title: str | None
+    worktree_path: str | None
+    latest_session_id: str | None
+    last_event_kind: str | None
+    last_log_at: datetime | None
+    last_seen_at: datetime
+    started_at: datetime
+    idle_seconds: int
+    needs_attention: bool
+    attention_reason: str | None
+    token_total: int | None
+    estimated_cost_usd: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardSelectedAgentView:
+    item: DashboardAgentListItemView
+    repo_root: str | None
+    worktree_id: str | None
+    session_count: int
+    open_session_id: str | None
+    latest_event_kind: str | None
+    latest_event_severity: str | None
+    latest_event_at: datetime | None
+    log_preview: tuple[DashboardLogLineView, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardState:
+    generated_at: datetime
+    metrics: tuple[DashboardMetricView, ...]
+    filters: DashboardFilterState
+    sort: DashboardSort
+    health: DashboardHealthSummary
+    alerts: tuple[DashboardAlertView, ...]
+    agents: tuple[DashboardAgentListItemView, ...]
+    selected_agent_id: str | None
+    selected_agent: DashboardSelectedAgentView | None
+
+
+class DashboardController:
+    def __init__(self, store: DashboardStorePort, *, clock: Clock = utc_now) -> None:
+        self._store = store
+        self._clock = clock
+
+    def build_state(
+        self,
+        *,
+        filters: DashboardFilterState | None = None,
+        sort: DashboardSort | None = None,
+        selected_agent_id: str | None = None,
+        preview_line_limit: int = 8,
+        alert_limit: int = 5,
+    ) -> DashboardState:
+        applied_filters = DashboardFilterState() if filters is None else filters
+        applied_sort = DashboardSort() if sort is None else sort
+        generated_at = self._clock()
+        agent_views = tuple(self._build_agent_item(agent) for agent in self._store.list_agents())
+        filtered_agents = self._filter_agents(agent_views, applied_filters)
+        sorted_agents = self._sort_agents(filtered_agents, applied_sort)
+        selected_item = self._select_agent(sorted_agents, selected_agent_id)
+        selected_view = None
+        if selected_item is not None:
+            selected_view = self._build_selected_agent(
+                selected_item,
+                preview_line_limit=preview_line_limit,
+            )
+        alerts = self._build_alerts(agent_views, limit=alert_limit)
+        metrics = self._build_metrics(agent_views)
+        health = self._build_health_summary(agent_views)
+        return DashboardState(
+            generated_at=generated_at,
+            metrics=metrics,
+            filters=applied_filters,
+            sort=applied_sort,
+            health=health,
+            alerts=alerts,
+            agents=sorted_agents,
+            selected_agent_id=selected_item.agent_id if selected_item is not None else None,
+            selected_agent=selected_view,
+        )
+
+    def _build_agent_item(self, agent: Agent) -> DashboardAgentListItemView:
+        sessions = tuple(self._store.list_sessions(agent.id))
+        latest_session = sessions[0] if sessions else None
+        latest_events = (
+            tuple(self._store.list_events_for_session(latest_session.id))
+            if latest_session is not None
+            else ()
+        )
+        latest_logs = (
+            tuple(self._store.list_log_chunks(latest_session.id))
+            if latest_session is not None
+            else ()
+        )
+        latest_event = latest_events[-1] if latest_events else None
+        latest_log = latest_logs[-1] if latest_logs else None
+        estimated_cost = None
+        if agent.estimated_cost_usd is not None:
+            estimated_cost = format(agent.estimated_cost_usd, "f")
+        return DashboardAgentListItemView(
+            agent_id=agent.id,
+            name=agent.name,
+            status=agent.status,
+            branch=agent.branch,
+            task_title=agent.task_title,
+            worktree_path=agent.worktree_path,
+            latest_session_id=latest_session.id if latest_session is not None else None,
+            last_event_kind=latest_event.kind if latest_event is not None else None,
+            last_log_at=latest_log.captured_at if latest_log is not None else None,
+            last_seen_at=agent.last_seen_at,
+            started_at=agent.started_at,
+            idle_seconds=agent.idle_seconds,
+            needs_attention=agent.needs_attention,
+            attention_reason=agent.attention_reason,
+            token_total=agent.token_total,
+            estimated_cost_usd=estimated_cost,
+        )
+
+    def _filter_agents(
+        self,
+        agents: Sequence[DashboardAgentListItemView],
+        filters: DashboardFilterState,
+    ) -> tuple[DashboardAgentListItemView, ...]:
+        query = filters.normalized_query()
+        statuses = set(filters.statuses)
+        visible: list[DashboardAgentListItemView] = []
+        for agent in agents:
+            if (
+                not filters.include_completed
+                and agent.status in {AgentStatus.COMPLETED, AgentStatus.DEAD}
+            ):
+                continue
+            if statuses and agent.status not in statuses:
+                continue
+            if filters.attention_only and not agent.needs_attention:
+                continue
+            if query is not None and query not in self._search_blob(agent):
+                continue
+            visible.append(agent)
+        return tuple(visible)
+
+    def _sort_agents(
+        self,
+        agents: Sequence[DashboardAgentListItemView],
+        sort: DashboardSort,
+    ) -> tuple[DashboardAgentListItemView, ...]:
+        key_lookup: dict[DashboardSortField, object] = {
+            "last_seen": lambda item: (item.last_seen_at, item.started_at, item.agent_id),
+            "name": lambda item: (item.name.lower(), item.last_seen_at, item.agent_id),
+            "status": lambda item: (item.status.value, item.last_seen_at, item.agent_id),
+            "cost": lambda item: (item.estimated_cost_usd or "", item.last_seen_at, item.agent_id),
+            "idle_seconds": lambda item: (item.idle_seconds, item.last_seen_at, item.agent_id),
+            "started_at": lambda item: (item.started_at, item.last_seen_at, item.agent_id),
+        }
+        sorter = key_lookup[sort.field]
+        return tuple(sorted(agents, key=sorter, reverse=sort.descending))
+
+    def _select_agent(
+        self,
+        agents: Sequence[DashboardAgentListItemView],
+        selected_agent_id: str | None,
+    ) -> DashboardAgentListItemView | None:
+        if selected_agent_id is not None:
+            for agent in agents:
+                if agent.agent_id == selected_agent_id:
+                    return agent
+        return agents[0] if agents else None
+
+    def _build_selected_agent(
+        self,
+        item: DashboardAgentListItemView,
+        *,
+        preview_line_limit: int,
+    ) -> DashboardSelectedAgentView:
+        sessions = tuple(self._store.list_sessions(item.agent_id))
+        latest_session = sessions[0] if sessions else None
+        open_session = next((session for session in sessions if session.ended_at is None), None)
+        context = None
+        if latest_session is not None:
+            context = self._store.get_session_context(latest_session.id)
+        worktree = (
+            self._store.get_worktree(context.worktree_id)
+            if context is not None and context.worktree_id is not None
+            else None
+        )
+        events = (
+            tuple(self._store.list_events_for_session(latest_session.id))
+            if latest_session is not None
+            else ()
+        )
+        logs = (
+            tuple(self._store.list_log_chunks(latest_session.id))
+            if latest_session is not None
+            else ()
+        )
+        latest_event = events[-1] if events else None
+        worktree_id = None
+        if worktree is not None:
+            worktree_id = worktree.id
+        elif context is not None:
+            worktree_id = context.worktree_id
+        return DashboardSelectedAgentView(
+            item=item,
+            repo_root=context.repo_root if context is not None else None,
+            worktree_id=worktree_id,
+            session_count=len(sessions),
+            open_session_id=open_session.id if open_session is not None else None,
+            latest_event_kind=latest_event.kind if latest_event is not None else None,
+            latest_event_severity=latest_event.severity if latest_event is not None else None,
+            latest_event_at=latest_event.occurred_at if latest_event is not None else None,
+            log_preview=self._build_log_preview(logs, preview_line_limit=preview_line_limit),
+        )
+
+    def _build_log_preview(
+        self,
+        logs: Sequence[LogChunk],
+        *,
+        preview_line_limit: int,
+    ) -> tuple[DashboardLogLineView, ...]:
+        lines: list[DashboardLogLineView] = []
+        for chunk in logs:
+            for line in chunk.content.splitlines():
+                stripped = line.rstrip()
+                if not stripped:
+                    continue
+                lines.append(
+                    DashboardLogLineView(
+                        captured_at=chunk.captured_at,
+                        source=chunk.source,
+                        sequence_no=chunk.sequence_no,
+                        content=stripped,
+                    )
+                )
+        if preview_line_limit <= 0:
+            return ()
+        return tuple(lines[-preview_line_limit:])
+
+    def _build_alerts(
+        self,
+        agents: Sequence[DashboardAgentListItemView],
+        *,
+        limit: int,
+    ) -> tuple[DashboardAlertView, ...]:
+        alerts: list[DashboardAlertView] = []
+        for agent in agents:
+            if not agent.needs_attention:
+                continue
+            severity: AlertSeverity = "warning"
+            if agent.status in {AgentStatus.ERROR, AgentStatus.DEAD, AgentStatus.BLOCKED}:
+                severity = "error"
+            alerts.append(
+                DashboardAlertView(
+                    agent_id=agent.agent_id,
+                    agent_name=agent.name,
+                    severity=severity,
+                    title=agent.status.value.replace("_", " "),
+                    message=agent.attention_reason or agent.last_event_kind or "attention required",
+                    occurred_at=agent.last_seen_at,
+                )
+            )
+        ordered = sorted(alerts, key=lambda item: (item.occurred_at, item.agent_id), reverse=True)
+        return tuple(ordered[:limit])
+
+    def _build_metrics(
+        self,
+        agents: Sequence[DashboardAgentListItemView],
+    ) -> tuple[DashboardMetricView, ...]:
+        total_agents = len(agents)
+        active_agents = sum(
+            1
+            for agent in agents
+            if agent.status not in {AgentStatus.COMPLETED, AgentStatus.DEAD}
+        )
+        attention_agents = sum(1 for agent in agents if agent.needs_attention)
+        sessions_total = sum(1 for agent in agents if agent.latest_session_id is not None)
+        return (
+            DashboardMetricView(key="agents", label="Agents", value=total_agents),
+            DashboardMetricView(key="active", label="Active", value=active_agents),
+            DashboardMetricView(key="attention", label="Attention", value=attention_agents),
+            DashboardMetricView(key="sessions", label="Sessions", value=sessions_total),
+        )
+
+    def _build_health_summary(
+        self,
+        agents: Sequence[DashboardAgentListItemView],
+    ) -> DashboardHealthSummary:
+        total_agents = len(agents)
+        active_agents = sum(
+            1
+            for agent in agents
+            if agent.status not in {AgentStatus.COMPLETED, AgentStatus.DEAD}
+        )
+        attention_agents = sum(1 for agent in agents if agent.needs_attention)
+        waiting_input_agents = sum(
+            1 for agent in agents if agent.status is AgentStatus.WAITING_INPUT
+        )
+        blocked_agents = sum(1 for agent in agents if agent.status is AgentStatus.BLOCKED)
+        error_agents = sum(
+            1 for agent in agents if agent.status in {AgentStatus.ERROR, AgentStatus.DEAD}
+        )
+        tone: HealthTone = "healthy"
+        if blocked_agents or error_agents:
+            tone = "critical"
+        elif attention_agents or waiting_input_agents:
+            tone = "warning"
+        message = "all agents healthy"
+        if tone == "critical":
+            message = "intervention required"
+        elif tone == "warning":
+            message = "some agents need review"
+        return DashboardHealthSummary(
+            tone=tone,
+            message=message,
+            total_agents=total_agents,
+            active_agents=active_agents,
+            attention_agents=attention_agents,
+            waiting_input_agents=waiting_input_agents,
+            blocked_agents=blocked_agents,
+            error_agents=error_agents,
+        )
+
+    def _search_blob(self, agent: DashboardAgentListItemView) -> str:
+        return " ".join(
+            part.lower()
+            for part in (
+                agent.agent_id,
+                agent.name,
+                agent.branch or "",
+                agent.task_title or "",
+                agent.worktree_path or "",
+                agent.last_event_kind or "",
+                agent.attention_reason or "",
+            )
+            if part
+        )
+
+
+__all__ = [
+    "DashboardAgentListItemView",
+    "DashboardAlertView",
+    "DashboardController",
+    "DashboardFilterState",
+    "DashboardHealthSummary",
+    "DashboardLogLineView",
+    "DashboardMetricView",
+    "DashboardSelectedAgentView",
+    "DashboardSort",
+    "DashboardState",
+]
