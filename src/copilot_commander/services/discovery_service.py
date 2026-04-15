@@ -78,6 +78,8 @@ class DiscoveryPaneSnapshot:
     pane_pid: int | None = None
     pane_active: bool | None = None
     pane_dead: bool | None = None
+    repo_root: str | None = None
+    branch: str | None = None
 
     @classmethod
     def from_tmux_record(cls, record: PaneMetadataLike, /) -> DiscoveryPaneSnapshot:

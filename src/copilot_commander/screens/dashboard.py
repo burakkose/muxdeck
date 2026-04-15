@@ -81,6 +81,7 @@ class DashboardScreen(ShellScreen):
         self.refresh_data()
 
     def refresh_data(self) -> None:
+        sync_report = self.commander_app.last_sync_report
         self._state = self.runtime.dashboard.build_state(
             filters=self._filters,
             sort=self._sort,
@@ -107,7 +108,20 @@ class DashboardScreen(ShellScreen):
         self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
         self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
-        self.set_status(f"{len(self._state.agents)} visible agents | {self._state.health.message}")
+        if sync_report is None:
+            self.set_status(
+                f"{len(self._state.agents)} visible agents | {self._state.health.message}"
+            )
+            return
+        if sync_report.error is not None:
+            self.set_status(sync_report.error)
+            return
+        warning_suffix = f" | warnings {len(sync_report.warnings)}" if sync_report.warnings else ""
+        self.set_status(
+            f"scanned {sync_report.observed_panes} panes"
+            f" | synced {sync_report.persisted_agents} agents"
+            f" | visible {len(self._state.agents)}{warning_suffix}"
+        )
 
     @property
     def commander_app(self) -> CommanderApp:

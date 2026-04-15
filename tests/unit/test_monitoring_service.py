@@ -133,6 +133,8 @@ class MonitoringServiceTests(unittest.TestCase):
                 pane_current_path="/repo/worktrees/task",
                 pane_current_command="copilot chat",
                 pane_pid=321,
+                repo_root="/repo",
+                branch="task/demo",
             ),
             discovered_at=now,
             classification="unmanaged_probable_agent",
@@ -148,6 +150,8 @@ class MonitoringServiceTests(unittest.TestCase):
         assert len(recorder.recorded) == 1
         facts = recorder.recorded[0]
         assert facts.copilot_session_id == "copilot-123"
+        assert facts.repo_root == "/repo"
+        assert facts.branch == "task/demo"
         assert facts.status is AgentStatus.WAITING_INPUT
         assert facts.token_input == 8
         assert facts.capture_text == "Copilot session id: copilot-123"
