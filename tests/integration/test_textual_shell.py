@@ -507,6 +507,7 @@ async def test_textual_shell_navigation_and_updates() -> None:
         assert "session-1" in rendered_text(app.screen.query_one("#replay-summary"))
         assert "parsed" in rendered_text(app.screen.query_one("#replay-summary"))
 
+        app.screen.query_one("#replay-transcript-list").focus()
         await pilot.press("v")
         await pilot.pause()
         assert "stdout#1" in rendered_text(app.screen.query_one("#replay-detail"))
@@ -523,6 +524,7 @@ async def test_textual_shell_navigation_and_updates() -> None:
         await pilot.pause()
         assert "jumped to problem" in rendered_text(app.screen.query_one("#shell-footer")).lower()
 
+        app.screen.query_one("#replay-transcript-list").focus()
         await pilot.press("e")
         await pilot.pause()
         assert "export json" in rendered_text(app.screen.query_one("#shell-footer")).lower()
