@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -140,9 +141,18 @@ class DashboardState:
 
 
 class DashboardController:
-    def __init__(self, store: DashboardStorePort, *, clock: Clock = utc_now) -> None:
+    def __init__(
+        self,
+        store: DashboardStorePort,
+        *,
+        clock: Clock = utc_now,
+        max_cost_usd: Decimal | None = None,
+        max_runtime_minutes: int | None = None,
+    ) -> None:
         self._store = store
         self._clock = clock
+        self._max_cost_usd = max_cost_usd
+        self._max_runtime_minutes = max_runtime_minutes
 
     def build_state(
         self,
@@ -199,6 +209,20 @@ class DashboardController:
         estimated_cost = None
         if agent.estimated_cost_usd is not None:
             estimated_cost = format(agent.estimated_cost_usd, "f")
+
+        needs_attention = agent.needs_attention
+        attention_reason = agent.attention_reason
+
+        runaway = _check_runaway(
+            agent,
+            now=self._clock(),
+            max_cost_usd=self._max_cost_usd,
+            max_runtime_minutes=self._max_runtime_minutes,
+        )
+        if runaway is not None:
+            needs_attention = True
+            attention_reason = runaway
+
         return DashboardAgentListItemView(
             agent_id=agent.id,
             name=agent.name,
@@ -215,8 +239,8 @@ class DashboardController:
             last_seen_at=agent.last_seen_at,
             started_at=agent.started_at,
             idle_seconds=agent.idle_seconds,
-            needs_attention=agent.needs_attention,
-            attention_reason=agent.attention_reason,
+            needs_attention=needs_attention,
+            attention_reason=attention_reason,
             token_total=agent.token_total,
             estimated_cost_usd=estimated_cost,
             current_activity=_activity_from_task_title(
@@ -487,6 +511,32 @@ def _path_name(value: str | None) -> str | None:
         return None
     path_name = Path(value).name
     return path_name or value
+
+
+def _check_runaway(
+    agent: Agent,
+    *,
+    now: datetime,
+    max_cost_usd: Decimal | None,
+    max_runtime_minutes: int | None,
+) -> str | None:
+    """Return an attention reason if the agent exceeds cost or runtime limits."""
+    if agent.status in {AgentStatus.COMPLETED, AgentStatus.DEAD}:
+        return None
+
+    if (
+        max_cost_usd is not None
+        and agent.estimated_cost_usd is not None
+        and agent.estimated_cost_usd > max_cost_usd
+    ):
+        return f"cost ${agent.estimated_cost_usd:.2f} exceeds limit ${max_cost_usd:.2f}"
+
+    if max_runtime_minutes is not None:
+        runtime_minutes = (now - agent.started_at).total_seconds() / 60
+        if runtime_minutes > max_runtime_minutes:
+            return f"runtime {runtime_minutes:.0f}m exceeds limit {max_runtime_minutes}m"
+
+    return None
 
 
 __all__ = [

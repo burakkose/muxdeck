@@ -389,6 +389,4 @@ async def test_textual_shell_navigation_and_updates() -> None:
 
         app.action_show_help()
         await pilot.pause()
-        assert "Copilot Commander" in rendered_text(
-            app.screen.query_one("#help-content")
-        )
+        assert "Copilot Commander" in rendered_text(app.screen.query_one("#help-content"))
