@@ -53,6 +53,14 @@ _log = logging.getLogger(__name__)
 _SYNC_GROUP = "sync"
 _PERF_LOG_INTERVAL = 10  # log perf summary every N sync cycles
 _sync_cycle_count = 0
+_FALSEY_ENV_VALUES = frozenset({"", "0", "false", "no", "off"})
+
+
+def _command_logging_enabled() -> bool:
+    value = os.environ.get("COMMANDER_LOG")
+    if value is None:
+        return False
+    return value.strip().casefold() not in _FALSEY_ENV_VALUES
 
 
 @dataclass(slots=True)
@@ -315,13 +323,12 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
 
 
 def run_app(config_path: str | Path | None = None) -> int:
-    # Configure logging so perf instrumentation output is visible
-    # when COMMANDER_LOG=1 or when Textual's console logging is active.
-    logging.basicConfig(
-        level=logging.WARNING,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    if _command_logging_enabled():
+        logging.basicConfig(
+            level=logging.WARNING,
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+            datefmt="%H:%M:%S",
+        )
     config = load_config(config_path)
     runtime = build_runtime(config)
     try:
