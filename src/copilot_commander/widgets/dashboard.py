@@ -17,6 +17,11 @@ from copilot_commander.controllers import (
     DashboardSelectedAgentView,
 )
 from copilot_commander.domain.enums import AgentStatus
+from copilot_commander.services.operator_status_service import (
+    OperatorStatus,
+    OperatorStatusKind,
+    describe_operator_status,
+)
 from copilot_commander.theme import (
     AQUA,
     ATTENTION_ROW_BG,
@@ -93,17 +98,31 @@ def _short_status(status: AgentStatus) -> str:
 
 
 def _status_display(agent: DashboardAgentListItemView) -> tuple[str, str]:
-    if agent.is_potentially_stuck:
-        return ("stuck", f"bold {YELLOW}")
-    if agent.status is AgentStatus.WAITING_INPUT:
-        return ("input", f"bold {ORANGE}")
-    if agent.status is AgentStatus.BLOCKED:
-        return ("block", f"bold {ORANGE}")
-    if agent.status in {AgentStatus.ERROR, AgentStatus.DEAD}:
-        return ("error", f"bold {SEVERITY_ERROR}")
-    if agent.needs_attention:
-        return ("review", f"bold {ORANGE}")
-    return (_short_status(agent.status), FG3)
+    operator_status = _resolved_operator_status(agent)
+    style_lookup = {
+        OperatorStatusKind.WORKING: FG3,
+        OperatorStatusKind.WAITING_INPUT: f"bold {ORANGE}",
+        OperatorStatusKind.BLOCKED: f"bold {SEVERITY_ERROR}",
+        OperatorStatusKind.REVIEW_READY: f"bold {ORANGE}",
+        OperatorStatusKind.FAILED: f"bold {SEVERITY_ERROR}",
+        OperatorStatusKind.STALE: f"bold {YELLOW}",
+        OperatorStatusKind.COMPLETED: FG4,
+    }
+    return (operator_status.label, style_lookup[operator_status.kind])
+
+
+def _resolved_operator_status(agent: DashboardAgentListItemView) -> OperatorStatus:
+    if agent.operator_status is not None:
+        return agent.operator_status
+    return describe_operator_status(
+        agent_status=agent.status,
+        needs_attention=agent.needs_attention,
+        attention_reason=agent.attention_reason,
+        idle_seconds=agent.idle_seconds,
+        is_potentially_stuck=agent.is_potentially_stuck,
+        task_title=agent.task_title,
+        current_activity=agent.current_activity,
+    )
 
 
 def _display_name(
@@ -317,15 +336,16 @@ class AgentDetailPanel(Static):
             self.update(result)
             return
         item = agent.item
-        status_label, status_style = _status_display(item)
+        operator_status = _resolved_operator_status(item)
+        _, status_style = _status_display(item)
         result.append(f" {item.name}", style=f"bold {FG}")
         result.append("  ")
-        result.append(status_label, style=status_style)
+        result.append(operator_status.headline, style=status_style)
         result.append("\n")
         if item.task_title:
             result.append(f" {item.task_title}\n", style=FG2)
         fields: list[tuple[str, str, str]] = [
-            ("attention", item.attention_reason or "", f"bold {ORANGE}"),
+            ("reason", operator_status.reason, status_style),
             ("activity", item.current_activity or "", FG1),
             ("branch", item.branch or "", FG1),
             ("repo", item.repo_name or "", FG2),

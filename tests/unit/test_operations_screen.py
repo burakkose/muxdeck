@@ -87,9 +87,7 @@ class _FakeOperationsController:
         del preview_line_limit, alert_limit, history_limit
         agents = (_agent("agent-1", name="Planner"), _agent("agent-2", name="Reviewer"))
         valid_selected = tuple(
-            agent_id
-            for agent_id in selected_agent_ids
-            if agent_id in {"agent-1", "agent-2"}
+            agent_id for agent_id in selected_agent_ids if agent_id in {"agent-1", "agent-2"}
         )
         return OperationsState(
             generated_at=_TS,
@@ -128,9 +126,7 @@ class _FakeOperationsController:
 
     def select_all(self, agents: Sequence[object]) -> tuple[str, ...]:
         return tuple(
-            agent.agent_id
-            for agent in agents
-            if isinstance(agent, DashboardAgentListItemView)
+            agent.agent_id for agent in agents if isinstance(agent, DashboardAgentListItemView)
         )
 
     def clear_selection(self) -> tuple[str, ...]:
@@ -143,8 +139,7 @@ class _FakeOperationsController:
     ) -> OperationsActionPreview:
         self.preview_calls.append((action, selected_agent_ids))
         agents = tuple(
-            _agent(agent_id, name=f"Agent {agent_id[-1]}")
-            for agent_id in selected_agent_ids
+            _agent(agent_id, name=f"Agent {agent_id[-1]}") for agent_id in selected_agent_ids
         )
         return OperationsActionPreview(
             action=action,

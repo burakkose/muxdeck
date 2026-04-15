@@ -20,8 +20,11 @@ from copilot_commander.bindings import GLOBAL_BINDINGS
 from copilot_commander.config import AppConfig, load_config
 from copilot_commander.controllers import (
     AgentController,
+    AttentionController,
     DashboardController,
     DashboardState,
+    FleetController,
+    OperationsController,
     ReplayController,
     WorktreeController,
 )
@@ -29,8 +32,11 @@ from copilot_commander.controllers.sessions_controller import SessionsController
 from copilot_commander.perf import log_summary as perf_log_summary
 from copilot_commander.perf import timed
 from copilot_commander.screens import (
+    AttentionScreen,
     DashboardScreen,
+    FleetScreen,
     HelpScreen,
+    OperationsScreen,
     ReplayScreen,
     SetupScreen,
     WorktreesScreen,
@@ -38,9 +44,11 @@ from copilot_commander.screens import (
 from copilot_commander.screens.sessions import SessionsScreen
 from copilot_commander.services import (
     AgentService,
+    AttentionInboxService,
     DiscoveryService,
     MonitoringService,
     MonitoringThresholds,
+    OperationAuditService,
     ReplayService,
     RuntimeSynchronizer,
     RuntimeSyncReport,
@@ -79,6 +87,9 @@ class CommanderRuntime:
     sessions_ctrl: SessionsController | None = None
     sync_dashboard: DashboardController | None = None
     setup: SetupDoctorService | None = None
+    attention: AttentionController | None = None
+    operations: OperationsController | None = None
+    fleet: FleetController | None = None
 
 
 class CommanderApp(App[None]):
@@ -100,11 +111,23 @@ class CommanderApp(App[None]):
         self._manual_refresh: bool = False
 
     def on_mount(self) -> None:
+        attention = getattr(self.runtime, "attention", None)
+        operations = getattr(self.runtime, "operations", None)
+        fleet = getattr(self.runtime, "fleet", None)
         self.add_mode("dashboard", lambda: DashboardScreen(self.runtime))
         self.add_mode("worktrees", lambda: WorktreesScreen(self.runtime))
         self.add_mode("replay", lambda: ReplayScreen(self.runtime))
         self.add_mode("sessions", lambda: SessionsScreen(self.runtime))
         self.add_mode("setup", lambda: SetupScreen(self.runtime))
+        if attention is not None:
+            self.add_mode("attention", lambda: AttentionScreen(self.runtime))
+        if operations is not None:
+            self.add_mode(
+                "operations",
+                lambda: OperationsScreen(self.runtime, operations),
+            )
+        if fleet is not None:
+            self.add_mode("fleet", lambda: FleetScreen(self.runtime, controller=fleet))
         self.add_mode("help", lambda: HelpScreen(self.runtime))
         self.switch_mode("dashboard")
         interval_sec = max(2, self.runtime.config.general.discovery_interval_sec)
@@ -125,6 +148,21 @@ class CommanderApp(App[None]):
 
     def action_show_setup(self) -> None:
         self.switch_mode("setup")
+
+    def action_show_attention(self) -> None:
+        if getattr(self.runtime, "attention", None) is None:
+            return
+        self.switch_mode("attention")
+
+    def action_show_operations(self) -> None:
+        if getattr(self.runtime, "operations", None) is None:
+            return
+        self.switch_mode("operations")
+
+    def action_show_fleet(self) -> None:
+        if getattr(self.runtime, "fleet", None) is None:
+            return
+        self.switch_mode("fleet")
 
     def action_show_help(self) -> None:
         self.switch_mode("help")
@@ -246,7 +284,10 @@ class CommanderApp(App[None]):
         screen = self.screen
         # Periodic sync only auto-refreshes the dashboard.
         # Other screens refresh on tab switch (on_show) or manual r key.
-        if not force and not isinstance(screen, DashboardScreen):
+        if not force and not isinstance(
+            screen,
+            DashboardScreen | AttentionScreen | OperationsScreen | FleetScreen,
+        ):
             return
         refresher = getattr(screen, "refresh_data", None)
         if callable(refresher):
@@ -307,14 +348,24 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     )
     copilot_session_store = CopilotSessionStore()
     sessions_ctrl = SessionsController(copilot_session_store)
+    dashboard = DashboardController(store)
+    agent_controller = AgentController(store, sessions)
+    attention = AttentionController(dashboard, AttentionInboxService())
+    operations = OperationsController(
+        dashboard,
+        agent_controller,
+        OperationAuditService(),
+        actions=action_service,
+    )
+    fleet = FleetController(store, local_sessions=copilot_session_store)
     sync_dashboard = DashboardController(sync_store)
     return CommanderRuntime(
         config=resolved_config,
         store=store,
-        dashboard=DashboardController(store),
+        dashboard=dashboard,
         worktrees=WorktreeController(worktree_service, store),
         replay=ReplayController(replay_service),
-        agents=AgentController(store, sessions),
+        agents=agent_controller,
         actions=action_service,
         synchronizer=RuntimeSynchronizer(
             discovery,
@@ -330,6 +381,9 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
             tmux_adapter,
             configured_socket_path=resolved_config.tmux.socket_path,
         ),
+        attention=attention,
+        operations=operations,
+        fleet=fleet,
     )
 
 

@@ -15,6 +15,10 @@ from copilot_commander.domain.models import Agent, Session, Worktree
 from copilot_commander.domain.value_objects import utc_now
 from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
 from copilot_commander.perf import timed
+from copilot_commander.services.operator_status_service import (
+    OperatorStatus,
+    describe_operator_status,
+)
 from copilot_commander.types import Clock
 
 DashboardSortField = Literal["last_seen", "name", "status", "cost", "idle_seconds", "started_at"]
@@ -93,6 +97,9 @@ class DashboardAlertView:
     title: str
     message: str
     occurred_at: datetime
+    alert_id: str = ""
+    operator_status: OperatorStatus | None = None
+    is_critical: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +147,7 @@ class DashboardAgentListItemView:
     current_activity: str | None = None
     sparkline: str = "        "
     is_potentially_stuck: bool = False
+    operator_status: OperatorStatus | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +292,19 @@ class DashboardController:
             needs_attention = True
             attention_reason = f"output unchanged for {stale_secs}s — may be stuck"
 
+        operator_status = describe_operator_status(
+            agent_status=agent.status,
+            needs_attention=needs_attention,
+            attention_reason=attention_reason,
+            idle_seconds=agent.idle_seconds,
+            is_potentially_stuck=is_potentially_stuck,
+            task_title=agent.task_title,
+            current_activity=current_activity,
+        )
+        needs_attention = operator_status.needs_attention
+        if needs_attention and attention_reason is None:
+            attention_reason = operator_status.reason
+
         return DashboardAgentListItemView(
             agent_id=agent.id,
             name=agent.name,
@@ -308,6 +329,7 @@ class DashboardController:
             current_activity=current_activity,
             sparkline=sparkline,
             is_potentially_stuck=is_potentially_stuck,
+            operator_status=operator_status,
         )
 
     def _filter_agents(
@@ -453,17 +475,33 @@ class DashboardController:
         for agent in agents:
             if not agent.needs_attention:
                 continue
-            severity: AlertSeverity = "warning"
-            if agent.status in {AgentStatus.ERROR, AgentStatus.DEAD, AgentStatus.BLOCKED}:
+            operator_status = agent.operator_status
+            if operator_status is None:
+                operator_status = describe_operator_status(
+                    agent_status=agent.status,
+                    needs_attention=agent.needs_attention,
+                    attention_reason=agent.attention_reason,
+                    idle_seconds=agent.idle_seconds,
+                    is_potentially_stuck=agent.is_potentially_stuck,
+                    task_title=agent.task_title,
+                    current_activity=agent.current_activity,
+                )
+            severity: AlertSeverity = "info"
+            if operator_status.tone == "warning":
+                severity = "warning"
+            elif operator_status.tone == "error":
                 severity = "error"
             alerts.append(
                 DashboardAlertView(
                     agent_id=agent.agent_id,
                     agent_name=agent.name,
                     severity=severity,
-                    title=agent.status.value.replace("_", " "),
-                    message=agent.attention_reason or agent.last_event_kind or "attention required",
+                    title=operator_status.headline,
+                    message=operator_status.reason,
                     occurred_at=agent.last_seen_at,
+                    alert_id=f"{agent.agent_id}:{operator_status.kind.value}",
+                    operator_status=operator_status,
+                    is_critical=operator_status.is_critical,
                 )
             )
         ordered = sorted(alerts, key=lambda item: (item.occurred_at, item.agent_id), reverse=True)
@@ -555,6 +593,8 @@ class DashboardController:
                 agent.worktree_path or "",
                 agent.last_event_kind or "",
                 agent.attention_reason or "",
+                agent.operator_status.headline if agent.operator_status is not None else "",
+                agent.operator_status.reason if agent.operator_status is not None else "",
             )
             if part
         )

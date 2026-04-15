@@ -226,7 +226,7 @@ class TestAgentListTable:
         panel._selected_index = 0
         table = panel._build_table()
         status_cells = table.columns[2]._cells
-        assert "run" in str(status_cells[0])
+        assert "working" in str(status_cells[0])
 
     def test_attention_running_agent_shows_review_status(self):
         from copilot_commander.widgets.dashboard import AgentListPanel
@@ -252,7 +252,7 @@ class TestAgentListTable:
         panel._selected_index = 0
         table = panel._build_table()
         status_cells = table.columns[2]._cells
-        assert "stuck" in str(status_cells[0])
+        assert "stale" in str(status_cells[0])
 
 
 class TestDashboardPanels:
