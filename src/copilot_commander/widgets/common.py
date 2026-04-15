@@ -88,6 +88,7 @@ _TAB_ITEMS: Final[tuple[tuple[str, str], ...]] = (
     ("1", "Dashboard"),
     ("2", "Worktrees"),
     ("3", "Replay"),
+    ("4", "Sessions"),
     ("?", "Help"),
 )
 
