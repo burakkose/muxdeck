@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
@@ -93,7 +94,10 @@ class DashboardAgentListItemView:
     agent_id: str
     name: str
     status: AgentStatus
+    repo_name: str | None
     branch: str | None
+    worktree_name: str | None
+    pane_id: str
     task_title: str | None
     worktree_path: str | None
     latest_session_id: str | None
@@ -198,7 +202,10 @@ class DashboardController:
             agent_id=agent.id,
             name=agent.name,
             status=agent.status,
+            repo_name=_path_name(agent.repo_root),
             branch=agent.branch,
+            worktree_name=_path_name(agent.worktree_path),
+            pane_id=agent.tmux_pane_id,
             task_title=agent.task_title,
             worktree_path=agent.worktree_path,
             latest_session_id=latest_session.id if latest_session is not None else None,
@@ -421,7 +428,10 @@ class DashboardController:
             for part in (
                 agent.agent_id,
                 agent.name,
+                agent.repo_name or "",
                 agent.branch or "",
+                agent.worktree_name or "",
+                agent.pane_id,
                 agent.task_title or "",
                 agent.worktree_path or "",
                 agent.last_event_kind or "",
@@ -429,6 +439,13 @@ class DashboardController:
             )
             if part
         )
+
+
+def _path_name(value: str | None) -> str | None:
+    if value is None:
+        return None
+    path_name = Path(value).name
+    return path_name or value
 
 
 __all__ = [
