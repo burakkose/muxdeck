@@ -10,12 +10,14 @@ from textual.widgets import Input
 from copilot_commander.bindings import DASHBOARD_BINDINGS, DASHBOARD_HINTS
 from copilot_commander.controllers import (
     AgentIntentView,
+    DashboardAgentListItemView,
     DashboardFilterState,
     DashboardSort,
     DashboardSortField,
     DashboardState,
 )
 from copilot_commander.screens.base import ShellScreen
+from copilot_commander.screens.confirm_dialog import ConfirmScreen
 from copilot_commander.widgets.dashboard import (
     AgentDetailPanel,
     AgentListPanel,
@@ -91,9 +93,7 @@ class DashboardScreen(ShellScreen):
         self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
         if sync_report is None:
-            self.set_status(
-                f"{len(self._state.agents)} agents | {self._state.health.message}"
-            )
+            self.set_status(f"{len(self._state.agents)} agents | {self._state.health.message}")
             return
         if sync_report.error is not None:
             self.set_status(sync_report.error)
@@ -182,6 +182,23 @@ class DashboardScreen(ShellScreen):
         self.refresh_data()
 
     def action_interrupt_agent(self) -> None:
+        if self._selected_agent_id is None:
+            self.set_status("no agent selected")
+            return
+        agent = self._find_selected_agent()
+        name = (agent.repo_name or agent.name) if agent else "agent"
+        self.app.push_screen(
+            ConfirmScreen(
+                message=f"Interrupt {name}? This sends Ctrl-C.",
+                title="Interrupt Agent",
+            ),
+            callback=self._on_interrupt_confirmed,
+        )
+
+    def _on_interrupt_confirmed(self, confirmed: bool) -> None:
+        if not confirmed:
+            self.set_status("interrupt cancelled")
+            return
         self._set_agent_intent_status("interrupt", self.runtime.agents.interrupt_intent)
 
     def action_open_pane(self) -> None:
@@ -206,3 +223,47 @@ class DashboardScreen(ShellScreen):
         metadata = " ".join(f"{key}={value}" for key, value in intent.metadata)
         suffix = f" {metadata}" if metadata else ""
         self.set_status(f"{intent.label.lower()} -> {intent.agent.name}{suffix}")
+
+    def action_stop_all(self) -> None:
+        """Emergency stop: confirm then interrupt ALL visible agents."""
+        if self.runtime.actions is None:
+            self.set_status("✗ action service unavailable")
+            return
+        if self._state is None or not self._state.agents:
+            self.set_status("no agents to stop")
+            return
+        count = sum(1 for a in self._state.agents if a.pane_id)
+        if count == 0:
+            self.set_status("no active panes to stop")
+            return
+        self.app.push_screen(
+            ConfirmScreen(
+                message=f"Stop ALL {count} agents? This sends Ctrl-C to each.",
+                title="Emergency Stop",
+            ),
+            callback=self._on_stop_all_confirmed,
+        )
+
+    def _on_stop_all_confirmed(self, confirmed: bool) -> None:
+        if not confirmed:
+            self.set_status("stop cancelled")
+            return
+        if self.runtime.actions is None or self._state is None:
+            return
+        pane_ids = [a.pane_id for a in self._state.agents if a.pane_id]
+        results = self.runtime.actions.stop_all_agents(pane_ids)
+        ok = sum(1 for r in results if r.success)
+        fail = len(results) - ok
+        if fail:
+            self.set_status(f"⚠ stopped {ok}/{len(results)} agents ({fail} failed)")
+        else:
+            self.set_status(f"✓ stopped {ok} agents")
+
+    def _find_selected_agent(self) -> DashboardAgentListItemView | None:
+        """Find the selected agent from the current state."""
+        if self._state is None or self._selected_agent_id is None:
+            return None
+        for agent in self._state.agents:
+            if agent.agent_id == self._selected_agent_id:
+                return agent
+        return None
