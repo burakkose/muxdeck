@@ -37,6 +37,10 @@ class DashboardStorePort(Protocol):
 
     def get_latest_session_for_agent(self, agent_id: str, /) -> Session | None: ...
 
+    def count_sessions_for_agent(self, agent_id: str, /) -> int: ...
+
+    def get_open_session_for_agent(self, agent_id: str, /) -> Session | None: ...
+
     def get_session_context(self, session_id: str, /) -> SessionContextRecord | None: ...
 
     def list_events_for_session(self, session_id: str, /) -> Sequence[Event]: ...
@@ -46,6 +50,10 @@ class DashboardStorePort(Protocol):
     def list_log_chunks(self, session_id: str, /) -> Sequence[LogChunk]: ...
 
     def get_latest_log_chunk(self, session_id: str, /) -> LogChunk | None: ...
+
+    def list_recent_log_chunks(
+        self, session_id: str, /, *, limit: int = 20
+    ) -> Sequence[LogChunk]: ...
 
     def get_worktree(self, worktree_id: str, /) -> Worktree | None: ...
 
@@ -360,10 +368,8 @@ class DashboardController:
         preview_line_limit: int,
     ) -> DashboardSelectedAgentView:
         latest_session = self._store.get_latest_session_for_agent(item.agent_id)
-        # For open_session_id and session_count, we still need the full list
-        # but only once for the selected agent (not N times for all agents).
-        sessions = tuple(self._store.list_sessions(item.agent_id))
-        open_session = next((session for session in sessions if session.ended_at is None), None)
+        session_count = self._store.count_sessions_for_agent(item.agent_id)
+        open_session = self._store.get_open_session_for_agent(item.agent_id)
         context = None
         if latest_session is not None:
             context = self._store.get_session_context(latest_session.id)
@@ -377,10 +383,10 @@ class DashboardController:
             if latest_session is not None
             else None
         )
-        # For log preview, load only log chunks (still needed for content).
-        # TODO: Add a store method to fetch only the last N log chunks.
+        # Only fetch the last N log chunks for preview — not the entire history.
+        log_limit = max(preview_line_limit * 2, 20)
         logs = (
-            tuple(self._store.list_log_chunks(latest_session.id))
+            tuple(self._store.list_recent_log_chunks(latest_session.id, limit=log_limit))
             if latest_session is not None
             else ()
         )
@@ -393,7 +399,7 @@ class DashboardController:
             item=item,
             repo_root=context.repo_root if context is not None else None,
             worktree_id=worktree_id,
-            session_count=len(sessions),
+            session_count=session_count,
             open_session_id=open_session.id if open_session is not None else None,
             latest_event_kind=latest_event.kind if latest_event is not None else None,
             latest_event_severity=latest_event.severity if latest_event is not None else None,

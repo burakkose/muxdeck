@@ -48,6 +48,15 @@ class InMemoryDashboardStore:
         sessions = self.list_sessions(agent_id)
         return sessions[0] if sessions else None
 
+    def count_sessions_for_agent(self, agent_id: str, /) -> int:
+        return len(self.list_sessions(agent_id))
+
+    def get_open_session_for_agent(self, agent_id: str, /) -> Session | None:
+        return next(
+            (s for s in self.list_sessions(agent_id) if s.ended_at is None),
+            None,
+        )
+
     def get_session_context(self, session_id: str, /) -> SessionContextRecord | None:
         return self.contexts.get(session_id)
 
@@ -64,6 +73,12 @@ class InMemoryDashboardStore:
     def get_latest_log_chunk(self, session_id: str, /) -> LogChunk | None:
         chunks = self.list_log_chunks(session_id)
         return chunks[-1] if chunks else None
+
+    def list_recent_log_chunks(
+        self, session_id: str, /, *, limit: int = 20
+    ) -> tuple[LogChunk, ...]:
+        chunks = self.list_log_chunks(session_id)
+        return chunks[-limit:]
 
     def get_worktree(self, worktree_id: str, /) -> Worktree | None:
         return self.worktrees.get(worktree_id)

@@ -1,8 +1,8 @@
-/* ── Gruvbox Dark — copilot-commander ─────────────────────────────── */
+/* ── Modern Dark — copilot-commander ─────────────────────────────── */
 
 Screen {
-    background: #282828;
-    color: #ebdbb2;
+    background: #151921;
+    color: #e2e8f0;
 }
 
 /* ── shell chrome ────────────────────────────────────────────────── */
@@ -10,73 +10,73 @@ Screen {
 #shell-tab-bar {
     dock: top;
     height: 1;
-    background: #1d2021;
-    color: #ebdbb2;
+    background: #0d1017;
+    color: #e2e8f0;
 }
 
 #shell-frame {
     height: 1fr;
     layout: vertical;
-    background: #282828;
+    background: #151921;
     padding: 0 0;
 }
 
 #shell-footer {
     dock: bottom;
     height: 1;
-    background: #1d2021;
+    background: #0d1017;
 }
 
 /* ── shared frame: one rounded box per screen ────────────────────── */
 
 .frame {
-    border: round #504945;
-    border-title-color: #bdae93;
+    border: round #272c36;
+    border-title-color: #94a3b8;
     border-title-style: bold;
-    background: #282828;
+    background: #151921;
 }
 
 .frame:focus-within {
-    border: round #83a598;
+    border: round #3b82f6;
 }
 
 /* ── panel sections inside frames (borderless, thin separators) ─── */
 
 .section {
     border: none;
-    background: #282828;
+    background: #151921;
     padding: 0 1;
 }
 
 .section-top {
     border: none;
-    border-top: solid #3c3836;
-    background: #282828;
+    border-top: solid #1c2029;
+    background: #151921;
     padding: 0 1;
 }
 
 .divider-right {
     border: none;
-    border-right: solid #3c3836;
+    border-right: solid #1c2029;
     padding: 0 1;
 }
 
 /* legacy .panel for screens not yet fully migrated */
 .panel {
-    border: round #3c3836;
-    background: #282828;
+    border: round #272c36;
+    background: #151921;
     padding: 0 1;
-    border-title-color: #bdae93;
+    border-title-color: #94a3b8;
     border-title-style: bold;
 }
 
 .panel:focus-within {
-    border: round #83a598;
+    border: round #3b82f6;
 }
 
 .muted {
-    background: #32302f;
-    color: #d5c4a1;
+    background: #1c2029;
+    color: #94a3b8;
     height: 1;
     padding: 0 1;
 }
@@ -95,13 +95,13 @@ Screen {
 
 #dashboard-status-bar {
     height: 1;
-    background: #282828;
-    padding: 0 1;
+    background: #151921;
+    padding: 0 2;
 }
 
 #dashboard-filter-row {
     height: 1;
-    padding: 0 1;
+    padding: 0 2;
 }
 
 #dashboard-main {
@@ -191,7 +191,7 @@ Screen {
 
 Input {
     background: transparent;
-    color: #a89984;
+    color: #64748b;
     border: none;
     height: 1;
     padding: 0 0;
@@ -199,7 +199,7 @@ Input {
 
 Input:focus {
     border: none;
-    color: #ebdbb2;
+    color: #e2e8f0;
 }
 
 #dashboard-filter-input {
@@ -216,24 +216,24 @@ Input:focus {
 /* ── scrollbars ──────────────────────────────────────────────────── */
 
 Static {
-    scrollbar-background: #282828;
-    scrollbar-color: #3c3836;
-    scrollbar-color-hover: #504945;
+    scrollbar-background: #151921;
+    scrollbar-color: #1c2029;
+    scrollbar-color-hover: #272c36;
 }
 
 /* ── help ────────────────────────────────────────────────────────── */
 
 #help-root {
     height: 1fr;
-    border: round #504945;
-    border-title-color: #bdae93;
+    border: round #272c36;
+    border-title-color: #94a3b8;
     border-title-style: bold;
-    padding: 0 1;
-    background: #282828;
+    padding: 1 2;
+    background: #151921;
 }
 
 #help-root:focus-within {
-    border: round #83a598;
+    border: round #3b82f6;
 }
 
 /* ── list views (tight) ──────────────────────────────────────────── */
@@ -250,7 +250,7 @@ ListItem {
 }
 
 ListView > ListItem.--highlight {
-    background: #3c3836;
+    background: #1e293b;
 }
 
 /* ── sessions ────────────────────────────────────────────────────── */
