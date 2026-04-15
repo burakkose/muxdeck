@@ -120,6 +120,15 @@ class ReplayService:
             if entry.log_chunk is None:
                 continue
             parsed = parse_copilot_output(entry.log_chunk.content)
+            for activity in parsed.activity_markers:
+                markers.append(
+                    ReplayJumpMarker(
+                        index=index,
+                        timestamp=entry.timestamp,
+                        label=activity.activity,
+                        kind="activity",
+                    )
+                )
             for boundary in parsed.boundaries:
                 markers.append(
                     ReplayJumpMarker(

@@ -105,16 +105,29 @@ WORKTREE_HINTS = (
 REPLAY_BINDINGS: Final[list[BindingSpec]] = [
     Binding("j", "cursor_down", "Next entry", show=False),
     Binding("k", "cursor_up", "Prev entry", show=False),
+    Binding("slash", "focus_filter", "Filter", show=False),
     Binding("m", "focus_markers", "Markers", show=False),
     Binding("t", "focus_transcript", "Transcript", show=False),
+    Binding("v", "toggle_presentation", "Raw/parsed", show=False),
+    Binding("f", "toggle_follow_latest", "Follow latest", show=False),
+    Binding("n", "jump_next_marker", "Next marker", show=False),
+    Binding("N", "jump_previous_marker", "Prev marker", show=False),
+    Binding("a", "jump_next_activity", "Next activity", show=False),
+    Binding("x", "jump_next_problem", "Next problem", show=False),
     Binding("e", "cycle_export_format", "Export", show=False),
     Binding("g", "load_latest", "Latest session", show=False),
 ]
 
 REPLAY_HINTS = (
     KeyHint("j/k", "move"),
+    KeyHint("/", "filter"),
     KeyHint("m", "markers"),
     KeyHint("t", "transcript"),
+    KeyHint("v", "raw/parsed"),
+    KeyHint("f", "follow"),
+    KeyHint("n/N", "markers"),
+    KeyHint("a", "activity"),
+    KeyHint("x", "problem"),
     KeyHint("e", "export"),
     KeyHint("g", "latest"),
 )

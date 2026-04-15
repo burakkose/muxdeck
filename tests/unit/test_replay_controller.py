@@ -90,7 +90,7 @@ class ReplayControllerTests(unittest.TestCase):
         if self.runtime_dir.exists():
             shutil.rmtree(self.runtime_dir)
 
-    def test_load_state_jump_and_export(self) -> None:
+    def test_load_state_supports_parsed_filtering_and_export(self) -> None:
         bundle = self.sessions.create_session(
             "agent-123",
             occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
@@ -109,22 +109,79 @@ class ReplayControllerTests(unittest.TestCase):
         self.sessions.append_log_capture(
             bundle.session.id,
             source="stdout",
-            content_blocks=("Prompt: summarize\nwaiting for confirmation before applying patch",),
+            content_blocks=(
+                "Prompt: summarize\n"
+                "Running command: pytest\n"
+                "waiting for confirmation before applying patch\n"
+                "fatal: merge conflict",
+            ),
             captured_at=timestamp,
         )
 
-        state = self.controller.load_state(session_id=bundle.session.id, selected_index=1)
-        jumped = self.controller.jump_to_marker(state, 2)
-        export_intent = self.controller.build_export_intent(jumped, export_format="json")
-
-        self.assertEqual(state.transcript[1].label, "custom.note")
-        self.assertEqual(
-            [marker.label for marker in state.jump_markers[:3]],
-            ["session.created", "custom.note", "prompt_start"],
+        state = self.controller.load_state(
+            session_id=bundle.session.id,
+            selected_index=1,
+            presentation="parsed",
         )
-        self.assertTrue(jumped.transcript[2].is_selected)
-        self.assertEqual(export_intent.filename_hint, f"replay-{bundle.session.id}.json")
-        self.assertIn('"session_id"', export_intent.content)
+        filtered = self.controller.load_state(
+            session_id=bundle.session.id,
+            filter_text="merge",
+            presentation="parsed",
+            follow_latest=True,
+        )
+        export_intent = self.controller.build_export_intent(filtered, export_format="json")
+
+        self.assertEqual(state.transcript[2].label, "fatal: merge conflict")
+        self.assertEqual(state.transcript[2].marker_kind, "error")
+        self.assertIn("activity", [marker.kind for marker in state.jump_markers])
+        self.assertEqual(len(filtered.transcript), 1)
+        self.assertEqual(filtered.transcript[0].label, "fatal: merge conflict")
+        self.assertEqual(filtered.selected_index, filtered.transcript[0].ordinal)
+        self.assertIn('"presentation": "parsed"', export_intent.content)
+        self.assertIn('"filter_text": "merge"', export_intent.content)
+
+    def test_jump_actions_follow_activity_problem_and_previous_marker(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_events(
+            bundle.session.id,
+            (
+                Event(
+                    occurred_at=timestamp,
+                    kind="custom.note",
+                    payload_json='{"message":"before log"}',
+                ),
+            ),
+        )
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=(
+                "Running command: pytest\n"
+                "waiting for confirmation before applying patch\n"
+                "fatal: merge conflict",
+            ),
+            captured_at=timestamp,
+        )
+
+        state = self.controller.load_state(
+            session_id=bundle.session.id,
+            selected_index=1,
+            presentation="parsed",
+        )
+        next_activity = self.controller.jump_to_next_activity(state)
+        next_problem = self.controller.jump_to_next_problem(state)
+        previous_marker = self.controller.jump_to_previous_marker(state)
+
+        self.assertIsNotNone(next_activity)
+        self.assertEqual(next_activity.selected_index, 2)
+        self.assertIsNotNone(next_problem)
+        self.assertEqual(next_problem.selected_index, 2)
+        self.assertIsNotNone(previous_marker)
+        self.assertEqual(previous_marker.selected_index, 0)
 
 
 if __name__ == "__main__":

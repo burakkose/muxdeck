@@ -272,40 +272,83 @@ class FakeReplayController:
         *,
         session_id: str | None = None,
         selected_index: int | None = None,
+        filter_text: str = "",
+        presentation: str = "parsed",
+        follow_latest: bool = False,
         **_: object,
     ) -> ReplayStateView:
         timestamp = "2025-01-01T12:00:00+00:00"
+        target_index = 1 if follow_latest else selected_index
+        transcript = (
+            ReplayTranscriptEntryView(
+                ordinal=0,
+                kind="event",
+                timestamp=timestamp,
+                label="session.created",
+                severity="info",
+                marker_kind=None,
+                lines=("session start",),
+                is_selected=(target_index == 0),
+            ),
+            ReplayTranscriptEntryView(
+                ordinal=1,
+                kind="log",
+                timestamp=timestamp,
+                label="waiting for operator" if presentation == "parsed" else "stdout#1",
+                severity="warning" if presentation == "parsed" else None,
+                marker_kind="blocking" if presentation == "parsed" else None,
+                lines=(
+                    ("blocking: waiting_for_confirmation",)
+                    if presentation == "parsed"
+                    else ("tail line",)
+                ),
+                is_selected=(target_index == 1),
+            ),
+        )
+        if filter_text:
+            transcript = tuple(
+                entry
+                for entry in transcript
+                if filter_text.casefold() in (entry.label + " " + " ".join(entry.lines)).casefold()
+            )
+        resolved_index = target_index
+        if resolved_index not in {entry.ordinal for entry in transcript}:
+            resolved_index = transcript[-1].ordinal if transcript else None
+        transcript = tuple(
+            ReplayTranscriptEntryView(
+                ordinal=entry.ordinal,
+                kind=entry.kind,
+                timestamp=entry.timestamp,
+                label=entry.label,
+                severity=entry.severity,
+                marker_kind=entry.marker_kind,
+                lines=entry.lines,
+                is_selected=entry.ordinal == resolved_index,
+            )
+            for entry in transcript
+        )
         return ReplayStateView(
             session_id=session_id or "session-1",
             agent_id="agent-1",
             task_title="Replay UI",
-            selected_index=selected_index,
-            transcript=(
-                ReplayTranscriptEntryView(
-                    ordinal=0,
-                    kind="event",
-                    timestamp=timestamp,
-                    label="session.created",
-                    severity="info",
-                    lines=("session start",),
-                    is_selected=(selected_index == 0),
-                ),
-                ReplayTranscriptEntryView(
-                    ordinal=1,
-                    kind="log",
-                    timestamp=timestamp,
-                    label="stdout#1",
-                    severity=None,
-                    lines=("tail line",),
-                    is_selected=(selected_index == 1),
-                ),
-            ),
+            selected_index=resolved_index,
+            transcript=transcript,
             jump_markers=(
                 ReplayJumpMarkerView(
                     index=0, timestamp=timestamp, label="session.created", kind="event"
                 ),
-                ReplayJumpMarkerView(index=1, timestamp=timestamp, label="stdout", kind="log"),
+                ReplayJumpMarkerView(
+                    index=1,
+                    timestamp=timestamp,
+                    label="waiting for operator",
+                    kind="blocking",
+                ),
             ),
+            presentation=cast(Literal["parsed", "raw"], presentation),
+            filter_text=filter_text,
+            follow_latest=follow_latest,
+            total_entries=2,
+            total_markers=2,
         )
 
     def jump_to_marker(
@@ -326,13 +369,32 @@ class FakeReplayController:
                     timestamp=entry.timestamp,
                     label=entry.label,
                     severity=entry.severity,
+                    marker_kind=entry.marker_kind,
                     lines=entry.lines,
                     is_selected=entry.ordinal == target_index,
                 )
                 for entry in state.transcript
             ),
             jump_markers=state.jump_markers,
+            presentation=state.presentation,
+            filter_text=state.filter_text,
+            follow_latest=state.follow_latest,
+            total_entries=state.total_entries,
+            total_markers=state.total_markers,
         )
+
+    def jump_to_next_marker(self, state: ReplayStateView) -> ReplayStateView | None:
+        return self.jump_to_marker(state, 1)
+
+    def jump_to_previous_marker(self, state: ReplayStateView) -> ReplayStateView | None:
+        return self.jump_to_marker(state, 0)
+
+    def jump_to_next_activity(self, state: ReplayStateView) -> ReplayStateView | None:
+        del state
+        return None
+
+    def jump_to_next_problem(self, state: ReplayStateView) -> ReplayStateView | None:
+        return self.jump_to_marker(state, 1)
 
     def build_export_intent(
         self,
@@ -443,6 +505,23 @@ async def test_textual_shell_navigation_and_updates() -> None:
         app.action_show_replay()
         await pilot.pause()
         assert "session-1" in rendered_text(app.screen.query_one("#replay-summary"))
+        assert "parsed" in rendered_text(app.screen.query_one("#replay-summary"))
+
+        await pilot.press("v")
+        await pilot.pause()
+        assert "stdout#1" in rendered_text(app.screen.query_one("#replay-detail"))
+
+        await pilot.press("v")
+        await pilot.pause()
+        await pilot.press("slash")
+        await pilot.press("o", "p", "e", "r", "a", "t", "o", "r")
+        await pilot.pause()
+        assert "waiting for operator" in rendered_text(app.screen.query_one("#replay-detail"))
+
+        cast(Any, app.screen).action_focus_transcript()
+        cast(Any, app.screen).action_jump_next_problem()
+        await pilot.pause()
+        assert "jumped to problem" in rendered_text(app.screen.query_one("#shell-footer")).lower()
 
         await pilot.press("e")
         await pilot.pause()
