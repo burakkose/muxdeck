@@ -110,6 +110,7 @@ class DashboardAgentListItemView:
     attention_reason: str | None
     token_total: int | None
     estimated_cost_usd: str | None
+    current_activity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +219,9 @@ class DashboardController:
             attention_reason=agent.attention_reason,
             token_total=agent.token_total,
             estimated_cost_usd=estimated_cost,
+            current_activity=_activity_from_task_title(
+                agent.task_title,
+            ),
         )
 
     def _filter_agents(
@@ -378,12 +382,30 @@ class DashboardController:
         )
         attention_agents = sum(1 for agent in agents if agent.needs_attention)
         sessions_total = sum(1 for agent in agents if agent.latest_session_id is not None)
-        return (
+        total_tokens = sum(a.token_total or 0 for a in agents)
+        metrics: list[DashboardMetricView] = [
             DashboardMetricView(key="agents", label="Agents", value=total_agents),
             DashboardMetricView(key="active", label="Active", value=active_agents),
-            DashboardMetricView(key="attention", label="Attention", value=attention_agents),
-            DashboardMetricView(key="sessions", label="Sessions", value=sessions_total),
-        )
+            DashboardMetricView(
+                key="attention",
+                label="Attention",
+                value=attention_agents,
+            ),
+            DashboardMetricView(
+                key="sessions",
+                label="Sessions",
+                value=sessions_total,
+            ),
+        ]
+        if total_tokens > 0:
+            metrics.append(
+                DashboardMetricView(
+                    key="tokens",
+                    label="Tokens",
+                    value=total_tokens,
+                ),
+            )
+        return tuple(metrics)
 
     def _build_health_summary(
         self,
@@ -439,6 +461,25 @@ class DashboardController:
             )
             if part
         )
+
+
+_ACTIVITY_PREFIXES = (
+    "reading",
+    "writing",
+    "running",
+    "thinking",
+    "searching",
+    "using",
+)
+
+
+def _activity_from_task_title(title: str | None) -> str | None:
+    if title is None:
+        return None
+    lower = title.lower().strip()
+    if any(lower.startswith(p) for p in _ACTIVITY_PREFIXES):
+        return title
+    return None
 
 
 def _path_name(value: str | None) -> str | None:

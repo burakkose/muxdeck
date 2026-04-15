@@ -222,7 +222,8 @@ class AgentListPanel(Static, can_focus=True):
             is_selected = index == self._selected_index
             row_style = _row_style(agent, selected=is_selected)
             display_name = agent.repo_name or agent.worktree_name or agent.name
-            info = agent.attention_reason or agent.task_title or ""
+            activity = getattr(agent, "current_activity", None)
+            info = agent.attention_reason or activity or agent.task_title or ""
             table.add_row(
                 Text(
                     _marker_text(agent, selected=is_selected),
@@ -245,9 +246,11 @@ class AgentDetailPanel(Static):
             self.update("No agent selected.")
             return
         item = agent.item
+        activity = getattr(item, "current_activity", None) or "-"
         lines = (
             f"NAME      {item.name}",
             f"STATUS    {item.status.value}",
+            f"ACTIVITY  {activity}",
             f"REPO      {item.repo_name or '-'}",
             f"BRANCH    {item.branch or '-'}",
             f"WORKTREE  {item.worktree_path or '-'}",
@@ -256,7 +259,6 @@ class AgentDetailPanel(Static):
             f"SESSION   {agent.open_session_id or item.latest_session_id or '-'}",
             f"SESSIONS  {agent.session_count}",
             f"LAST EVT  {agent.latest_event_kind or '-'}",
-            f"SEVERITY  {agent.latest_event_severity or '-'}",
             f"LAST SEEN {format_timestamp(item.last_seen_at)}",
             f"STARTED   {format_timestamp(item.started_at)}",
             f"IDLE      {_format_idle(item.idle_seconds)}",

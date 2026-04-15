@@ -72,6 +72,7 @@ class MonitoringUsage(Protocol):
 class MonitoringParseResult(Protocol):
     boundaries: Sequence[object]
     ui_markers: Sequence[object]
+    activity_markers: Sequence[object]
 
 
 @runtime_checkable
@@ -248,6 +249,14 @@ class MonitoringService:
         copilot_session_id = session_evidence.copilot_session_id if session_evidence else None
         if copilot_session_id is None and existing_agent is not None:
             copilot_session_id = existing_agent.copilot_session_id
+        latest_activity = (
+            _extract_latest_activity(session_evidence.parse_result)
+            if session_evidence is not None
+            else None
+        )
+        task_title = (
+            existing_agent.task_title if existing_agent is not None else None
+        ) or latest_activity
         classification = cast(PaneClassification, discovery.classification)
         return AgentFactInput(
             classification=classification,
@@ -268,7 +277,7 @@ class MonitoringService:
                 cwd=cwd,
                 existing_name=existing_agent.name if existing_agent is not None else None,
             ),
-            task_title=existing_agent.task_title if existing_agent is not None else None,
+            task_title=task_title,
             task_summary=existing_agent.task_summary if existing_agent is not None else None,
             copilot_session_id=copilot_session_id,
             pid=snapshot.pane_pid,
@@ -392,8 +401,20 @@ def _has_activity_signal(session_evidence: MonitoringEvidence | None, /) -> bool
             bool(session_evidence.error_messages),
             bool(session_evidence.parse_result.boundaries),
             bool(session_evidence.parse_result.ui_markers),
+            bool(session_evidence.parse_result.activity_markers),
         )
     )
+
+
+def _extract_latest_activity(
+    parse_result: MonitoringParseResult,
+    /,
+) -> str | None:
+    """Get the most recent activity description from parsed output."""
+    if not parse_result.activity_markers:
+        return None
+    marker = parse_result.activity_markers[-1]
+    return getattr(marker, "activity", None)
 
 
 def _derive_agent_name(

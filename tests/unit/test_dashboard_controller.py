@@ -165,7 +165,7 @@ class DashboardControllerTests(unittest.TestCase):
 
         self.assertEqual([item.agent_id for item in state.agents], ["agent-1"])
         self.assertEqual(state.health.tone, "warning")
-        self.assertEqual([metric.value for metric in state.metrics], [2, 1, 1, 1])
+        self.assertEqual([metric.value for metric in state.metrics], [2, 1, 1, 1, 30])
         self.assertEqual(len(state.alerts), 1)
         self.assertEqual(state.selected_agent_id, "agent-1")
         assert state.selected_agent is not None

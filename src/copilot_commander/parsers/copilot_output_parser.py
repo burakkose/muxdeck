@@ -104,6 +104,55 @@ _COPILOT_UI_MARKER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("copilot_model", re.compile(r"\bGPT-\d", re.IGNORECASE)),
     ("copilot_model", re.compile(r"\bGemini\b", re.IGNORECASE)),
 )
+_ACTIVITY_PATTERNS: tuple[tuple[str, str, str], ...] = (
+    # (regex, activity_template, category)
+    # {0} is replaced with capture group 1
+    (
+        r"(?i)(?:Read file|Read(?:ing)?)[: ]+"
+        r"[`'\"]?([^\s`'\"]{3,120})",
+        "reading {0}",
+        "file_read",
+    ),
+    (
+        r"(?i)Read\(file_path=['\"]([^'\"]+)",
+        "reading {0}",
+        "file_read",
+    ),
+    (
+        r"(?i)(?:Writ(?:e|ing|ten)|Edit(?:ing)?|Creat(?:e|ing))"
+        r" (?:file[: ]+|to )?[`'\"]?([^\s`'\"]{3,120})",
+        "writing {0}",
+        "file_write",
+    ),
+    (
+        r"(?i)(?:Run(?:ning)?|Exec(?:uting)?)"
+        r"(?:\s+command)?[: ]+[`'\"]?(.{3,80}?)[`'\"]?\s*$",
+        "running {0}",
+        "command",
+    ),
+    (
+        r"(?i)Bash\(.*?command=['\"](.{3,80}?)['\"]",
+        "running {0}",
+        "command",
+    ),
+    (
+        r"(?i)^\s*(?:Think(?:ing)?|Plan(?:ning)?|Analyz(?:e|ing))"
+        r"\.{0,3}\s*$",
+        "thinking",
+        "thinking",
+    ),
+    (
+        r"(?i)(?:Search(?:ing)?|Grep(?:ping)?)"
+        r"\(?.*?['\"]?(.{3,60}?)['\"]?\)?$",
+        "searching {0}",
+        "search",
+    ),
+    (
+        r"(?i)(?:Tool|Using(?: tool)?):\s*(\w[\w_]{2,30})",
+        "using tool {0}",
+        "tool_use",
+    ),
+)
 _INPUT_TOKENS_PATTERNS = (
     re.compile(r"\binput(?:_tokens?| tokens?)\s*[:=]\s*(?P<value>\d[\d,]*)", re.IGNORECASE),
     re.compile(r"\b(?P<value>\d[\d,]*)\s+input tokens?\b", re.IGNORECASE),
@@ -246,6 +295,15 @@ class CopilotUIMarker:
 
 
 @dataclass(frozen=True, slots=True)
+class CopilotActivityMarker:
+    """Detected agent activity from copilot output."""
+
+    activity: str
+    category: str
+    span: CopilotEvidenceSpan
+
+
+@dataclass(frozen=True, slots=True)
 class CopilotOutputParseResult:
     session_ids: tuple[CopilotSessionIdCandidate, ...]
     boundaries: tuple[CopilotTranscriptBoundary, ...]
@@ -253,7 +311,8 @@ class CopilotOutputParseResult:
     blocking_issues: tuple[CopilotBlockingIssue, ...]
     errors: tuple[CopilotErrorEvidence, ...]
     ui_markers: tuple[CopilotUIMarker, ...]
-    evidence_spans: tuple[CopilotEvidenceSpan, ...]
+    activity_markers: tuple[CopilotActivityMarker, ...] = ()
+    evidence_spans: tuple[CopilotEvidenceSpan, ...] = ()
 
 
 def parse_copilot_output(output: str) -> CopilotOutputParseResult:
@@ -410,6 +469,29 @@ def parse_copilot_output(output: str) -> CopilotOutputParseResult:
             flush_usage()
 
     flush_usage()
+
+    activity_markers: list[CopilotActivityMarker] = []
+    for pattern_str, template, category in _ACTIVITY_PATTERNS:
+        for match in re.finditer(pattern_str, output, re.MULTILINE):
+            group1 = match.group(1) if match.lastindex and match.lastindex >= 1 else ""
+            activity = template.format(group1) if "{0}" in template else template
+            line_no = output[: match.start()].count("\n") + 1
+            span = CopilotEvidenceSpan(
+                category=f"activity:{category}",
+                start_line=line_no,
+                end_line=line_no,
+                text=match.group(0)[:120],
+                confidence=Decimal("0.8500"),
+            )
+            activity_markers.append(
+                CopilotActivityMarker(
+                    activity=activity,
+                    category=category,
+                    span=span,
+                )
+            )
+            evidence_spans.append(span)
+
     return CopilotOutputParseResult(
         session_ids=tuple(session_ids),
         boundaries=tuple(boundaries),
@@ -417,5 +499,6 @@ def parse_copilot_output(output: str) -> CopilotOutputParseResult:
         blocking_issues=tuple(blocking_issues),
         errors=tuple(errors),
         ui_markers=tuple(ui_markers),
+        activity_markers=tuple(activity_markers),
         evidence_spans=tuple(evidence_spans),
     )
