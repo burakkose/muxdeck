@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from textual.app import App
+from textual.worker import Worker, WorkerState
 
 from copilot_commander.adapters import (
     CopilotAdapter,
@@ -38,6 +40,10 @@ from copilot_commander.services import (
     WorktreeService,
 )
 
+_log = logging.getLogger(__name__)
+
+_SYNC_GROUP = "sync"
+
 
 @dataclass(slots=True)
 class CommanderRuntime:
@@ -48,6 +54,7 @@ class CommanderRuntime:
     replay: ReplayController
     agents: AgentController
     synchronizer: RuntimeSynchronizer | None = None
+    sync_store: SQLiteStore | None = None
 
 
 class CommanderApp(App[None]):
@@ -63,6 +70,8 @@ class CommanderApp(App[None]):
         self.selected_worktree_id: str | None = None
         self.selected_session_id: str | None = None
         self.last_sync_report: RuntimeSyncReport | None = None
+        self._sync_in_progress: bool = False
+        self._refresh_pending: bool = False
 
     def on_mount(self) -> None:
         self.add_mode("dashboard", lambda: DashboardScreen(self.runtime))
@@ -116,10 +125,49 @@ class CommanderApp(App[None]):
         sessions = self.runtime.store.list_sessions()
         return sessions[0].id if sessions else None
 
+    # ── sync lifecycle ───────────────────────────────────────────────
+
     def _refresh_current_screen(self) -> None:
-        synchronizer = getattr(self.runtime, "synchronizer", None)
-        if synchronizer is not None:
-            self.last_sync_report = synchronizer.refresh()
+        synchronizer = self.runtime.synchronizer
+        if synchronizer is None:
+            self._refresh_screen_widgets()
+            return
+        if self._sync_in_progress:
+            self._refresh_pending = True
+            return
+        self._sync_in_progress = True
+        self.run_worker(
+            self._run_sync,
+            thread=True,
+            exclusive=True,
+            group=_SYNC_GROUP,
+        )
+
+    def _run_sync(self) -> RuntimeSyncReport | None:
+        synchronizer = self.runtime.synchronizer
+        if synchronizer is None:
+            return None
+        try:
+            return synchronizer.refresh()
+        except Exception:
+            _log.exception("sync worker error")
+            return None
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        if event.worker.group != _SYNC_GROUP:
+            return
+        if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
+            self._sync_in_progress = False
+            if event.state == WorkerState.SUCCESS and event.worker.result is not None:
+                self.last_sync_report = event.worker.result
+            elif event.state == WorkerState.ERROR:
+                _log.warning("sync worker failed: %s", event.worker.error)
+            self._refresh_screen_widgets()
+            if self._refresh_pending:
+                self._refresh_pending = False
+                self._refresh_current_screen()
+
+    def _refresh_screen_widgets(self) -> None:
         screen = self.screen
         refresher = getattr(screen, "refresh_data", None)
         if callable(refresher):
@@ -131,15 +179,24 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     resolved_config.paths.state_dir.mkdir(parents=True, exist_ok=True)
     resolved_config.paths.database_path.parent.mkdir(parents=True, exist_ok=True)
     store = SQLiteStore.from_config(resolved_config)
+    # Dedicated store for the sync worker thread to avoid cross-thread
+    # sqlite3 access.  Both connections target the same WAL-mode database.
+    sync_store = SQLiteStore.from_config(resolved_config)
     process_adapter = ProcessAdapter()
     git_adapter = GitAdapter(process_adapter)
     tmux_adapter = TmuxAdapter(process_adapter)
     copilot_adapter = CopilotAdapter(process_adapter)
     sessions = SessionService(store=store)
     replay_service = ReplayService(store=store, sessions=sessions)
-    agent_service = AgentService(store, store, store, store, store)
+    sync_agent_service = AgentService(
+        sync_store,
+        sync_store,
+        sync_store,
+        sync_store,
+        sync_store,
+    )
     monitoring = MonitoringService(
-        agent_service,
+        sync_agent_service,
         thresholds=MonitoringThresholds(
             waiting_input_after_seconds=max(15, resolved_config.general.discovery_interval_sec * 2),
             idle_after_seconds=resolved_config.general.idle_threshold_sec,
@@ -152,7 +209,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     discovery = DiscoveryService(
         tmux_adapter,
         copilot_adapter,
-        store,
+        sync_store,
         capture_start_line=-max(resolved_config.general.log_preview_lines, 200),
     )
     worktree_service = WorktreeService(
@@ -170,6 +227,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         replay=ReplayController(replay_service),
         agents=AgentController(store, sessions),
         synchronizer=RuntimeSynchronizer(discovery, monitoring, git_adapter),
+        sync_store=sync_store,
     )
 
 
@@ -180,6 +238,8 @@ def run_app(config_path: str | Path | None = None) -> int:
         CommanderApp(runtime).run()
     finally:
         runtime.store.close()
+        if runtime.sync_store is not None:
+            runtime.sync_store.close()
     return 0
 
 

@@ -1,28 +1,30 @@
+/* ── Gruvbox Dark — copilot-commander ─────────────────────────────── */
+
 Screen {
-    background: rgb(16, 20, 27);
-    color: rgb(219, 226, 239);
+    background: #282828;
+    color: #ebdbb2;
 }
 
 Header {
     dock: top;
-    background: rgb(24, 30, 38);
-    color: rgb(236, 239, 244);
+    background: #1d2021;
+    color: #ebdbb2;
 }
 
 #shell-frame {
     height: 1fr;
     layout: vertical;
-    background: rgb(16, 20, 27);
+    background: #282828;
 }
 
 #screen-title {
-    background: rgb(28, 35, 44);
-    color: rgb(167, 206, 255);
+    background: #3c3836;
+    color: #83a598;
     text-style: bold;
     padding: 0 2;
     height: 1;
     margin: 0 1 1 1;
-    border-left: wide rgb(126, 174, 255);
+    border-left: wide #83a598;
 }
 
 #screen-body {
@@ -34,7 +36,7 @@ Header {
 #shell-footer {
     dock: bottom;
     height: 1;
-    background: rgb(20, 26, 34);
+    background: #1d2021;
 }
 
 .band {
@@ -42,39 +44,39 @@ Header {
 }
 
 .panel {
-    border: round rgb(69, 90, 116);
-    background: rgb(24, 30, 38);
+    border: round #665c54;
+    background: #3c3836;
     padding: 0 1;
 }
 
 .muted-panel {
-    border: round rgb(55, 69, 88);
-    background: rgb(21, 27, 35);
+    border: round #504945;
+    background: #32302f;
     padding: 0 1;
     height: auto;
 }
 
 .panel-title {
-    color: rgb(176, 190, 215);
+    color: #bdae93;
     text-style: bold;
     margin-bottom: 1;
 }
 
 .tone-healthy {
-    background: rgb(27, 45, 39);
-    color: rgb(212, 245, 222);
+    background: #2b3328;
+    color: #b8bb26;
     padding: 0 1;
 }
 
 .tone-warning {
-    background: rgb(56, 43, 27);
-    color: rgb(255, 235, 196);
+    background: #3c3020;
+    color: #fabd2f;
     padding: 0 1;
 }
 
 .tone-critical {
-    background: rgb(59, 31, 34);
-    color: rgb(255, 220, 220);
+    background: #3c2020;
+    color: #fb4934;
     padding: 0 1;
 }
 
@@ -97,7 +99,7 @@ Header {
 #worktrees-summary,
 #replay-summary,
 #help-content {
-    color: rgb(205, 216, 232);
+    color: #d5c4a1;
 }
 
 #dashboard-main,
@@ -144,23 +146,23 @@ Header {
 
 Input {
     margin-top: 1;
-    background: rgb(18, 24, 31);
-    color: rgb(236, 239, 244);
-    border: round rgb(69, 90, 116);
+    background: #1d2021;
+    color: #ebdbb2;
+    border: round #665c54;
 }
 
 Input:focus {
-    border: round rgb(126, 174, 255);
+    border: round #83a598;
 }
 
 Static {
-    scrollbar-background: rgb(24, 30, 38);
-    scrollbar-color: rgb(92, 120, 154);
+    scrollbar-background: #3c3836;
+    scrollbar-color: #665c54;
 }
 
 #help-root {
     height: 1fr;
-    border: round rgb(69, 90, 116);
+    border: round #665c54;
     padding: 1 2;
-    background: rgb(24, 30, 38);
+    background: #3c3836;
 }

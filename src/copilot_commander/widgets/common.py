@@ -8,6 +8,14 @@ from textual.reactive import reactive
 from textual.widgets import Static
 
 from copilot_commander.bindings import KeyHint
+from copilot_commander.theme import (
+    BADGE_BG,
+    BADGE_FG,
+    BG1,
+    FG,
+    FG1,
+    PANEL_BG,
+)
 
 
 def format_timestamp(value: datetime | None) -> str:
@@ -51,15 +59,15 @@ class KeyHintFooter(Static):
 
     def render(self) -> Text:
         footer = Text()
-        footer.append(f" {self.title.upper()} ", style="bold rgb(19,24,32) on rgb(167,206,255)")
-        footer.append(f" {self.status} ", style="bold rgb(219,226,239) on rgb(28,35,44)")
+        footer.append(f" {self.title.upper()} ", style=f"bold {BADGE_FG} on {BADGE_BG}")
+        footer.append(f" {self.status} ", style=f"bold {FG} on {BG1}")
         for hint in self.hints:
             footer.append(" ")
             footer.append(
                 f" {hint.key} ",
-                style="bold rgb(19,24,32) on rgb(143,188,255)",
+                style=f"bold {BADGE_FG} on {PANEL_BG}",
             )
-            footer.append(f" {hint.label}", style="rgb(205,216,232)")
+            footer.append(f" {hint.label}", style=FG1)
         return footer
 
 
