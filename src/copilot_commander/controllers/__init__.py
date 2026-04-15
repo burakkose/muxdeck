@@ -28,6 +28,7 @@ from copilot_commander.controllers.replay_controller import (
     ReplayController,
     ReplayExportIntent,
     ReplayJumpMarkerView,
+    ReplayPresentation,
     ReplayStateView,
     ReplayTranscriptEntryView,
 )
@@ -70,6 +71,7 @@ __all__ = [
     "ReplayController",
     "ReplayExportIntent",
     "ReplayJumpMarkerView",
+    "ReplayPresentation",
     "ReplayStateView",
     "ReplayTranscriptEntryView",
     "SessionDetailView",

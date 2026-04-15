@@ -108,6 +108,7 @@ class ReplayServiceTests(unittest.TestCase):
             source="stdout",
             content_blocks=(
                 "Prompt: summarize\n"
+                "Running command: pytest\n"
                 "waiting for confirmation before applying patch\n"
                 "fatal: merge conflict",
             ),
@@ -124,6 +125,7 @@ class ReplayServiceTests(unittest.TestCase):
             [
                 "session.created",
                 "custom.note",
+                "running pytest",
                 "prompt_start",
                 "waiting_for_confirmation",
                 "merge_conflict",

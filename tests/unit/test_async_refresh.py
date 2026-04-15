@@ -147,6 +147,11 @@ class FakeReplayController:
             selected_index=0,
             transcript=(),
             jump_markers=(),
+            presentation="parsed",
+            filter_text="",
+            follow_latest=False,
+            total_entries=0,
+            total_markers=0,
         )
 
 
