@@ -25,6 +25,7 @@ class ReplayMarkerListPanel(Vertical):
     def __init__(self, *, widget_id: str | None = None, classes: str | None = None) -> None:
         super().__init__(id=widget_id, classes=classes)
         self._marker_ordinals: list[int] = []
+        self._rebuilding: bool = False
 
     def on_mount(self) -> None:
         pass  # borderless
@@ -81,6 +82,7 @@ class ReplayTranscriptPanel(Vertical):
     def __init__(self, *, widget_id: str | None = None, classes: str | None = None) -> None:
         super().__init__(id=widget_id, classes=classes)
         self._ordinals: list[int] = []
+        self._rebuilding: bool = False
 
     def on_mount(self) -> None:
         pass  # borderless
@@ -89,27 +91,31 @@ class ReplayTranscriptPanel(Vertical):
         yield ListView(id="replay-transcript-list")
 
     def set_transcript(self, transcript: Sequence[ReplayTranscriptEntryView]) -> None:
-        list_view = self.query_one(ListView)
-        list_view.clear()
-        self._ordinals = []
-        selected_index = 0
-        for index, entry in enumerate(transcript):
-            line = Text()
-            if entry.is_selected:
-                line.append("▸ ", style=f"bold {BLUE}")
-            else:
-                line.append("  ")
-            line.append(f"{entry.timestamp[11:19]} ", style=FG4)
-            line.append(f"{entry.kind:<8.8} ", style=f"bold {YELLOW}")
-            line.append(f"{entry.label:<16.16} ", style=FG1)
-            preview = entry.lines[0] if entry.lines else ""
-            line.append(preview, style=FG4)
-            list_view.append(ListItem(Static(line)))
-            self._ordinals.append(entry.ordinal)
-            if entry.is_selected:
-                selected_index = index
-        if self._ordinals:
-            list_view.index = selected_index
+        self._rebuilding = True
+        try:
+            list_view = self.query_one(ListView)
+            list_view.clear()
+            self._ordinals = []
+            selected_index = 0
+            for index, entry in enumerate(transcript):
+                line = Text()
+                if entry.is_selected:
+                    line.append("▸ ", style=f"bold {BLUE}")
+                else:
+                    line.append("  ")
+                line.append(f"{entry.timestamp[11:19]} ", style=FG4)
+                line.append(f"{entry.kind:<8.8} ", style=f"bold {YELLOW}")
+                line.append(f"{entry.label:<16.16} ", style=FG1)
+                preview = entry.lines[0] if entry.lines else ""
+                line.append(preview, style=FG4)
+                list_view.append(ListItem(Static(line)))
+                self._ordinals.append(entry.ordinal)
+                if entry.is_selected:
+                    selected_index = index
+            if self._ordinals:
+                list_view.index = selected_index
+        finally:
+            self._rebuilding = False
 
     def move_cursor(self, delta: int) -> None:
         if not self._ordinals:
@@ -125,6 +131,8 @@ class ReplayTranscriptPanel(Vertical):
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         del event
+        if self._rebuilding:
+            return
         self._post_selection(self.query_one(ListView).index)
 
     def _post_selection(self, index: int | None) -> None:
