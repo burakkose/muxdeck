@@ -18,7 +18,7 @@ Screen {
     height: 1fr;
     layout: vertical;
     background: #151921;
-    padding: 0 0;
+    padding: 0 1;
 }
 
 #shell-footer {
@@ -27,17 +27,11 @@ Screen {
     background: #0d1017;
 }
 
-/* ── shared frame: one rounded box per screen ────────────────────── */
+/* ── shared frame: borderless content area ────────────────────────── */
 
 .frame {
-    border: round #272c36;
-    border-title-color: #94a3b8;
-    border-title-style: bold;
+    border: none;
     background: #151921;
-}
-
-.frame:focus-within {
-    border: round #3b82f6;
 }
 
 /* ── panel sections inside frames (borderless, thin separators) ─── */
@@ -63,15 +57,9 @@ Screen {
 
 /* legacy .panel for screens not yet fully migrated */
 .panel {
-    border: round #272c36;
+    border: none;
     background: #151921;
     padding: 0 1;
-    border-title-color: #94a3b8;
-    border-title-style: bold;
-}
-
-.panel:focus-within {
-    border: round #3b82f6;
 }
 
 .muted {
@@ -213,27 +201,37 @@ Input:focus {
     height: 1;
 }
 
-/* ── scrollbars ──────────────────────────────────────────────────── */
+/* ── scrollbars (near-invisible) ──────────────────────────────────── */
 
 Static {
     scrollbar-background: #151921;
     scrollbar-color: #1c2029;
     scrollbar-color-hover: #272c36;
+    scrollbar-size: 1 1;
+}
+
+ListView {
+    scrollbar-background: #151921;
+    scrollbar-color: #1c2029;
+    scrollbar-color-hover: #272c36;
+    scrollbar-size: 1 1;
 }
 
 /* ── help ────────────────────────────────────────────────────────── */
 
 #help-root {
     height: 1fr;
-    border: round #272c36;
-    border-title-color: #94a3b8;
-    border-title-style: bold;
+    border: none;
     padding: 1 2;
     background: #151921;
+    scrollbar-background: #151921;
+    scrollbar-color: #1c2029;
+    scrollbar-color-hover: #272c36;
+    scrollbar-size: 1 1;
 }
 
 #help-root:focus-within {
-    border: round #3b82f6;
+    border: none;
 }
 
 /* ── list views (tight) ──────────────────────────────────────────── */
