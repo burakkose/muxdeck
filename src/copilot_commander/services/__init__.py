@@ -33,6 +33,11 @@ from copilot_commander.services.replay_service import (
     ReplayService,
     SessionReplay,
 )
+from copilot_commander.services.runtime_service import (
+    RuntimeSynchronizer,
+    RuntimeSyncReport,
+    RuntimeSyncWarning,
+)
 from copilot_commander.services.session_service import (
     SessionBundle,
     SessionContextPatch,
@@ -71,6 +76,9 @@ __all__ = [
     "ReplayEntry",
     "ReplayJumpMarker",
     "ReplayService",
+    "RuntimeSyncReport",
+    "RuntimeSyncWarning",
+    "RuntimeSynchronizer",
     "SessionBundle",
     "SessionContextPatch",
     "SessionContextView",

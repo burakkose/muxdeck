@@ -5,7 +5,13 @@ from pathlib import Path
 
 from textual.app import App
 
-from copilot_commander.adapters import GitAdapter, ProcessAdapter, SQLiteStore
+from copilot_commander.adapters import (
+    CopilotAdapter,
+    GitAdapter,
+    ProcessAdapter,
+    SQLiteStore,
+    TmuxAdapter,
+)
 from copilot_commander.bindings import GLOBAL_BINDINGS
 from copilot_commander.config import AppConfig, load_config
 from copilot_commander.controllers import (
@@ -20,7 +26,17 @@ from copilot_commander.screens import (
     ReplayScreen,
     WorktreesScreen,
 )
-from copilot_commander.services import ReplayService, SessionService, WorktreeService
+from copilot_commander.services import (
+    AgentService,
+    DiscoveryService,
+    MonitoringService,
+    MonitoringThresholds,
+    ReplayService,
+    RuntimeSynchronizer,
+    RuntimeSyncReport,
+    SessionService,
+    WorktreeService,
+)
 
 
 @dataclass(slots=True)
@@ -31,6 +47,7 @@ class CommanderRuntime:
     worktrees: WorktreeController
     replay: ReplayController
     agents: AgentController
+    synchronizer: RuntimeSynchronizer | None = None
 
 
 class CommanderApp(App[None]):
@@ -45,6 +62,7 @@ class CommanderApp(App[None]):
         self.selected_agent_id: str | None = None
         self.selected_worktree_id: str | None = None
         self.selected_session_id: str | None = None
+        self.last_sync_report: RuntimeSyncReport | None = None
 
     def on_mount(self) -> None:
         self.add_mode("dashboard", lambda: DashboardScreen(self.runtime))
@@ -53,6 +71,7 @@ class CommanderApp(App[None]):
         self.add_mode("help", lambda: HelpScreen(self.runtime))
         self.switch_mode("dashboard")
         interval_sec = max(2, self.runtime.config.general.discovery_interval_sec)
+        self.call_after_refresh(self._refresh_current_screen)
         self.set_interval(interval_sec, self._refresh_current_screen)
 
     def action_show_dashboard(self) -> None:
@@ -98,6 +117,9 @@ class CommanderApp(App[None]):
         return sessions[0].id if sessions else None
 
     def _refresh_current_screen(self) -> None:
+        synchronizer = getattr(self.runtime, "synchronizer", None)
+        if synchronizer is not None:
+            self.last_sync_report = synchronizer.refresh()
         screen = self.screen
         refresher = getattr(screen, "refresh_data", None)
         if callable(refresher):
@@ -109,11 +131,33 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     resolved_config.paths.state_dir.mkdir(parents=True, exist_ok=True)
     resolved_config.paths.database_path.parent.mkdir(parents=True, exist_ok=True)
     store = SQLiteStore.from_config(resolved_config)
+    process_adapter = ProcessAdapter()
+    git_adapter = GitAdapter(process_adapter)
+    tmux_adapter = TmuxAdapter(process_adapter)
+    copilot_adapter = CopilotAdapter(process_adapter)
     sessions = SessionService(store=store)
     replay_service = ReplayService(store=store, sessions=sessions)
+    agent_service = AgentService(store, store, store, store, store)
+    monitoring = MonitoringService(
+        agent_service,
+        thresholds=MonitoringThresholds(
+            waiting_input_after_seconds=max(15, resolved_config.general.discovery_interval_sec * 2),
+            idle_after_seconds=resolved_config.general.idle_threshold_sec,
+            attention_idle_after_seconds=max(
+                resolved_config.general.idle_threshold_sec * 3,
+                resolved_config.general.idle_threshold_sec + 60,
+            ),
+        ),
+    )
+    discovery = DiscoveryService(
+        tmux_adapter,
+        copilot_adapter,
+        store,
+        capture_start_line=-max(resolved_config.general.log_preview_lines, 200),
+    )
     worktree_service = WorktreeService(
         config=resolved_config,
-        git=GitAdapter(ProcessAdapter()),
+        git=git_adapter,
         worktrees=store,
         agents=store,
         session_contexts=store,
@@ -125,6 +169,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         worktrees=WorktreeController(worktree_service, store),
         replay=ReplayController(replay_service),
         agents=AgentController(store, sessions),
+        synchronizer=RuntimeSynchronizer(discovery, monitoring, git_adapter),
     )
 
 

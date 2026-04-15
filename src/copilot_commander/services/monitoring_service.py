@@ -54,6 +54,8 @@ class MonitoringSnapshot(Protocol):
     pane_current_path: str | None
     pane_pid: int | None
     pane_dead: bool | None
+    repo_root: str | None
+    branch: str | None
 
 
 @runtime_checkable
@@ -235,6 +237,8 @@ class MonitoringService:
         if latest_usage is not None and latest_usage.currency in {None, "USD"}:
             estimated_cost = latest_usage.cost
         current_path = snapshot.pane_current_path
+        repo_root = getattr(snapshot, "repo_root", None)
+        branch = getattr(snapshot, "branch", None)
         cwd = current_path or (existing_agent.cwd if existing_agent is not None else "/")
         worktree_path = current_path or (
             existing_agent.worktree_path if existing_agent is not None else None
@@ -252,9 +256,10 @@ class MonitoringService:
             tmux_pane_id=snapshot.pane_id,
             pane_tty=snapshot.pane_tty,
             cwd=cwd,
-            repo_root=existing_agent.repo_root if existing_agent is not None else None,
+            repo_root=repo_root
+            or (existing_agent.repo_root if existing_agent is not None else None),
             worktree_path=worktree_path,
-            branch=existing_agent.branch if existing_agent is not None else None,
+            branch=branch or (existing_agent.branch if existing_agent is not None else None),
             name=existing_agent.name if existing_agent is not None else None,
             task_title=existing_agent.task_title if existing_agent is not None else None,
             task_summary=existing_agent.task_summary if existing_agent is not None else None,
