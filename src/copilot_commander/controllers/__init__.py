@@ -4,6 +4,13 @@ from copilot_commander.controllers.agent_controller import (
     AgentIntentView,
     AgentTargetView,
 )
+from copilot_commander.controllers.attention_controller import (
+    AttentionDashboardPort,
+    AttentionInboxController,
+    AttentionInboxRowView,
+    AttentionInboxState,
+    AttentionInboxSummaryView,
+)
 from copilot_commander.controllers.dashboard_controller import (
     DashboardAgentListItemView,
     DashboardAlertView,
@@ -44,6 +51,11 @@ __all__ = [
     "AgentController",
     "AgentIntentView",
     "AgentTargetView",
+    "AttentionDashboardPort",
+    "AttentionInboxController",
+    "AttentionInboxRowView",
+    "AttentionInboxState",
+    "AttentionInboxSummaryView",
     "DashboardAgentListItemView",
     "DashboardAlertView",
     "DashboardController",
