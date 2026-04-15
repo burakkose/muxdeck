@@ -1,4 +1,5 @@
 from copilot_commander.parsers.copilot_output_parser import (
+    CopilotActivityMarker,
     CopilotBlockingIssue,
     CopilotErrorEvidence,
     CopilotEvidenceSpan,
@@ -26,6 +27,7 @@ from copilot_commander.parsers.tmux_parser import (
 
 __all__ = [
     "AheadBehindCounts",
+    "CopilotActivityMarker",
     "CopilotBlockingIssue",
     "CopilotErrorEvidence",
     "CopilotEvidenceSpan",
