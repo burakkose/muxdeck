@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -217,12 +218,17 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
             ),
         ),
     )
+    # Filter out the TUI's own tmux pane from discovery to avoid
+    # self-detection as a copilot agent.
+    self_pane = os.environ.get("TMUX_PANE")
+    ignore_panes: frozenset[str] = frozenset({self_pane}) if self_pane else frozenset()
     discovery = DiscoveryService(
         tmux_adapter,
         copilot_adapter,
         sync_store,
         process_inspector=process_adapter,
         capture_start_line=-max(resolved_config.general.log_preview_lines, 200),
+        ignore_pane_ids=ignore_panes,
     )
     worktree_service = WorktreeService(
         config=resolved_config,
@@ -238,7 +244,13 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         worktrees=WorktreeController(worktree_service, store),
         replay=ReplayController(replay_service),
         agents=AgentController(store, sessions),
-        synchronizer=RuntimeSynchronizer(discovery, monitoring, git_adapter),
+        synchronizer=RuntimeSynchronizer(
+            discovery,
+            monitoring,
+            git_adapter,
+            agent_store=sync_store,
+            dead_grace_period_sec=resolved_config.general.dead_grace_period_sec,
+        ),
         sync_store=sync_store,
     )
 

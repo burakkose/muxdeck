@@ -221,7 +221,7 @@ class AgentListPanel(Static, can_focus=True):
         for index, agent in enumerate(self._agents):
             is_selected = index == self._selected_index
             row_style = _row_style(agent, selected=is_selected)
-            display_name = agent.worktree_name or agent.name
+            display_name = agent.repo_name or agent.worktree_name or agent.name
             info = agent.attention_reason or agent.task_title or ""
             table.add_row(
                 Text(

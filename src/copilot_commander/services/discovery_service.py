@@ -20,6 +20,38 @@ from copilot_commander.types import Clock
 PaneClassification = Literal["managed_agent", "unmanaged_probable_agent", "non_agent_pane"]
 PaneMetadataLike = TmuxPaneMetadata | TmuxPaneRecord
 
+_SHELL_COMMANDS: frozenset[str] = frozenset(
+    {
+        "bash",
+        "zsh",
+        "fish",
+        "sh",
+        "dash",
+        "ksh",
+        "csh",
+        "tcsh",
+        "ash",
+        "nu",
+        "nushell",
+        "pwsh",
+        "powershell",
+        "elvish",
+        "xonsh",
+        "ion",
+    }
+)
+
+# AI CLI tools that are NOT GitHub Copilot but produce similar output.
+_NON_COPILOT_AI_COMMANDS: frozenset[str] = frozenset(
+    {
+        "claude",
+        "aider",
+        "cursor",
+        "cody",
+        "continue",
+    }
+)
+
 
 @runtime_checkable
 class DiscoveryTmuxGateway(Protocol):
@@ -171,12 +203,34 @@ def classify_pane(
     if _has_session_signal(session_evidence):
         reasons.append("captured Copilot evidence")
 
-    if managed_agent is not None or matched_session is not None or matched_context is not None:
-        classification: PaneClassification = "managed_agent"
+    is_non_copilot = _is_non_copilot_command(snapshot.pane_current_command)
+    if is_non_copilot and not command_detection.is_likely_copilot:
+        # Pane now runs a known non-copilot AI CLI (e.g. claude, aider).
+        # Override even if we have a stored agent record from before.
+        classification: PaneClassification = "non_agent_pane"
+        confidence = Decimal("0.9500")
+        reasons.append("known non-copilot AI CLI")
+    elif managed_agent is not None or matched_session is not None or matched_context is not None:
+        classification = "managed_agent"
         confidence = Decimal("0.9900")
-    elif command_detection.is_likely_copilot or _has_session_signal(session_evidence):
+    elif command_detection.is_likely_copilot:
         classification = "unmanaged_probable_agent"
-        confidence = Decimal("0.8400") if command_detection.is_likely_copilot else Decimal("0.7900")
+        confidence = Decimal("0.8400")
+    elif _is_shell_command(snapshot.pane_current_command):
+        # Shell panes need process-tree copilot match or hard evidence
+        # (session id, usage, blocking, errors). Scrollback markers from
+        # old sessions are not enough.
+        if _has_strong_session_signal(session_evidence):
+            classification = "unmanaged_probable_agent"
+            confidence = Decimal("0.7500")
+        else:
+            classification = "non_agent_pane"
+            confidence = Decimal("0.9500")
+            reasons.append("no Copilot signal")
+    elif _has_session_signal(session_evidence):
+        # Non-shell process (e.g. node) with any Copilot evidence.
+        classification = "unmanaged_probable_agent"
+        confidence = Decimal("0.7900")
     else:
         classification = "non_agent_pane"
         confidence = Decimal("0.9500")
@@ -206,6 +260,7 @@ class DiscoveryService:
         *,
         process_inspector: DiscoveryProcessInspector | None = None,
         capture_start_line: int = -200,
+        ignore_pane_ids: frozenset[str] = frozenset(),
         clock: Clock = utc_now,
     ) -> None:
         self._tmux = tmux
@@ -213,6 +268,7 @@ class DiscoveryService:
         self._store = store
         self._process_inspector = process_inspector
         self._capture_start_line = capture_start_line
+        self._ignore_pane_ids = ignore_pane_ids
         self._clock = clock
 
     def discover_panes(self) -> PaneDiscoveryReport:
@@ -306,7 +362,12 @@ class DiscoveryService:
         panes = getattr(listed, "panes", listed)
         if not isinstance(panes, Sequence):
             return ()
-        return tuple(pane for pane in panes if isinstance(pane, TmuxPaneMetadata | TmuxPaneRecord))
+        return tuple(
+            pane
+            for pane in panes
+            if isinstance(pane, TmuxPaneMetadata | TmuxPaneRecord)
+            and getattr(pane, "pane_id", None) not in self._ignore_pane_ids
+        )
 
 
 def _has_session_signal(evidence: CopilotSessionEvidence | None, /) -> bool:
@@ -322,3 +383,33 @@ def _has_session_signal(evidence: CopilotSessionEvidence | None, /) -> bool:
             bool(evidence.parse_result.ui_markers),
         )
     )
+
+
+def _has_strong_session_signal(evidence: CopilotSessionEvidence | None, /) -> bool:
+    """Require hard evidence — session id, usage, blocking issues, or errors.
+
+    Weak signals like UI markers and transcript boundaries from old
+    scrollback are not enough on their own.
+    """
+    if evidence is None:
+        return False
+    return any(
+        (
+            evidence.copilot_session_id is not None,
+            bool(evidence.usage_snapshots),
+            bool(evidence.blocking_issue_kinds),
+            bool(evidence.error_messages),
+        )
+    )
+
+
+def _is_shell_command(command: str | None, /) -> bool:
+    if command is None:
+        return False
+    return command.strip().lower() in _SHELL_COMMANDS
+
+
+def _is_non_copilot_command(command: str | None, /) -> bool:
+    if command is None:
+        return False
+    return command.strip().lower() in _NON_COPILOT_AI_COMMANDS
