@@ -38,21 +38,13 @@ class WorktreesScreen(ShellScreen):
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="worktrees-root"):
-            yield Static(id="worktrees-summary", classes="panel muted-panel")
-            with Horizontal(id="worktrees-main", classes="band"):
-                with Vertical(id="worktrees-list-panel", classes="panel"):
-                    yield Static("WORKTREE INDEX", classes="panel-title")
-                    yield WorktreeListPanel(widget_id="worktrees-list")
+            yield Static(id="worktrees-summary", classes="muted")
+            with Horizontal(id="worktrees-main"):
+                yield WorktreeListPanel(widget_id="worktrees-list", classes="panel")
                 with Vertical(id="worktrees-sidebar"):
-                    with Vertical(id="worktrees-detail-panel", classes="panel"):
-                        yield Static("DETAIL", classes="panel-title")
-                        yield WorktreeDetailPanel(id="worktrees-detail")
-                    with Vertical(id="worktrees-conflicts-panel", classes="panel"):
-                        yield Static("CONFLICTS", classes="panel-title")
-                        yield ConflictPanel(id="worktrees-conflicts")
-                    with Vertical(id="worktrees-intent-panel", classes="panel"):
-                        yield Static("START AGENT", classes="panel-title")
-                        yield StartIntentPanel(id="worktrees-intent")
+                    yield WorktreeDetailPanel(id="worktrees-detail", classes="panel")
+                    yield ConflictPanel(id="worktrees-conflicts", classes="panel")
+                    yield StartIntentPanel(id="worktrees-intent", classes="panel")
 
     def on_mount(self) -> None:
         self.refresh_data()

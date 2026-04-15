@@ -5,31 +5,25 @@ from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Input, Static
+from textual.widgets import Input
 
 from copilot_commander.bindings import DASHBOARD_BINDINGS, DASHBOARD_HINTS
 from copilot_commander.controllers import (
     AgentIntentView,
-    DashboardAgentListItemView,
     DashboardFilterState,
     DashboardSort,
     DashboardSortField,
     DashboardState,
 )
 from copilot_commander.screens.base import ShellScreen
-from copilot_commander.screens.message_input import (
-    MessageResult,
-    SendMessageScreen,
-)
 from copilot_commander.widgets.dashboard import (
     AgentDetailPanel,
     AgentListPanel,
     AlertPanel,
     FilterBar,
-    HealthBanner,
-    MetricStrip,
+    LogPreviewPanel,
+    StatusBar,
 )
-from copilot_commander.widgets.pane_viewer import PaneOutputPanel
 
 if TYPE_CHECKING:
     from copilot_commander.app import CommanderApp, CommanderRuntime
@@ -59,27 +53,14 @@ class DashboardScreen(ShellScreen):
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="dashboard-root"):
-            with Vertical(id="dashboard-top", classes="band"):
-                yield HealthBanner(id="dashboard-health")
-                yield MetricStrip(id="dashboard-metrics")
-                yield FilterBar(id="dashboard-filters")
-            with Horizontal(id="dashboard-main", classes="band"):
-                with Vertical(id="dashboard-agents-panel", classes="panel"):
-                    yield Static("AGENTS", classes="panel-title")
-                    yield AgentListPanel(widget_id="dashboard-agents")
+            yield StatusBar(id="dashboard-status-bar")
+            yield FilterBar(id="dashboard-filter-row")
+            with Horizontal(id="dashboard-main"):
+                yield AgentListPanel(widget_id="dashboard-agents", classes="panel")
                 with Vertical(id="dashboard-sidebar"):
-                    with Vertical(id="dashboard-detail-panel", classes="panel"):
-                        yield Static("DETAIL", classes="panel-title")
-                        yield AgentDetailPanel(id="dashboard-detail")
-                    with Vertical(
-                        id="dashboard-pane-panel",
-                        classes="panel",
-                    ):
-                        yield Static("AGENT OUTPUT", classes="panel-title")
-                        yield PaneOutputPanel(id="dashboard-pane-output")
-                    with Vertical(id="dashboard-alerts-panel", classes="panel"):
-                        yield Static("ALERTS", classes="panel-title")
-                        yield AlertPanel(id="dashboard-alerts")
+                    yield AgentDetailPanel(id="dashboard-detail", classes="panel")
+                    yield LogPreviewPanel(id="dashboard-log", classes="panel")
+                    yield AlertPanel(id="dashboard-alerts", classes="panel")
 
     def on_mount(self) -> None:
         self.refresh_data()
@@ -99,49 +80,35 @@ class DashboardScreen(ShellScreen):
         self._selected_agent_id = self._state.selected_agent_id
         if self._selected_agent_id is not None:
             self.commander_app.remember_agent_selection(self._selected_agent_id)
-        self.query_one(HealthBanner).set_health(self._state.health)
-        self.query_one(MetricStrip).set_metrics(self._state.metrics)
+        self.query_one(StatusBar).set_state(self._state.health, self._state.metrics)
         filter_bar = self.query_one(FilterBar)
         filter_bar.set_query(self._filters.text_query)
-        filter_bar.set_summary(
-            query=self._filters.normalized_query(),
-            attention_only=self._filters.attention_only,
-            include_completed=self._filters.include_completed,
-            sort_label=self._sort.field,
-        )
         self.query_one(AgentListPanel).set_agents(
             self._state.agents,
             selected_agent_id=self._state.selected_agent_id,
         )
         self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
-        pane_panel = self.query_one(PaneOutputPanel)
-        if self._state.selected_agent is not None:
-            pane_id = self._state.selected_agent.item.pane_id
-            if pane_id and self.runtime.actions is not None:
-                try:
-                    output = self.runtime.actions.capture_output(pane_id, lines=30)
-                    pane_panel.set_output(output, pane_id=pane_id)
-                except Exception:
-                    pane_panel.set_output("", pane_id=pane_id)
-            else:
-                pane_panel.clear_output()
-        else:
-            pane_panel.clear_output()
+        self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
         if sync_report is None:
             self.set_status(
-                f"{len(self._state.agents)} visible agents | {self._state.health.message}"
+                f"{len(self._state.agents)} agents | {self._state.health.message}"
             )
             return
         if sync_report.error is not None:
             self.set_status(sync_report.error)
             return
-        warning_suffix = f" | warnings {len(sync_report.warnings)}" if sync_report.warnings else ""
-        self.set_status(
-            f"scanned {sync_report.observed_panes} panes"
-            f" | synced {sync_report.persisted_agents} agents"
-            f" | visible {len(self._state.agents)}{warning_suffix}"
-        )
+        parts = [
+            f"scanned {sync_report.observed_panes}",
+            f"synced {sync_report.persisted_agents}",
+            f"visible {len(self._state.agents)}",
+        ]
+        if self._filters.attention_only:
+            parts.append("attn-only")
+        if not self._filters.include_completed:
+            parts.append("hide-done")
+        parts.append(f"sort:{self._sort.field}")
+        self.set_status(" │ ".join(parts))
 
     @property
     def commander_app(self) -> CommanderApp:
@@ -215,74 +182,27 @@ class DashboardScreen(ShellScreen):
         self.refresh_data()
 
     def action_interrupt_agent(self) -> None:
-        self._execute_agent_action("interrupt", self.runtime.agents.interrupt_intent)
+        self._set_agent_intent_status("interrupt", self.runtime.agents.interrupt_intent)
 
     def action_open_pane(self) -> None:
-        self._execute_agent_action("open pane", self.runtime.agents.open_pane_intent)
+        self._set_agent_intent_status("open_pane", self.runtime.agents.open_pane_intent)
 
     def action_open_worktree(self) -> None:
-        self._execute_agent_action(
-            "open worktree",
-            self.runtime.agents.open_worktree_intent,
-        )
+        self._set_agent_intent_status("open_worktree", self.runtime.agents.open_worktree_intent)
 
-    def _execute_agent_action(
+    def _set_agent_intent_status(
         self,
         label: str,
         loader: Callable[[str], AgentIntentView],
     ) -> None:
-        """Load an intent and execute it via the action service."""
         if self._selected_agent_id is None:
             self.set_status("no agent selected")
-            return
-        if self.runtime.actions is None:
-            self.set_status(f"✗ {label}: action service unavailable")
             return
         try:
             intent = loader(self._selected_agent_id)
-            result = self.runtime.actions.execute_intent(intent)
-            icon = "✓" if result.success else "✗"
-            self.set_status(f"{icon} {result.message}")
-        except Exception as exc:
-            self.set_status(f"✗ {label}: {exc}")
-
-    def action_send_message(self) -> None:
-        """Open the send message modal for the selected agent."""
-        if self._selected_agent_id is None:
-            self.set_status("no agent selected")
+        except Exception as exc:  # pragma: no cover - defensive UI boundary
+            self.set_status(f"{label} unavailable: {exc}")
             return
-        agent = self._find_selected_agent()
-        if agent is None:
-            self.set_status("agent not found")
-            return
-        display_name = agent.repo_name or agent.worktree_name or agent.name
-        pane_id = agent.pane_id
-        if not pane_id:
-            self.set_status("✗ no pane for this agent")
-            return
-        self.app.push_screen(
-            SendMessageScreen(agent_name=display_name, pane_id=pane_id),
-            callback=self._on_message_result,
-        )
-
-    def _on_message_result(self, result: MessageResult | None) -> None:
-        """Handle result from send message modal."""
-        if result is None:
-            return
-        if self.runtime.actions is None:
-            self.set_status("✗ action service unavailable")
-            return
-        action_result = self.runtime.actions.send_message(result.pane_id, result.text)
-        icon = "✓" if action_result.success else "✗"
-        self.set_status(f"{icon} {action_result.message}")
-
-    def _find_selected_agent(
-        self,
-    ) -> DashboardAgentListItemView | None:
-        """Find the selected agent from the current state."""
-        if self._state is None or self._selected_agent_id is None:
-            return None
-        for agent in self._state.agents:
-            if agent.agent_id == self._selected_agent_id:
-                return agent
-        return None
+        metadata = " ".join(f"{key}={value}" for key, value in intent.metadata)
+        suffix = f" {metadata}" if metadata else ""
+        self.set_status(f"{intent.label.lower()} -> {intent.agent.name}{suffix}")

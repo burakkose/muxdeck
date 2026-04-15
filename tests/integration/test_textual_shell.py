@@ -367,7 +367,7 @@ async def test_textual_shell_navigation_and_updates() -> None:
         await pilot.press("slash")
         await pilot.press("p", "l", "a", "n", "n", "e", "r")
         await pilot.pause()
-        assert "1 visible agents" in rendered_text(app.screen.query_one("#shell-footer"))
+        assert "1 agents" in rendered_text(app.screen.query_one("#shell-footer"))
 
         app.action_show_worktrees()
         await pilot.pause()
@@ -381,7 +381,7 @@ async def test_textual_shell_navigation_and_updates() -> None:
 
         app.action_show_replay()
         await pilot.pause()
-        assert "SESSION-1" in rendered_text(app.screen.query_one("#replay-summary"))
+        assert "session-1" in rendered_text(app.screen.query_one("#replay-summary"))
 
         await pilot.press("e")
         await pilot.pause()
@@ -389,6 +389,6 @@ async def test_textual_shell_navigation_and_updates() -> None:
 
         app.action_show_help()
         await pilot.pause()
-        assert "COPILOT COMMANDER OPERATOR CONSOLE" in rendered_text(
+        assert "Copilot Commander" in rendered_text(
             app.screen.query_one("#help-content")
         )
