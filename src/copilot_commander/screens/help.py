@@ -51,6 +51,4 @@ class HelpScreen(ShellScreen):
             yield Static(content, id="help-content")
 
     def on_mount(self) -> None:
-        root = self.query_one("#help-root")
-        root.border_title = "Help"
         self.set_status("operator reference")

@@ -27,7 +27,7 @@ class ReplayMarkerListPanel(Vertical):
         self._marker_ordinals: list[int] = []
 
     def on_mount(self) -> None:
-        self.border_title = "Markers"
+        pass  # borderless
 
     def compose(self) -> ComposeResult:
         yield ListView(id="replay-marker-list")
@@ -84,7 +84,7 @@ class ReplayTranscriptPanel(Vertical):
         self._ordinals: list[int] = []
 
     def on_mount(self) -> None:
-        self.border_title = "Transcript"
+        pass  # borderless
 
     def compose(self) -> ComposeResult:
         yield ListView(id="replay-transcript-list")
@@ -93,7 +93,6 @@ class ReplayTranscriptPanel(Vertical):
         list_view = self.query_one(ListView)
         list_view.clear()
         self._ordinals = []
-        self.border_title = f"Transcript ({len(transcript)})"
         selected_index = 0
         for index, entry in enumerate(transcript):
             line = Text()
@@ -156,9 +155,6 @@ class ReplaySummaryPanel(Static):
 
 
 class ReplayDetailPanel(Static):
-    def on_mount(self) -> None:
-        self.border_title = "Entry Detail"
-
     def set_entry(self, entry: ReplayTranscriptEntryView | None) -> None:
         if entry is None:
             self.update(Text("No entry selected", style=FG4))

@@ -29,7 +29,7 @@ class WorktreeListPanel(Vertical):
         self._worktree_ids: list[str] = []
 
     def on_mount(self) -> None:
-        self.border_title = "Worktrees"
+        pass  # borderless — frame provides chrome
 
     def compose(self) -> ComposeResult:
         yield ListView(id="worktree-list")
@@ -43,7 +43,6 @@ class WorktreeListPanel(Vertical):
         list_view = self.query_one(ListView)
         list_view.clear()
         self._worktree_ids = []
-        self.border_title = f"Worktrees ({len(worktrees)})"
         selected_index = 0
         for index, worktree in enumerate(worktrees):
             line = Text()
@@ -91,9 +90,6 @@ class WorktreeListPanel(Vertical):
 
 
 class WorktreeDetailPanel(Static):
-    def on_mount(self) -> None:
-        self.border_title = "Detail"
-
     def set_detail(self, detail: WorktreeDetailView | None) -> None:
         if detail is None:
             self.update(Text("No worktree selected", style=FG4))
@@ -132,9 +128,6 @@ class WorktreeDetailPanel(Static):
 
 
 class ConflictPanel(Static):
-    def on_mount(self) -> None:
-        self.border_title = "Conflicts"
-
     def set_conflicts(self, conflicts: Sequence[WorktreeConflictView]) -> None:
         if not conflicts:
             self.update(Text("—", style=FG4))
@@ -146,9 +139,6 @@ class ConflictPanel(Static):
 
 
 class StartIntentPanel(Static):
-    def on_mount(self) -> None:
-        self.border_title = "Start Agent"
-
     def set_intent(self, intent: WorktreeStartAgentIntent | None) -> None:
         if intent is None:
             self.update(Text("press s to preview", style=FG4))

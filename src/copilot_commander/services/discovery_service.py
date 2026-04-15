@@ -15,6 +15,7 @@ from copilot_commander.adapters.tmux_adapter import TmuxPaneMetadata
 from copilot_commander.domain.models import Agent, Session
 from copilot_commander.domain.value_objects import ensure_aware_datetime, utc_now
 from copilot_commander.parsers.tmux_parser import TmuxPaneRecord
+from copilot_commander.perf import timed
 from copilot_commander.types import Clock
 
 PaneClassification = Literal["managed_agent", "unmanaged_probable_agent", "non_agent_pane"]
@@ -272,23 +273,24 @@ class DiscoveryService:
         self._clock = clock
 
     def discover_panes(self) -> PaneDiscoveryReport:
-        discovered_at = ensure_aware_datetime(self._clock(), field_name="value")
-        panes = tuple(
-            self._discover_single(record, discovered_at=discovered_at)
-            for record in self._iter_panes()
-        )
-        managed = tuple(pane for pane in panes if pane.classification == "managed_agent")
-        probable = tuple(
-            pane for pane in panes if pane.classification == "unmanaged_probable_agent"
-        )
-        non_agent = tuple(pane for pane in panes if pane.classification == "non_agent_pane")
-        return PaneDiscoveryReport(
-            discovered_at=discovered_at,
-            panes=panes,
-            managed_agents=managed,
-            unmanaged_probable_agents=probable,
-            non_agent_panes=non_agent,
-        )
+        with timed("discovery.total"):
+            discovered_at = ensure_aware_datetime(self._clock(), field_name="value")
+            panes = tuple(
+                self._discover_single(record, discovered_at=discovered_at)
+                for record in self._iter_panes()
+            )
+            managed = tuple(pane for pane in panes if pane.classification == "managed_agent")
+            probable = tuple(
+                pane for pane in panes if pane.classification == "unmanaged_probable_agent"
+            )
+            non_agent = tuple(pane for pane in panes if pane.classification == "non_agent_pane")
+            return PaneDiscoveryReport(
+                discovered_at=discovered_at,
+                panes=panes,
+                managed_agents=managed,
+                unmanaged_probable_agents=probable,
+                non_agent_panes=non_agent,
+            )
 
     def _discover_single(
         self,
@@ -299,25 +301,26 @@ class DiscoveryService:
     ) -> PaneDiscovery:
         snapshot = DiscoveryPaneSnapshot.from_tmux_record(record)
         command_detection = self._copilot.detect_command(snapshot.pane_current_command or "")
-        # When the command name is ambiguous (e.g. just "node"), inspect the
-        # child process tree for the full command line containing "copilot".
         if (
             not command_detection.is_likely_copilot
             and self._process_inspector is not None
             and snapshot.pane_pid is not None
         ):
-            command_detection = self._detect_via_process_tree(
-                snapshot.pane_pid,
-                fallback=command_detection,
+            with timed("discovery.process_tree"):
+                command_detection = self._detect_via_process_tree(
+                    snapshot.pane_pid,
+                    fallback=command_detection,
+                )
+        with timed("discovery.capture_pane"):
+            captured_output = self._tmux.capture_pane(
+                snapshot.pane_id,
+                start_line=self._capture_start_line,
+                join_wrapped_lines=True,
             )
-        captured_output = self._tmux.capture_pane(
-            snapshot.pane_id,
-            start_line=self._capture_start_line,
-            join_wrapped_lines=True,
-        )
         session_evidence = None
         if captured_output.strip():
-            session_evidence = self._copilot.interpret_output(captured_output)
+            with timed("discovery.interpret_output"):
+                session_evidence = self._copilot.interpret_output(captured_output)
         matched_context = self._store.get_session_context_by_tmux_pane_id(snapshot.pane_id)
         managed_agent = self._store.get_agent_by_pane_id(snapshot.pane_id)
         matched_session: Session | None = None

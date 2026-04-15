@@ -21,10 +21,13 @@ from copilot_commander.config import AppConfig, load_config
 from copilot_commander.controllers import (
     AgentController,
     DashboardController,
+    DashboardState,
     ReplayController,
     WorktreeController,
 )
 from copilot_commander.controllers.sessions_controller import SessionsController
+from copilot_commander.perf import log_summary as perf_log_summary
+from copilot_commander.perf import timed
 from copilot_commander.screens import (
     DashboardScreen,
     HelpScreen,
@@ -48,6 +51,8 @@ from copilot_commander.services.action_service import TmuxActionService
 _log = logging.getLogger(__name__)
 
 _SYNC_GROUP = "sync"
+_PERF_LOG_INTERVAL = 10  # log perf summary every N sync cycles
+_sync_cycle_count = 0
 
 
 @dataclass(slots=True)
@@ -62,6 +67,7 @@ class CommanderRuntime:
     synchronizer: RuntimeSynchronizer | None = None
     sync_store: SQLiteStore | None = None
     sessions_ctrl: SessionsController | None = None
+    sync_dashboard: DashboardController | None = None
 
 
 class CommanderApp(App[None]):
@@ -77,6 +83,7 @@ class CommanderApp(App[None]):
         self.selected_worktree_id: str | None = None
         self.selected_session_id: str | None = None
         self.last_sync_report: RuntimeSyncReport | None = None
+        self.last_dashboard_state: DashboardState | None = None
         self._sync_in_progress: bool = False
         self._refresh_pending: bool = False
         self._manual_refresh: bool = False
@@ -159,12 +166,38 @@ class CommanderApp(App[None]):
             group=_SYNC_GROUP,
         )
 
-    def _run_sync(self) -> RuntimeSyncReport | None:
+    @dataclass(frozen=True, slots=True)
+    class _SyncResult:
+        report: RuntimeSyncReport
+        dashboard_state: DashboardState | None = None
+
+    def _run_sync(self) -> _SyncResult | None:
         synchronizer = self.runtime.synchronizer
         if synchronizer is None:
             return None
         try:
-            return synchronizer.refresh()
+            with timed("sync.total"):
+                report = synchronizer.refresh()
+            # Build dashboard state here (worker thread) to avoid
+            # blocking the main UI thread with SQLite queries.
+            dashboard_state = None
+            sync_dashboard = self.runtime.sync_dashboard
+            if sync_dashboard is not None:
+                screen = self.screen
+                if isinstance(screen, DashboardScreen):
+                    with timed("sync.build_dashboard"):
+                        dashboard_state = sync_dashboard.build_state(
+                            filters=screen.current_filters,
+                            sort=screen.current_sort,
+                            selected_agent_id=screen.current_selected_agent_id,
+                            preview_line_limit=min(
+                                self.runtime.config.general.log_preview_lines, 12
+                            ),
+                        )
+            return CommanderApp._SyncResult(
+                report=report,
+                dashboard_state=dashboard_state,
+            )
         except Exception:
             _log.exception("sync worker error")
             return None
@@ -177,10 +210,19 @@ class CommanderApp(App[None]):
             manual = self._manual_refresh
             self._manual_refresh = False
             if event.state == WorkerState.SUCCESS and event.worker.result is not None:
-                self.last_sync_report = event.worker.result
+                result = event.worker.result
+                self.last_sync_report = result.report
+                if result.dashboard_state is not None:
+                    self.last_dashboard_state = result.dashboard_state
             elif event.state == WorkerState.ERROR:
                 _log.warning("sync worker failed: %s", event.worker.error)
-            self._refresh_screen_widgets(force=manual)
+            with timed("ui.refresh_widgets"):
+                self._refresh_screen_widgets(force=manual)
+            # Periodic perf summary
+            global _sync_cycle_count
+            _sync_cycle_count += 1
+            if _sync_cycle_count % _PERF_LOG_INTERVAL == 0:
+                perf_log_summary(reset=True)
             if self._refresh_pending:
                 self._refresh_pending = False
                 self._refresh_current_screen()
@@ -250,6 +292,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     )
     copilot_session_store = CopilotSessionStore()
     sessions_ctrl = SessionsController(copilot_session_store)
+    sync_dashboard = DashboardController(sync_store)
     return CommanderRuntime(
         config=resolved_config,
         store=store,
@@ -267,6 +310,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         ),
         sync_store=sync_store,
         sessions_ctrl=sessions_ctrl,
+        sync_dashboard=sync_dashboard,
     )
 
 

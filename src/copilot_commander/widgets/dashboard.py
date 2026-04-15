@@ -147,7 +147,7 @@ class AgentListPanel(Static, can_focus=True):
         self._selected_index = 0
 
     def on_mount(self) -> None:
-        self.border_title = "Agents"
+        pass  # no border-title — parent frame provides the chrome
 
     def set_agents(
         self,
@@ -156,7 +156,6 @@ class AgentListPanel(Static, can_focus=True):
         selected_agent_id: str | None,
     ) -> None:
         self._agents = tuple(agents)
-        self.border_title = f"Agents ({len(self._agents)})"
         if not self._agents:
             self._selected_index = 0
             self.update(Text("No agents discovered — press r to scan", style=FG4))
@@ -228,10 +227,7 @@ class AgentListPanel(Static, can_focus=True):
 
 
 class AgentDetailPanel(Static):
-    """Selected agent detail with border-title."""
-
-    def on_mount(self) -> None:
-        self.border_title = "Detail"
+    """Selected agent detail — borderless, content flows directly."""
 
     def set_agent(self, agent: DashboardSelectedAgentView | None) -> None:
         if agent is None:
@@ -281,10 +277,7 @@ class AgentDetailPanel(Static):
 
 
 class LogPreviewPanel(Static):
-    """Log tail with border-title."""
-
-    def on_mount(self) -> None:
-        self.border_title = "Log"
+    """Log tail — borderless, separator provided by CSS."""
 
     def set_logs(self, agent: DashboardSelectedAgentView | None) -> None:
         if agent is None or not agent.log_preview:
@@ -300,10 +293,7 @@ class LogPreviewPanel(Static):
 
 
 class AlertPanel(Static):
-    """Alert list with border-title."""
-
-    def on_mount(self) -> None:
-        self.border_title = "Alerts"
+    """Alert list — borderless, separator provided by CSS."""
 
     def set_alerts(self, alerts: Sequence[DashboardAlertView]) -> None:
         if not alerts:

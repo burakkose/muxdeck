@@ -54,14 +54,26 @@ class InMemoryDashboardStore:
             return sessions
         return tuple(session for session in sessions if session.agent_id == agent_id)
 
+    def get_latest_session_for_agent(self, agent_id: str, /) -> Session | None:
+        sessions = self.list_sessions(agent_id)
+        return sessions[0] if sessions else None
+
     def get_session_context(self, session_id: str, /) -> SessionContextRecord | None:
         return self.contexts.get(session_id)
 
     def list_events_for_session(self, session_id: str, /) -> tuple[Event, ...]:
         return tuple(event for event in self.events if event.session_id == session_id)
 
+    def get_latest_event_for_session(self, session_id: str, /) -> Event | None:
+        events = self.list_events_for_session(session_id)
+        return events[-1] if events else None
+
     def list_log_chunks(self, session_id: str, /) -> tuple[LogChunk, ...]:
         return tuple(chunk for chunk in self.logs if chunk.session_id == session_id)
+
+    def get_latest_log_chunk(self, session_id: str, /) -> LogChunk | None:
+        chunks = self.list_log_chunks(session_id)
+        return chunks[-1] if chunks else None
 
     def get_worktree(self, worktree_id: str, /) -> Worktree | None:
         return self.worktrees.get(worktree_id)
