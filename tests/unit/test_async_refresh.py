@@ -191,6 +191,7 @@ def _build_fake_runtime(
                 "agents": FakeAgentController(),
                 "synchronizer": synchronizer,
                 "sync_store": None,
+                "actions": None,
             },
         )(),
     )
@@ -275,6 +276,7 @@ async def test_sync_error_clears_in_progress_flag() -> None:
                 "agents": FakeAgentController(),
                 "synchronizer": synchronizer,
                 "sync_store": None,
+                "actions": None,
             },
         )(),
     )

@@ -126,12 +126,12 @@ Header {
 }
 
 #dashboard-detail-panel {
-    height: 2fr;
+    height: 1fr;
     margin-bottom: 1;
 }
 
-#dashboard-log-panel {
-    height: 1fr;
+#dashboard-pane-panel {
+    height: 2fr;
     margin-bottom: 1;
 }
 

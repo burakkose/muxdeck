@@ -65,6 +65,7 @@ DASHBOARD_BINDINGS: Final[list[BindingSpec]] = [
     Binding("i", "interrupt_agent", "Interrupt", show=False),
     Binding("p", "open_pane", "Pane target", show=False),
     Binding("w", "open_worktree", "Worktree", show=False),
+    Binding("m", "send_message", "Send message", show=False),
 ]
 
 DASHBOARD_HINTS = (
@@ -77,6 +78,7 @@ DASHBOARD_HINTS = (
     KeyHint("i", "interrupt"),
     KeyHint("p", "pane"),
     KeyHint("w", "worktree"),
+    KeyHint("m", "message"),
 )
 
 WORKTREE_BINDINGS: Final[list[BindingSpec]] = [

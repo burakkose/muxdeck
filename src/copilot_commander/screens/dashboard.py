@@ -10,21 +10,26 @@ from textual.widgets import Input, Static
 from copilot_commander.bindings import DASHBOARD_BINDINGS, DASHBOARD_HINTS
 from copilot_commander.controllers import (
     AgentIntentView,
+    DashboardAgentListItemView,
     DashboardFilterState,
     DashboardSort,
     DashboardSortField,
     DashboardState,
 )
 from copilot_commander.screens.base import ShellScreen
+from copilot_commander.screens.message_input import (
+    MessageResult,
+    SendMessageScreen,
+)
 from copilot_commander.widgets.dashboard import (
     AgentDetailPanel,
     AgentListPanel,
     AlertPanel,
     FilterBar,
     HealthBanner,
-    LogPreviewPanel,
     MetricStrip,
 )
+from copilot_commander.widgets.pane_viewer import PaneOutputPanel
 
 if TYPE_CHECKING:
     from copilot_commander.app import CommanderApp, CommanderRuntime
@@ -66,9 +71,12 @@ class DashboardScreen(ShellScreen):
                     with Vertical(id="dashboard-detail-panel", classes="panel"):
                         yield Static("DETAIL", classes="panel-title")
                         yield AgentDetailPanel(id="dashboard-detail")
-                    with Vertical(id="dashboard-log-panel", classes="panel"):
-                        yield Static("LOG PREVIEW", classes="panel-title")
-                        yield LogPreviewPanel(id="dashboard-log")
+                    with Vertical(
+                        id="dashboard-pane-panel",
+                        classes="panel",
+                    ):
+                        yield Static("AGENT OUTPUT", classes="panel-title")
+                        yield PaneOutputPanel(id="dashboard-pane-output")
                     with Vertical(id="dashboard-alerts-panel", classes="panel"):
                         yield Static("ALERTS", classes="panel-title")
                         yield AlertPanel(id="dashboard-alerts")
@@ -106,7 +114,19 @@ class DashboardScreen(ShellScreen):
             selected_agent_id=self._state.selected_agent_id,
         )
         self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
-        self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
+        pane_panel = self.query_one(PaneOutputPanel)
+        if self._state.selected_agent is not None:
+            pane_id = self._state.selected_agent.item.pane_id
+            if pane_id and self.runtime.actions is not None:
+                try:
+                    output = self.runtime.actions.capture_output(pane_id, lines=30)
+                    pane_panel.set_output(output, pane_id=pane_id)
+                except Exception:
+                    pane_panel.set_output("", pane_id=pane_id)
+            else:
+                pane_panel.clear_output()
+        else:
+            pane_panel.clear_output()
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
         if sync_report is None:
             self.set_status(
@@ -195,27 +215,74 @@ class DashboardScreen(ShellScreen):
         self.refresh_data()
 
     def action_interrupt_agent(self) -> None:
-        self._set_agent_intent_status("interrupt", self.runtime.agents.interrupt_intent)
+        self._execute_agent_action("interrupt", self.runtime.agents.interrupt_intent)
 
     def action_open_pane(self) -> None:
-        self._set_agent_intent_status("open_pane", self.runtime.agents.open_pane_intent)
+        self._execute_agent_action("open pane", self.runtime.agents.open_pane_intent)
 
     def action_open_worktree(self) -> None:
-        self._set_agent_intent_status("open_worktree", self.runtime.agents.open_worktree_intent)
+        self._execute_agent_action(
+            "open worktree",
+            self.runtime.agents.open_worktree_intent,
+        )
 
-    def _set_agent_intent_status(
+    def _execute_agent_action(
         self,
         label: str,
         loader: Callable[[str], AgentIntentView],
     ) -> None:
+        """Load an intent and execute it via the action service."""
         if self._selected_agent_id is None:
             self.set_status("no agent selected")
             return
+        if self.runtime.actions is None:
+            self.set_status(f"✗ {label}: action service unavailable")
+            return
         try:
             intent = loader(self._selected_agent_id)
-        except Exception as exc:  # pragma: no cover - defensive UI boundary
-            self.set_status(f"{label} unavailable: {exc}")
+            result = self.runtime.actions.execute_intent(intent)
+            icon = "✓" if result.success else "✗"
+            self.set_status(f"{icon} {result.message}")
+        except Exception as exc:
+            self.set_status(f"✗ {label}: {exc}")
+
+    def action_send_message(self) -> None:
+        """Open the send message modal for the selected agent."""
+        if self._selected_agent_id is None:
+            self.set_status("no agent selected")
             return
-        metadata = " ".join(f"{key}={value}" for key, value in intent.metadata)
-        suffix = f" {metadata}" if metadata else ""
-        self.set_status(f"{intent.label.lower()} -> {intent.agent.name}{suffix}")
+        agent = self._find_selected_agent()
+        if agent is None:
+            self.set_status("agent not found")
+            return
+        display_name = agent.repo_name or agent.worktree_name or agent.name
+        pane_id = agent.pane_id
+        if not pane_id:
+            self.set_status("✗ no pane for this agent")
+            return
+        self.app.push_screen(
+            SendMessageScreen(agent_name=display_name, pane_id=pane_id),
+            callback=self._on_message_result,
+        )
+
+    def _on_message_result(self, result: MessageResult | None) -> None:
+        """Handle result from send message modal."""
+        if result is None:
+            return
+        if self.runtime.actions is None:
+            self.set_status("✗ action service unavailable")
+            return
+        action_result = self.runtime.actions.send_message(result.pane_id, result.text)
+        icon = "✓" if action_result.success else "✗"
+        self.set_status(f"{icon} {action_result.message}")
+
+    def _find_selected_agent(
+        self,
+    ) -> DashboardAgentListItemView | None:
+        """Find the selected agent from the current state."""
+        if self._state is None or self._selected_agent_id is None:
+            return None
+        for agent in self._state.agents:
+            if agent.agent_id == self._selected_agent_id:
+                return agent
+        return None
