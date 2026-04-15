@@ -8,6 +8,7 @@ from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import Input, ListItem, ListView, Static
 
+from copilot_commander.bindings import REPLAY_BINDINGS
 from copilot_commander.controllers import (
     ReplayJumpMarkerView,
     ReplayStateView,
@@ -39,6 +40,54 @@ class ReplayFilterBar(Vertical):
         self.query_one(Input).focus()
 
 
+class ReplayBoundListView(ListView):
+    BINDINGS = REPLAY_BINDINGS
+
+    def _invoke_screen_action(self, action_name: str) -> None:
+        handler = getattr(self.screen, f"action_{action_name}", None)
+        if callable(handler):
+            handler()
+
+    def action_cursor_down(self) -> None:
+        self._invoke_screen_action("cursor_down")
+
+    def action_cursor_up(self) -> None:
+        self._invoke_screen_action("cursor_up")
+
+    def action_focus_filter(self) -> None:
+        self._invoke_screen_action("focus_filter")
+
+    def action_focus_markers(self) -> None:
+        self._invoke_screen_action("focus_markers")
+
+    def action_focus_transcript(self) -> None:
+        self._invoke_screen_action("focus_transcript")
+
+    def action_toggle_presentation(self) -> None:
+        self._invoke_screen_action("toggle_presentation")
+
+    def action_toggle_follow_latest(self) -> None:
+        self._invoke_screen_action("toggle_follow_latest")
+
+    def action_jump_next_marker(self) -> None:
+        self._invoke_screen_action("jump_next_marker")
+
+    def action_jump_previous_marker(self) -> None:
+        self._invoke_screen_action("jump_previous_marker")
+
+    def action_jump_next_activity(self) -> None:
+        self._invoke_screen_action("jump_next_activity")
+
+    def action_jump_next_problem(self) -> None:
+        self._invoke_screen_action("jump_next_problem")
+
+    def action_cycle_export_format(self) -> None:
+        self._invoke_screen_action("cycle_export_format")
+
+    def action_load_latest(self) -> None:
+        self._invoke_screen_action("load_latest")
+
+
 class ReplayMarkerListPanel(Vertical):
     class MarkerSelected(Message):
         def __init__(self, marker_ordinal: int) -> None:
@@ -53,7 +102,7 @@ class ReplayMarkerListPanel(Vertical):
         pass  # borderless
 
     def compose(self) -> ComposeResult:
-        yield ListView(id="replay-marker-list")
+        yield ReplayBoundListView(id="replay-marker-list")
 
     def set_markers(
         self,
@@ -114,7 +163,7 @@ class ReplayTranscriptPanel(Vertical):
         pass  # borderless
 
     def compose(self) -> ComposeResult:
-        yield ListView(id="replay-transcript-list")
+        yield ReplayBoundListView(id="replay-transcript-list")
 
     def set_transcript(self, transcript: Sequence[ReplayTranscriptEntryView]) -> None:
         self._rebuilding = True
