@@ -53,16 +53,28 @@ class DashboardScreen(ShellScreen):
         self._selected_agent_id: str | None = None
         self._state: DashboardState | None = None
 
+    @property
+    def current_filters(self) -> DashboardFilterState:
+        return self._filters
+
+    @property
+    def current_sort(self) -> DashboardSort:
+        return self._sort
+
+    @property
+    def current_selected_agent_id(self) -> str | None:
+        return self._selected_agent_id
+
     def compose_body(self) -> ComposeResult:
         with Vertical(id="dashboard-root"):
             yield StatusBar(id="dashboard-status-bar")
             yield FilterBar(id="dashboard-filter-row")
-            with Horizontal(id="dashboard-main"):
-                yield AgentListPanel(widget_id="dashboard-agents", classes="panel")
+            with Horizontal(id="dashboard-main", classes="frame"):
+                yield AgentListPanel(widget_id="dashboard-agents", classes="divider-right")
                 with Vertical(id="dashboard-sidebar"):
-                    yield AgentDetailPanel(id="dashboard-detail", classes="panel")
-                    yield LogPreviewPanel(id="dashboard-log", classes="panel")
-                    yield AlertPanel(id="dashboard-alerts", classes="panel")
+                    yield AgentDetailPanel(id="dashboard-detail", classes="section")
+                    yield LogPreviewPanel(id="dashboard-log", classes="section-top")
+                    yield AlertPanel(id="dashboard-alerts", classes="section-top")
 
     def on_mount(self) -> None:
         self.refresh_data()
@@ -73,12 +85,18 @@ class DashboardScreen(ShellScreen):
 
     def refresh_data(self) -> None:
         sync_report = self.commander_app.last_sync_report
-        self._state = self.runtime.dashboard.build_state(
-            filters=self._filters,
-            sort=self._sort,
-            selected_agent_id=self._selected_agent_id,
-            preview_line_limit=min(self.runtime.config.general.log_preview_lines, 12),
-        )
+        # Prefer pre-built state from worker thread (no main-thread queries).
+        pre_built = self.commander_app.last_dashboard_state
+        if pre_built is not None:
+            self._state = pre_built
+            self.commander_app.last_dashboard_state = None
+        else:
+            self._state = self.runtime.dashboard.build_state(
+                filters=self._filters,
+                sort=self._sort,
+                selected_agent_id=self._selected_agent_id,
+                preview_line_limit=min(self.runtime.config.general.log_preview_lines, 12),
+            )
         self._selected_agent_id = self._state.selected_agent_id
         if self._selected_agent_id is not None:
             self.commander_app.remember_agent_selection(self._selected_agent_id)

@@ -37,12 +37,12 @@ class WorktreesScreen(ShellScreen):
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="worktrees-root"):  # noqa: SIM117
-            with Horizontal(id="worktrees-main"):
-                yield WorktreeListPanel(widget_id="worktrees-list", classes="panel")
+            with Horizontal(id="worktrees-main", classes="frame"):
+                yield WorktreeListPanel(widget_id="worktrees-list", classes="divider-right")
                 with Vertical(id="worktrees-sidebar"):
-                    yield WorktreeDetailPanel(id="worktrees-detail", classes="panel")
-                    yield ConflictPanel(id="worktrees-conflicts", classes="panel")
-                    yield StartIntentPanel(id="worktrees-intent", classes="panel")
+                    yield WorktreeDetailPanel(id="worktrees-detail", classes="section")
+                    yield ConflictPanel(id="worktrees-conflicts", classes="section-top")
+                    yield StartIntentPanel(id="worktrees-intent", classes="section-top")
 
     def on_mount(self) -> None:
         self.refresh_data()

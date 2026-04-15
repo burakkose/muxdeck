@@ -36,10 +36,10 @@ class ReplayScreen(ShellScreen):
     def compose_body(self) -> ComposeResult:
         with Vertical(id="replay-root"):
             yield ReplaySummaryPanel(id="replay-summary", classes="muted")
-            with Horizontal(id="replay-main"):
-                yield ReplayMarkerListPanel(widget_id="replay-markers", classes="panel")
-                yield ReplayTranscriptPanel(widget_id="replay-transcript", classes="panel")
-            yield ReplayDetailPanel(id="replay-detail", classes="panel")
+            with Horizontal(id="replay-main", classes="frame"):
+                yield ReplayMarkerListPanel(widget_id="replay-markers", classes="divider-right")
+                yield ReplayTranscriptPanel(widget_id="replay-transcript", classes="section")
+            yield ReplayDetailPanel(id="replay-detail", classes="frame")
 
     def on_mount(self) -> None:
         self.refresh_data()

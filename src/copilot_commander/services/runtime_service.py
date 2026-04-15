@@ -10,6 +10,7 @@ from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.models import Agent
 from copilot_commander.domain.value_objects import ensure_aware_datetime, utc_now
 from copilot_commander.exceptions import GitCommandError, TmuxCommandError
+from copilot_commander.perf import timed
 from copilot_commander.services.discovery_service import PaneDiscovery, PaneDiscoveryReport
 from copilot_commander.services.monitoring_service import MonitoringDiscovery, MonitoringReport
 from copilot_commander.types import Clock
@@ -112,15 +113,17 @@ class RuntimeSynchronizer:
 
     def refresh(self) -> RuntimeSyncReport:
         try:
-            discovery_report = self._discovery.discover_panes()
+            with timed("sync.discovery"):
+                discovery_report = self._discovery.discover_panes()
         except TmuxCommandError as exc:
             return RuntimeSyncReport(error=self._format_tmux_error(exc))
 
         warnings: list[RuntimeSyncWarning] = []
-        enriched_panes = tuple(
-            self._enrich_discovery(discovery, warnings=warnings)
-            for discovery in discovery_report.panes
-        )
+        with timed("sync.enrich"):
+            enriched_panes = tuple(
+                self._enrich_discovery(discovery, warnings=warnings)
+                for discovery in discovery_report.panes
+            )
         refreshed_report = PaneDiscoveryReport(
             discovered_at=discovery_report.discovered_at,
             panes=enriched_panes,
@@ -134,9 +137,10 @@ class RuntimeSynchronizer:
                 pane for pane in enriched_panes if pane.classification == "non_agent_pane"
             ),
         )
-        monitoring_report = self._monitoring.monitor_discoveries(
-            cast(Sequence[MonitoringDiscovery], refreshed_report.panes)
-        )
+        with timed("sync.monitoring"):
+            monitoring_report = self._monitoring.monitor_discoveries(
+                cast(Sequence[MonitoringDiscovery], refreshed_report.panes)
+            )
         self._reap_stale_agents(refreshed_report, warnings=warnings)
         return RuntimeSyncReport(
             discovery_report=refreshed_report,

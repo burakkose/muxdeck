@@ -610,6 +610,18 @@ class SQLiteStore:
         )
         return tuple(_row_to_event(row) for row in rows)
 
+    def get_latest_event_for_session(self, session_id: str, /) -> Event | None:
+        """Return the most recent event for a session, or None."""
+        row = self._fetch_one(
+            (
+                f"{_SELECT_EVENT_SQL} WHERE session_id = ? "
+                "ORDER BY occurred_at DESC, rowid DESC LIMIT 1"
+            ),
+            (session_id,),
+            operation="get latest session event",
+        )
+        return None if row is None else _row_to_event(row)
+
     def list_events_for_agent(self, agent_id: str, /) -> tuple[Event, ...]:
         rows = self._fetch_all(
             f"{_SELECT_EVENT_SQL} WHERE agent_id = ? ORDER BY occurred_at ASC, rowid ASC",
@@ -637,6 +649,27 @@ class SQLiteStore:
             operation="list log chunks",
         )
         return tuple(_row_to_log_chunk(row) for row in rows)
+
+    def get_latest_log_chunk(self, session_id: str, /) -> LogChunk | None:
+        """Return the most recent log chunk for a session, or None."""
+        row = self._fetch_one(
+            (
+                f"{_SELECT_LOG_CHUNK_SQL} WHERE session_id = ? "
+                "ORDER BY sequence_no DESC, captured_at DESC, rowid DESC LIMIT 1"
+            ),
+            (session_id,),
+            operation="get latest log chunk",
+        )
+        return None if row is None else _row_to_log_chunk(row)
+
+    def get_latest_session_for_agent(self, agent_id: str, /) -> Session | None:
+        """Return the most recent session for an agent, or None."""
+        row = self._fetch_one(
+            (f"{_SELECT_SESSION_SQL} WHERE agent_id = ? ORDER BY created_at DESC, id DESC LIMIT 1"),
+            (agent_id,),
+            operation="get latest session for agent",
+        )
+        return None if row is None else _row_to_session(row)
 
     def list_log_chunks_for_agent(self, agent_id: str, /) -> tuple[LogChunk, ...]:
         rows = self._fetch_all(

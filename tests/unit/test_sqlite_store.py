@@ -373,6 +373,69 @@ class SQLiteStoreTests(unittest.TestCase):
             1,
         )
 
+    def test_get_latest_session_for_agent(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        result = self.store.get_latest_session_for_agent("agent-123")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.id, "session-123")
+        self.assertIsNone(self.store.get_latest_session_for_agent("nonexistent"))
+
+    def test_get_latest_event_for_session(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        first = Event(
+            id="evt-1",
+            agent_id="agent-123",
+            session_id="session-123",
+            kind="tool_start",
+            occurred_at=datetime(2025, 1, 1, 12, 0, tzinfo=UTC),
+            severity="info",
+        )
+        second = Event(
+            id="evt-2",
+            agent_id="agent-123",
+            session_id="session-123",
+            kind="tool_end",
+            occurred_at=datetime(2025, 1, 1, 12, 1, tzinfo=UTC),
+            severity="info",
+        )
+        self.store.append_events((first, second))
+        result = self.store.get_latest_event_for_session("session-123")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.id, "evt-2")
+        self.assertIsNone(self.store.get_latest_event_for_session("nonexistent"))
+
+    def test_get_latest_log_chunk(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        chunk1 = LogChunk(
+            id="log-1",
+            agent_id="agent-123",
+            session_id="session-123",
+            source="stdout",
+            sequence_no=1,
+            captured_at=datetime(2025, 1, 1, 12, 0, tzinfo=UTC),
+            content="first",
+        )
+        chunk2 = LogChunk(
+            id="log-2",
+            agent_id="agent-123",
+            session_id="session-123",
+            source="stdout",
+            sequence_no=2,
+            captured_at=datetime(2025, 1, 1, 12, 1, tzinfo=UTC),
+            content="second",
+        )
+        self.store.append_log_chunks((chunk1, chunk2))
+        result = self.store.get_latest_log_chunk("session-123")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.id, "log-2")
+        self.assertIsNone(self.store.get_latest_log_chunk("nonexistent"))
+
     def test_foreign_keys_reject_orphaned_rows(self) -> None:
         with self.assertRaises(PersistenceError):
             self.store.upsert_session(self._make_session())

@@ -14,6 +14,7 @@ from copilot_commander.domain.events import Event, LogChunk
 from copilot_commander.domain.models import Agent, Session, Worktree
 from copilot_commander.domain.value_objects import utc_now
 from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
+from copilot_commander.perf import timed
 from copilot_commander.types import Clock
 
 DashboardSortField = Literal["last_seen", "name", "status", "cost", "idle_seconds", "started_at"]
@@ -34,11 +35,17 @@ class DashboardStorePort(Protocol):
 
     def list_sessions(self, agent_id: str | None = None, /) -> Sequence[Session]: ...
 
+    def get_latest_session_for_agent(self, agent_id: str, /) -> Session | None: ...
+
     def get_session_context(self, session_id: str, /) -> SessionContextRecord | None: ...
 
     def list_events_for_session(self, session_id: str, /) -> Sequence[Event]: ...
 
+    def get_latest_event_for_session(self, session_id: str, /) -> Event | None: ...
+
     def list_log_chunks(self, session_id: str, /) -> Sequence[LogChunk]: ...
+
+    def get_latest_log_chunk(self, session_id: str, /) -> LogChunk | None: ...
 
     def get_worktree(self, worktree_id: str, /) -> Worktree | None: ...
 
@@ -176,49 +183,51 @@ class DashboardController:
         preview_line_limit: int = 8,
         alert_limit: int = 5,
     ) -> DashboardState:
-        applied_filters = DashboardFilterState() if filters is None else filters
-        applied_sort = DashboardSort() if sort is None else sort
-        generated_at = self._clock()
-        agent_views = tuple(self._build_agent_item(agent) for agent in self._store.list_agents())
-        filtered_agents = self._filter_agents(agent_views, applied_filters)
-        sorted_agents = self._sort_agents(filtered_agents, applied_sort)
-        selected_item = self._select_agent(sorted_agents, selected_agent_id)
-        selected_view = None
-        if selected_item is not None:
-            selected_view = self._build_selected_agent(
-                selected_item,
-                preview_line_limit=preview_line_limit,
+        with timed("dashboard.build_state"):
+            applied_filters = DashboardFilterState() if filters is None else filters
+            applied_sort = DashboardSort() if sort is None else sort
+            generated_at = self._clock()
+            with timed("dashboard.list_agents"):
+                agents = self._store.list_agents()
+            with timed("dashboard.build_agent_items"):
+                agent_views = tuple(self._build_agent_item(agent) for agent in agents)
+            filtered_agents = self._filter_agents(agent_views, applied_filters)
+            sorted_agents = self._sort_agents(filtered_agents, applied_sort)
+            selected_item = self._select_agent(sorted_agents, selected_agent_id)
+            selected_view = None
+            if selected_item is not None:
+                with timed("dashboard.build_selected_agent"):
+                    selected_view = self._build_selected_agent(
+                        selected_item,
+                        preview_line_limit=preview_line_limit,
+                    )
+            alerts = self._build_alerts(agent_views, limit=alert_limit)
+            metrics = self._build_metrics(agent_views)
+            health = self._build_health_summary(agent_views)
+            return DashboardState(
+                generated_at=generated_at,
+                metrics=metrics,
+                filters=applied_filters,
+                sort=applied_sort,
+                health=health,
+                alerts=alerts,
+                agents=sorted_agents,
+                selected_agent_id=selected_item.agent_id if selected_item is not None else None,
+                selected_agent=selected_view,
             )
-        alerts = self._build_alerts(agent_views, limit=alert_limit)
-        metrics = self._build_metrics(agent_views)
-        health = self._build_health_summary(agent_views)
-        return DashboardState(
-            generated_at=generated_at,
-            metrics=metrics,
-            filters=applied_filters,
-            sort=applied_sort,
-            health=health,
-            alerts=alerts,
-            agents=sorted_agents,
-            selected_agent_id=selected_item.agent_id if selected_item is not None else None,
-            selected_agent=selected_view,
-        )
 
     def _build_agent_item(self, agent: Agent) -> DashboardAgentListItemView:
-        sessions = tuple(self._store.list_sessions(agent.id))
-        latest_session = sessions[0] if sessions else None
-        latest_events = (
-            tuple(self._store.list_events_for_session(latest_session.id))
+        latest_session = self._store.get_latest_session_for_agent(agent.id)
+        latest_event = (
+            self._store.get_latest_event_for_session(latest_session.id)
             if latest_session is not None
-            else ()
+            else None
         )
-        latest_logs = (
-            tuple(self._store.list_log_chunks(latest_session.id))
+        latest_log = (
+            self._store.get_latest_log_chunk(latest_session.id)
             if latest_session is not None
-            else ()
+            else None
         )
-        latest_event = latest_events[-1] if latest_events else None
-        latest_log = latest_logs[-1] if latest_logs else None
         estimated_cost = None
         if agent.estimated_cost_usd is not None:
             estimated_cost = format(agent.estimated_cost_usd, "f")
@@ -350,8 +359,10 @@ class DashboardController:
         *,
         preview_line_limit: int,
     ) -> DashboardSelectedAgentView:
+        latest_session = self._store.get_latest_session_for_agent(item.agent_id)
+        # For open_session_id and session_count, we still need the full list
+        # but only once for the selected agent (not N times for all agents).
         sessions = tuple(self._store.list_sessions(item.agent_id))
-        latest_session = sessions[0] if sessions else None
         open_session = next((session for session in sessions if session.ended_at is None), None)
         context = None
         if latest_session is not None:
@@ -361,17 +372,18 @@ class DashboardController:
             if context is not None and context.worktree_id is not None
             else None
         )
-        events = (
-            tuple(self._store.list_events_for_session(latest_session.id))
+        latest_event = (
+            self._store.get_latest_event_for_session(latest_session.id)
             if latest_session is not None
-            else ()
+            else None
         )
+        # For log preview, load only log chunks (still needed for content).
+        # TODO: Add a store method to fetch only the last N log chunks.
         logs = (
             tuple(self._store.list_log_chunks(latest_session.id))
             if latest_session is not None
             else ()
         )
-        latest_event = events[-1] if events else None
         worktree_id = None
         if worktree is not None:
             worktree_id = worktree.id

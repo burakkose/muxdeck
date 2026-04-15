@@ -27,18 +27,51 @@ Screen {
     background: #1d2021;
 }
 
-/* ── panels: border-title pattern ────────────────────────────────── */
+/* ── shared frame: one rounded box per screen ────────────────────── */
 
+.frame {
+    border: round #504945;
+    border-title-color: #bdae93;
+    border-title-style: bold;
+    background: #282828;
+}
+
+.frame:focus-within {
+    border: round #83a598;
+}
+
+/* ── panel sections inside frames (borderless, thin separators) ─── */
+
+.section {
+    border: none;
+    background: #282828;
+    padding: 0 1;
+}
+
+.section-top {
+    border: none;
+    border-top: solid #3c3836;
+    background: #282828;
+    padding: 0 1;
+}
+
+.divider-right {
+    border: none;
+    border-right: solid #3c3836;
+    padding: 0 1;
+}
+
+/* legacy .panel for screens not yet fully migrated */
 .panel {
-    border: solid #504945;
-    background: #3c3836;
+    border: round #3c3836;
+    background: #282828;
     padding: 0 1;
     border-title-color: #bdae93;
     border-title-style: bold;
 }
 
 .panel:focus-within {
-    border: solid #83a598;
+    border: round #83a598;
 }
 
 .muted {
@@ -62,12 +95,13 @@ Screen {
 
 #dashboard-status-bar {
     height: 1;
-    background: #32302f;
+    background: #282828;
     padding: 0 1;
 }
 
 #dashboard-filter-row {
     height: 1;
+    padding: 0 1;
 }
 
 #dashboard-main {
@@ -86,7 +120,7 @@ Screen {
 
 #dashboard-detail {
     height: 1fr;
-    min-height: 6;
+    min-height: 4;
 }
 
 #dashboard-log {
@@ -96,7 +130,7 @@ Screen {
 
 #dashboard-alerts {
     height: auto;
-    max-height: 6;
+    max-height: 4;
 }
 
 /* ── worktrees ───────────────────────────────────────────────────── */
@@ -117,7 +151,7 @@ Screen {
 
 #worktrees-detail {
     height: 1fr;
-    min-height: 6;
+    min-height: 4;
 }
 
 #worktrees-conflicts {
@@ -127,7 +161,7 @@ Screen {
 
 #worktrees-intent {
     height: auto;
-    max-height: 10;
+    max-height: 8;
 }
 
 /* ── replay ──────────────────────────────────────────────────────── */
@@ -156,8 +190,8 @@ Screen {
 /* ── inputs ──────────────────────────────────────────────────────── */
 
 Input {
-    background: #1d2021;
-    color: #ebdbb2;
+    background: transparent;
+    color: #a89984;
     border: none;
     height: 1;
     padding: 0 0;
@@ -165,6 +199,7 @@ Input {
 
 Input:focus {
     border: none;
+    color: #ebdbb2;
 }
 
 #dashboard-filter-input {
@@ -181,24 +216,24 @@ Input:focus {
 /* ── scrollbars ──────────────────────────────────────────────────── */
 
 Static {
-    scrollbar-background: #3c3836;
-    scrollbar-color: #504945;
-    scrollbar-color-hover: #665c54;
+    scrollbar-background: #282828;
+    scrollbar-color: #3c3836;
+    scrollbar-color-hover: #504945;
 }
 
 /* ── help ────────────────────────────────────────────────────────── */
 
 #help-root {
     height: 1fr;
-    border: solid #504945;
+    border: round #504945;
     border-title-color: #bdae93;
     border-title-style: bold;
     padding: 0 1;
-    background: #3c3836;
+    background: #282828;
 }
 
 #help-root:focus-within {
-    border: solid #83a598;
+    border: round #83a598;
 }
 
 /* ── list views (tight) ──────────────────────────────────────────── */
@@ -215,7 +250,7 @@ ListItem {
 }
 
 ListView > ListItem.--highlight {
-    background: #504945;
+    background: #3c3836;
 }
 
 /* ── sessions ────────────────────────────────────────────────────── */
