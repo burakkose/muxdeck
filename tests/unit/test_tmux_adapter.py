@@ -14,6 +14,7 @@ from copilot_commander.adapters.tmux_adapter import (
     DISPLAY_MESSAGE_FORMAT,
     LIST_PANES_FORMAT,
     TmuxAdapter,
+    parse_tmux_socket_path,
 )
 from copilot_commander.domain.value_objects import CommandResult
 from copilot_commander.exceptions import CommandError, TmuxCommandError
@@ -88,6 +89,29 @@ class TmuxAdapterTests(unittest.TestCase):
         self.assertEqual(len(result.panes), 1)
         self.assertEqual(result.panes[0].pane_id, "%9")
         self.assertEqual(result.ignored_lines, ("garbage",))
+
+    def test_list_panes_prefixes_selected_socket_path(self) -> None:
+        runner = FakeCommandRunner(results=[_command_result(("tmux", "list-panes"), stdout="")])
+
+        TmuxAdapter(runner, socket_path="/tmp/tmux-1000/custom").list_panes()
+
+        self.assertEqual(
+            runner.calls,
+            [
+                (
+                    (
+                        "tmux",
+                        "-S",
+                        "/tmp/tmux-1000/custom",
+                        "list-panes",
+                        "-a",
+                        "-F",
+                        LIST_PANES_FORMAT,
+                    ),
+                    10.0,
+                )
+            ],
+        )
 
     def test_display_pane_metadata_parses_dead_state(self) -> None:
         runner = FakeCommandRunner(
@@ -304,6 +328,12 @@ class TmuxAdapterTests(unittest.TestCase):
 
         self.assertEqual(context.value.command, "tmux list-panes -a")
         self.assertEqual(context.value.stderr, "timed out after 10.000s")
+
+    def test_parse_tmux_socket_path_reads_tmux_env_value(self) -> None:
+        self.assertEqual(
+            parse_tmux_socket_path("/tmp/tmux-1000/default,1234,0"),
+            Path("/tmp/tmux-1000/default"),
+        )
 
 
 if __name__ == "__main__":

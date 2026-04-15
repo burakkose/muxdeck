@@ -32,6 +32,7 @@ from copilot_commander.screens import (
     DashboardScreen,
     HelpScreen,
     ReplayScreen,
+    SetupScreen,
     WorktreesScreen,
 )
 from copilot_commander.screens.sessions import SessionsScreen
@@ -44,6 +45,7 @@ from copilot_commander.services import (
     RuntimeSynchronizer,
     RuntimeSyncReport,
     SessionService,
+    SetupDoctorService,
     WorktreeService,
 )
 from copilot_commander.services.action_service import TmuxActionService
@@ -76,6 +78,7 @@ class CommanderRuntime:
     sync_store: SQLiteStore | None = None
     sessions_ctrl: SessionsController | None = None
     sync_dashboard: DashboardController | None = None
+    setup: SetupDoctorService | None = None
 
 
 class CommanderApp(App[None]):
@@ -101,6 +104,7 @@ class CommanderApp(App[None]):
         self.add_mode("worktrees", lambda: WorktreesScreen(self.runtime))
         self.add_mode("replay", lambda: ReplayScreen(self.runtime))
         self.add_mode("sessions", lambda: SessionsScreen(self.runtime))
+        self.add_mode("setup", lambda: SetupScreen(self.runtime))
         self.add_mode("help", lambda: HelpScreen(self.runtime))
         self.switch_mode("dashboard")
         interval_sec = max(2, self.runtime.config.general.discovery_interval_sec)
@@ -118,6 +122,9 @@ class CommanderApp(App[None]):
 
     def action_show_sessions(self) -> None:
         self.switch_mode("sessions")
+
+    def action_show_setup(self) -> None:
+        self.switch_mode("setup")
 
     def action_show_help(self) -> None:
         self.switch_mode("help")
@@ -256,7 +263,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     sync_store = SQLiteStore.from_config(resolved_config, check_same_thread=False)
     process_adapter = ProcessAdapter()
     git_adapter = GitAdapter(process_adapter)
-    tmux_adapter = TmuxAdapter(process_adapter)
+    tmux_adapter = TmuxAdapter(process_adapter, socket_path=resolved_config.tmux.socket_path)
     action_service = TmuxActionService(tmux=tmux_adapter)
     copilot_adapter = CopilotAdapter(process_adapter)
     sessions = SessionService(store=store)
@@ -319,6 +326,10 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         sync_store=sync_store,
         sessions_ctrl=sessions_ctrl,
         sync_dashboard=sync_dashboard,
+        setup=SetupDoctorService(
+            tmux_adapter,
+            configured_socket_path=resolved_config.tmux.socket_path,
+        ),
     )
 
 

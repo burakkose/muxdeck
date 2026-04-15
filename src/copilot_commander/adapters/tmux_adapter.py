@@ -13,7 +13,7 @@ from copilot_commander.parsers import (
     TmuxPaneRecord,
     parse_tmux_list_panes_output,
 )
-from copilot_commander.types import CommandRunner
+from copilot_commander.types import CommandRunner, PathLike
 
 _LIST_PANES_FIELDS: Final[tuple[tuple[str, str], ...]] = (
     ("session_name", "#{session_name}"),
@@ -70,6 +70,16 @@ def _parse_optional_bool(value: str | None) -> bool | None:
     return None
 
 
+def parse_tmux_socket_path(value: str | None) -> Path | None:
+    normalized = _normalize_optional_text(value)
+    if normalized is None:
+        return None
+    socket_value = normalized.split(",", maxsplit=1)[0].strip()
+    if not socket_value:
+        return None
+    return Path(socket_value).expanduser().resolve(strict=False)
+
+
 @dataclass(frozen=True, slots=True)
 class TmuxPaneMetadata:
     pane_id: str
@@ -117,6 +127,7 @@ class TmuxAdapter:
         *,
         binary: str = "tmux",
         timeout_sec: float = 10.0,
+        socket_path: PathLike | None = None,
     ) -> None:
         if timeout_sec <= 0:
             msg = "timeout_sec must be greater than zero"
@@ -124,6 +135,18 @@ class TmuxAdapter:
         self._command_runner = command_runner
         self._binary = binary
         self._timeout_sec = timeout_sec
+        self._socket_path: Path | None = None
+        self.set_socket_path(socket_path)
+
+    @property
+    def socket_path(self) -> Path | None:
+        return self._socket_path
+
+    def set_socket_path(self, socket_path: PathLike | None) -> None:
+        if socket_path is None:
+            self._socket_path = None
+            return
+        self._socket_path = Path(socket_path).expanduser().resolve(strict=False)
 
     def list_panes(self) -> TmuxListPanesParseResult:
         result = self._run_tmux("list-panes", "-a", "-F", LIST_PANES_FORMAT)
@@ -132,8 +155,7 @@ class TmuxAdapter:
     def display_pane_metadata(self, target_pane: str, /) -> TmuxPaneMetadata:
         metadata = self.get_pane_metadata(target_pane)
         if metadata is None:
-            command = (
-                self._binary,
+            command = self._build_command(
                 "display-message",
                 "-p",
                 "-t",
@@ -272,7 +294,7 @@ class TmuxAdapter:
         return TmuxPaneMetadata.from_record(parsed.panes[0])
 
     def _run_tmux(self, *args: str) -> CommandResult:
-        command = (self._binary, *args)
+        command = self._build_command(*args)
         try:
             result = self._command_runner.run(command, timeout_sec=self._timeout_sec)
         except CommandError as exc:
@@ -290,6 +312,13 @@ class TmuxAdapter:
             stderr=result.stderr,
             stdout=result.stdout,
         )
+
+    def _build_command(self, *args: str) -> tuple[str, ...]:
+        command: list[str] = [self._binary]
+        if self._socket_path is not None:
+            command.extend(("-S", str(self._socket_path)))
+        command.extend(args)
+        return tuple(command)
 
     def _is_missing_target_error(self, exc: TmuxCommandError) -> bool:
         stderr = (exc.stderr or "").casefold()

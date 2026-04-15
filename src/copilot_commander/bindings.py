@@ -39,6 +39,7 @@ GLOBAL_BINDINGS: Final[list[BindingSpec]] = [
     _binding("2", "show_worktrees", "Worktrees", show=False, priority=True, system=True),
     _binding("3", "show_replay", "Replay", show=False, priority=True, system=True),
     _binding("4", "show_sessions", "Sessions", show=False, priority=True, system=True),
+    _binding("5", "show_setup", "Setup", show=False, priority=True, system=True),
     _binding("question_mark", "show_help", "Help", show=False, priority=True, system=True),
     _binding("r", "refresh_screen", "Refresh", show=False, priority=True, system=True),
     _binding("tab", "focus_next", "Next focus", show=False, priority=True, system=True),
@@ -51,6 +52,7 @@ GLOBAL_HINTS = (
     KeyHint("2", "worktrees"),
     KeyHint("3", "replay"),
     KeyHint("4", "sessions"),
+    KeyHint("5", "setup"),
     KeyHint("?", "help"),
     KeyHint("r", "refresh"),
     KeyHint("q", "quit"),
@@ -136,6 +138,19 @@ SESSIONS_HINTS = (
     KeyHint("p", "focus pane"),
 )
 
+SETUP_BINDINGS: Final[list[BindingSpec]] = [
+    Binding("j", "cursor_down", "Next socket", show=False),
+    Binding("k", "cursor_up", "Prev socket", show=False),
+    Binding("enter", "apply_socket", "Use socket", show=False),
+    Binding("c", "clear_socket", "Auto socket", show=False),
+]
+
+SETUP_HINTS = (
+    KeyHint("j/k", "move"),
+    KeyHint("enter", "apply"),
+    KeyHint("c", "auto"),
+)
+
 HELP_BINDINGS: Final[list[BindingSpec]] = [
     Binding("escape", "show_dashboard", "Dashboard", show=False)
 ]
@@ -147,6 +162,7 @@ ALL_HINT_GROUPS = {
     "worktrees": WORKTREE_HINTS,
     "replay": REPLAY_HINTS,
     "sessions": SESSIONS_HINTS,
+    "setup": SETUP_HINTS,
     "help": HELP_HINTS,
 }
 
@@ -162,6 +178,8 @@ __all__ = [
     "REPLAY_HINTS",
     "SESSIONS_BINDINGS",
     "SESSIONS_HINTS",
+    "SETUP_BINDINGS",
+    "SETUP_HINTS",
     "WORKTREE_BINDINGS",
     "WORKTREE_HINTS",
     "KeyHint",

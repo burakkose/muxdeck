@@ -10,6 +10,7 @@ from copilot_commander.widgets.replay import (
     ReplayMarkerListPanel,
     ReplayTranscriptPanel,
 )
+from copilot_commander.widgets.setup import DoctorDetailPanel, SetupSummaryPanel, SocketListPanel
 from copilot_commander.widgets.worktrees import (
     ConflictPanel,
     StartIntentPanel,
@@ -22,10 +23,13 @@ __all__ = [
     "AgentListPanel",
     "AlertPanel",
     "ConflictPanel",
+    "DoctorDetailPanel",
     "KeyHintFooter",
     "ReplayDetailPanel",
     "ReplayMarkerListPanel",
     "ReplayTranscriptPanel",
+    "SetupSummaryPanel",
+    "SocketListPanel",
     "StartIntentPanel",
     "StatusBar",
     "TabBar",

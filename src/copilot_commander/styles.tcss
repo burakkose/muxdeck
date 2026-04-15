@@ -74,7 +74,8 @@ Screen {
 #dashboard-root,
 #worktrees-root,
 #replay-root,
-#sessions-root {
+#sessions-root,
+#setup-root {
     height: 1fr;
     layout: vertical;
 }
@@ -256,6 +257,31 @@ ListView > ListItem.--highlight {
 #sessions-summary {
     height: 1;
     margin-bottom: 0;
+}
+
+/* ── setup ───────────────────────────────────────────────────────── */
+
+#setup-main {
+    height: 1fr;
+}
+
+#setup-sockets {
+    width: 38%;
+}
+
+#setup-sidebar {
+    width: 62%;
+    height: 1fr;
+    layout: vertical;
+}
+
+#setup-summary {
+    height: auto;
+    min-height: 5;
+}
+
+#setup-checks {
+    height: 1fr;
 }
 
 #sessions-filter-input {

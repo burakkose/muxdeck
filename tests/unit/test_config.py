@@ -63,6 +63,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.costing.default_input_token_cost_per_1m, Decimal("0.000000"))
         self.assertEqual(config.costing.default_output_token_cost_per_1m, Decimal("0.000000"))
         self.assertTrue(config.costing.estimation_enabled)
+        self.assertIsNone(config.tmux.socket_path)
         self.assertEqual(DEFAULT_WORKSPACE_ROOT, "~/code/worktrees")
 
     def test_load_config_parses_psd_sections_and_relative_paths(self) -> None:
@@ -94,6 +95,9 @@ agent_name_pattern = "{repo}/{slug}"
 default_input_token_cost_per_1m = "1.25"
 default_output_token_cost_per_1m = "8.5"
 estimation_enabled = true
+
+[tmux]
+socket_path = "./tmux/custom.sock"
 """.strip(),
             encoding="utf-8",
         )
@@ -118,6 +122,7 @@ estimation_enabled = true
         self.assertEqual(config.costing.default_input_token_cost_per_1m, Decimal("1.250000"))
         self.assertEqual(config.costing.default_output_token_cost_per_1m, Decimal("8.500000"))
         self.assertTrue(config.costing.estimation_enabled)
+        self.assertEqual(config.tmux.socket_path, (config_dir / "tmux/custom.sock").resolve())
 
     def test_costing_config_exposes_token_pricing(self) -> None:
         costing = CostingConfig(
