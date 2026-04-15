@@ -47,7 +47,7 @@ class DashboardScreen(ShellScreen):
 
     def __init__(self, runtime: CommanderRuntime) -> None:
         super().__init__(runtime)
-        self._filters = DashboardFilterState()
+        self._filters = DashboardFilterState(include_completed=False)
         self._sort = DashboardSort()
         self._selected_agent_id: str | None = None
         self._state: DashboardState | None = None

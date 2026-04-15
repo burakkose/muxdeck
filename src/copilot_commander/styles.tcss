@@ -125,9 +125,20 @@ Header {
     layout: vertical;
 }
 
-#dashboard-detail-panel,
-#dashboard-log-panel,
-#dashboard-alerts-panel,
+#dashboard-detail-panel {
+    height: 2fr;
+    margin-bottom: 1;
+}
+
+#dashboard-log-panel {
+    height: 1fr;
+    margin-bottom: 1;
+}
+
+#dashboard-alerts-panel {
+    height: 1fr;
+}
+
 #worktrees-detail-panel,
 #worktrees-conflicts-panel,
 #worktrees-intent-panel {

@@ -80,25 +80,35 @@ class TestAgentListTable:
         table = panel._build_table()
         assert len(table.columns) == 7
 
-    def test_display_name_prefers_worktree(self):
-        """worktree_name is used as the display name, not process name."""
+    def test_display_name_prefers_repo_name(self):
+        """repo_name is used as the display name when available."""
         from copilot_commander.widgets.dashboard import AgentListPanel
 
-        agent = _agent(name="node", worktree_name="tachyon")
+        agent = _agent(name="node", repo_name="tachyon", worktree_name="wt-tachyon")
         panel = AgentListPanel(widget_id="test")
         panel._agents = (agent,)
         panel._selected_index = 0
         table = panel._build_table()
-        # The second column (index 1) is the name column.
-        # Rich Table stores cell data in _cells; verify via rendering.
         row_cells = table.columns[1]._cells
         assert len(row_cells) == 1
+        assert "tachyon" in str(row_cells[0])
+
+    def test_display_name_falls_back_to_worktree(self):
+        """worktree_name is used when repo_name is absent."""
+        from copilot_commander.widgets.dashboard import AgentListPanel
+
+        agent = _agent(name="node", repo_name=None, worktree_name="tachyon")
+        panel = AgentListPanel(widget_id="test")
+        panel._agents = (agent,)
+        panel._selected_index = 0
+        table = panel._build_table()
+        row_cells = table.columns[1]._cells
         assert "tachyon" in str(row_cells[0])
 
     def test_display_name_falls_back_to_process_name(self):
         from copilot_commander.widgets.dashboard import AgentListPanel
 
-        agent = _agent(name="python", worktree_name=None)
+        agent = _agent(name="python", repo_name=None, worktree_name=None)
         panel = AgentListPanel(widget_id="test")
         panel._agents = (agent,)
         panel._selected_index = 0

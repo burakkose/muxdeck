@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from pathlib import PurePosixPath
 from typing import Literal, Protocol, cast, runtime_checkable
 
 from copilot_commander.domain.enums import AgentStatus
@@ -70,6 +71,7 @@ class MonitoringUsage(Protocol):
 @runtime_checkable
 class MonitoringParseResult(Protocol):
     boundaries: Sequence[object]
+    ui_markers: Sequence[object]
 
 
 @runtime_checkable
@@ -260,7 +262,12 @@ class MonitoringService:
             or (existing_agent.repo_root if existing_agent is not None else None),
             worktree_path=worktree_path,
             branch=branch or (existing_agent.branch if existing_agent is not None else None),
-            name=existing_agent.name if existing_agent is not None else None,
+            name=_derive_agent_name(
+                repo_root=repo_root
+                or (existing_agent.repo_root if existing_agent is not None else None),
+                cwd=cwd,
+                existing_name=existing_agent.name if existing_agent is not None else None,
+            ),
             task_title=existing_agent.task_title if existing_agent is not None else None,
             task_summary=existing_agent.task_summary if existing_agent is not None else None,
             copilot_session_id=copilot_session_id,
@@ -384,5 +391,29 @@ def _has_activity_signal(session_evidence: MonitoringEvidence | None, /) -> bool
             bool(session_evidence.blocking_issue_kinds),
             bool(session_evidence.error_messages),
             bool(session_evidence.parse_result.boundaries),
+            bool(session_evidence.parse_result.ui_markers),
         )
     )
+
+
+def _derive_agent_name(
+    *,
+    repo_root: str | None,
+    cwd: str,
+    existing_name: str | None,
+) -> str | None:
+    """Derive a meaningful agent name from paths.
+
+    Prefer repo name over cwd basename over existing (process) name.
+    Always re-derive so that stale process names get overwritten once
+    repo_root becomes available.
+    """
+    if repo_root:
+        name = PurePosixPath(repo_root).name
+        if name:
+            return name
+    if cwd and cwd != "/":
+        name = PurePosixPath(cwd).name
+        if name:
+            return name
+    return existing_name
