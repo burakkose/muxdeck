@@ -36,7 +36,6 @@ class ReplayMarkerListPanel(Vertical):
         list_view = self.query_one(ListView)
         list_view.clear()
         self._marker_ordinals = []
-        self.border_title = f"Markers ({len(markers)})"
         for index, marker in enumerate(markers):
             line = Text()
             line.append(f"{marker.timestamp[11:19]} ", style=FG4)
