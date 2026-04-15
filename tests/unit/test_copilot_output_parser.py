@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import unittest
 from decimal import Decimal
+from typing import Protocol, cast
 
-from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
+from copilot_commander.parsers.copilot_output_parser import (
+    CopilotOutputParseResult,
+    parse_copilot_output,
+)
+
+
+class _CachedParser(Protocol):
+    def __call__(self, output: str) -> CopilotOutputParseResult: ...
+
+    def cache_clear(self) -> None: ...
 
 
 class CopilotOutputParserTests(unittest.TestCase):
@@ -91,6 +101,16 @@ class CopilotOutputParserTests(unittest.TestCase):
         result = parse_copilot_output(output)
 
         assert result.blocking_issues == ()
+
+    def test_parse_copilot_output_reuses_cached_result_for_identical_text(self) -> None:
+        parser = cast(_CachedParser, parse_copilot_output)
+        parser.cache_clear()
+        output = " / commands · ? help · ctrl+q enqueue"
+
+        first = parser(output)
+        second = parser(output)
+
+        assert first is second
 
 
 if __name__ == "__main__":

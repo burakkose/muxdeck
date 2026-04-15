@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from functools import lru_cache
 from typing import Literal
 
 from copilot_commander.domain.value_objects import ensure_confidence
@@ -315,6 +316,7 @@ class CopilotOutputParseResult:
     evidence_spans: tuple[CopilotEvidenceSpan, ...] = ()
 
 
+@lru_cache(maxsize=128)
 def parse_copilot_output(output: str) -> CopilotOutputParseResult:
     session_ids: list[CopilotSessionIdCandidate] = []
     boundaries: list[CopilotTranscriptBoundary] = []
