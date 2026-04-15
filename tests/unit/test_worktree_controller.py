@@ -120,9 +120,7 @@ class FakeGit:
 class WorktreeControllerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.runtime_dir = (
-            Path(__file__).resolve().parent
-            / "_runtime_worktree_controller"
-            / self._testMethodName
+            Path(__file__).resolve().parent / "_runtime_worktree_controller" / self._testMethodName
         )
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.addCleanup(self._cleanup_runtime_dir)

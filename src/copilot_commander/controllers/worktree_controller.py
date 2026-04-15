@@ -117,12 +117,40 @@ class WorktreeController:
         conflicts = self._conflicts_for_worktree(worktree)
         return self._build_detail(worktree, conflicts)
 
-    def create_worktree(self, cwd: str | Path, **kwargs: object) -> WorktreeActionView:
-        result = self._service.create_worktree(cwd, **kwargs)
+    def create_worktree(
+        self,
+        cwd: str | Path,
+        *,
+        slug: str | None = None,
+        task_title: str | None = None,
+        branch: str | None = None,
+        base_branch: str | None = None,
+        attach_agent_id: str | None = None,
+        force: bool = False,
+    ) -> WorktreeActionView:
+        result = self._service.create_worktree(
+            cwd,
+            slug=slug,
+            task_title=task_title,
+            branch=branch,
+            base_branch=base_branch,
+            attach_agent_id=attach_agent_id,
+            force=force,
+        )
         return self._action_from_create_result(result)
 
-    def attach_worktree(self, cwd_or_path: str | Path, **kwargs: object) -> WorktreeActionView:
-        result = self._service.attach_worktree(cwd_or_path, **kwargs)
+    def attach_worktree(
+        self,
+        cwd_or_path: str | Path,
+        *,
+        agent_id: str | None = None,
+        allow_reassign: bool = False,
+    ) -> WorktreeActionView:
+        result = self._service.attach_worktree(
+            cwd_or_path,
+            agent_id=agent_id,
+            allow_reassign=allow_reassign,
+        )
         detail = self._build_detail(result.worktree, result.conflicts)
         return WorktreeActionView(
             action="attach",

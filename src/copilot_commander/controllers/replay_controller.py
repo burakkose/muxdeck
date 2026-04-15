@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Literal
 
-from copilot_commander.services.replay_service import ReplayService, SessionReplay
+from copilot_commander.services.replay_service import ReplayEntry, ReplayService, SessionReplay
 
 ReplayExportFormat = Literal["text", "json"]
 
@@ -142,23 +142,7 @@ class ReplayController:
         selected_index: int | None,
     ) -> ReplayStateView:
         transcript = tuple(
-            ReplayTranscriptEntryView(
-                ordinal=entry.ordinal,
-                kind=entry.kind,
-                timestamp=entry.timestamp.isoformat(),
-                label=(
-                    entry.event.kind
-                    if entry.event is not None
-                    else f"{entry.log_chunk.source}#{entry.log_chunk.sequence_no}"
-                ),
-                severity=entry.event.severity if entry.event is not None else None,
-                lines=(
-                    (entry.event.payload_json,)
-                    if entry.event is not None
-                    else tuple(entry.log_chunk.content.splitlines())
-                ),
-                is_selected=entry.ordinal == selected_index,
-            )
+            self._build_transcript_entry(entry, selected_index=selected_index)
             for entry in replay.entries
         )
         markers = tuple(
@@ -177,6 +161,33 @@ class ReplayController:
             selected_index=selected_index,
             transcript=transcript,
             jump_markers=markers,
+        )
+
+    def _build_transcript_entry(
+        self,
+        entry: ReplayEntry,
+        *,
+        selected_index: int | None,
+    ) -> ReplayTranscriptEntryView:
+        if entry.event is not None:
+            label = entry.event.kind
+            severity = entry.event.severity
+            lines: tuple[str, ...] = (entry.event.payload_json,)
+        elif entry.log_chunk is not None:
+            label = f"{entry.log_chunk.source}#{entry.log_chunk.sequence_no}"
+            severity = None
+            lines = tuple(entry.log_chunk.content.splitlines())
+        else:
+            msg = "replay entry is missing both event and log chunk"
+            raise ValueError(msg)
+        return ReplayTranscriptEntryView(
+            ordinal=entry.ordinal,
+            kind=entry.kind,
+            timestamp=entry.timestamp.isoformat(),
+            label=label,
+            severity=severity,
+            lines=lines,
+            is_selected=entry.ordinal == selected_index,
         )
 
     def _flatten_transcript(

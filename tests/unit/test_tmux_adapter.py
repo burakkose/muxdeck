@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import unittest
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-import unittest
+
+import pytest
 
 from copilot_commander.adapters.tmux_adapter import (
     DISPLAY_MESSAGE_FORMAT,
@@ -45,15 +48,15 @@ class FakeCommandRunner:
 
     def run(
         self,
-        command: tuple[str, ...],
+        command: Sequence[str],
         /,
         *,
         cwd: Path | None = None,
-        env: dict[str, str] | None = None,
+        env: Mapping[str, str] | None = None,
         timeout_sec: float | None = None,
     ) -> CommandResult:
         del cwd, env
-        self.calls.append((command, timeout_sec))
+        self.calls.append((tuple(command), timeout_sec))
         if self.errors:
             raise self.errors.pop(0)
         return self.results.pop(0)
@@ -260,13 +263,18 @@ class TmuxAdapterTests(unittest.TestCase):
     def test_server_outage_error_propagates(self) -> None:
         runner = FakeCommandRunner(
             results=[],
-            errors=[TmuxCommandError("tmux display-message", stderr="no server running on /tmp/tmux")],
+            errors=[
+                TmuxCommandError(
+                    "tmux display-message",
+                    stderr="no server running on /tmp/tmux",
+                )
+            ],
         )
 
-        with self.assertRaises(TmuxCommandError) as context:
+        with pytest.raises(TmuxCommandError) as context:
             TmuxAdapter(runner).pane_exists("%99")
 
-        self.assertIn("no server running", context.exception.stderr or "")
+        self.assertIn("no server running", context.value.stderr or "")
 
     def test_non_zero_tmux_exit_raises_tmux_command_error(self) -> None:
         runner = FakeCommandRunner(
@@ -279,11 +287,11 @@ class TmuxAdapterTests(unittest.TestCase):
             ]
         )
 
-        with self.assertRaises(TmuxCommandError) as context:
+        with pytest.raises(TmuxCommandError) as context:
             TmuxAdapter(runner).select_pane("%99")
 
-        self.assertEqual(context.exception.exit_code, 1)
-        self.assertEqual(context.exception.stderr, "can't find pane: %99")
+        self.assertEqual(context.value.exit_code, 1)
+        self.assertEqual(context.value.stderr, "can't find pane: %99")
 
     def test_runner_command_error_is_wrapped(self) -> None:
         runner = FakeCommandRunner(
@@ -291,11 +299,11 @@ class TmuxAdapterTests(unittest.TestCase):
             errors=[CommandError("tmux list-panes -a", stderr="timed out after 10.000s")],
         )
 
-        with self.assertRaises(TmuxCommandError) as context:
+        with pytest.raises(TmuxCommandError) as context:
             TmuxAdapter(runner).list_panes()
 
-        self.assertEqual(context.exception.command, "tmux list-panes -a")
-        self.assertEqual(context.exception.stderr, "timed out after 10.000s")
+        self.assertEqual(context.value.command, "tmux list-panes -a")
+        self.assertEqual(context.value.stderr, "timed out after 10.000s")
 
 
 if __name__ == "__main__":

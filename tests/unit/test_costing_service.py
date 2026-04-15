@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -14,12 +15,15 @@ from copilot_commander.adapters.copilot_adapter import CopilotAdapter
 from copilot_commander.config import AppConfig, CostingConfig, PathsConfig
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.models import Agent, Session
+from copilot_commander.domain.value_objects import CommandResult
 from copilot_commander.services.costing_service import CostingService
 
 
 class CostingServiceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.runtime_dir = Path(__file__).resolve().parent / "_runtime_costing_service" / self._testMethodName
+        self.runtime_dir = (
+            Path(__file__).resolve().parent / "_runtime_costing_service" / self._testMethodName
+        )
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.addCleanup(self._cleanup_runtime_dir)
         self.config = AppConfig(
@@ -27,7 +31,9 @@ class CostingServiceTests(unittest.TestCase):
                 state_dir=self.runtime_dir / "state",
                 workspace_root=self.runtime_dir / "worktrees",
                 database_path=self.runtime_dir / "state" / DEFAULT_DATABASE_FILE_NAME,
-                fallback_database_path=self.runtime_dir / "legacy-state" / DEFAULT_DATABASE_FILE_NAME,
+                fallback_database_path=(
+                    self.runtime_dir / "legacy-state" / DEFAULT_DATABASE_FILE_NAME
+                ),
             ),
             costing=CostingConfig(
                 default_input_token_cost_per_1m=2,
@@ -82,7 +88,9 @@ class CostingServiceTests(unittest.TestCase):
         if self.runtime_dir.exists():
             shutil.rmtree(self.runtime_dir)
 
-    def test_record_usage_evidence_preserves_raw_payload_and_aggregates_actual_and_estimated(self) -> None:
+    def test_record_usage_evidence_preserves_raw_payload_and_aggregates_actual_and_estimated(
+        self,
+    ) -> None:
         evidence = self.adapter.interpret_output(
             "\n".join(
                 (
@@ -117,8 +125,17 @@ class CostingServiceTests(unittest.TestCase):
 
 
 class _NoopRunner:
-    def run(self, command: object, /, **kwargs: object) -> object:
-        raise AssertionError(f"unexpected runner call: {command!r} {kwargs!r}")
+    def run(
+        self,
+        command: Sequence[str],
+        /,
+        *,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout_sec: float | None = None,
+    ) -> CommandResult:
+        del cwd, env, timeout_sec
+        raise AssertionError(f"unexpected runner call: {tuple(command)!r}")
 
 
 if __name__ == "__main__":

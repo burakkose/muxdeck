@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import cast
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -60,7 +59,7 @@ class WorktreeListPanel(Vertical):
         if not self._worktree_ids:
             return
         list_view = self.query_one(ListView)
-        current = 0 if list_view.index is None else cast(int, list_view.index)
+        current = list_view.index if list_view.index is not None else 0
         list_view.index = max(0, min(len(self._worktree_ids) - 1, current + delta))
         list_view.focus()
         self._post_selection(list_view.index)

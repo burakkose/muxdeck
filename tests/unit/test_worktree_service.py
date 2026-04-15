@@ -87,7 +87,9 @@ class FakeGit:
         force: bool = False,
     ) -> GitWorktreeRemoveOutcome:
         normalized_path = Path(path).resolve(strict=False)
-        self._worktrees = [worktree for worktree in self._worktrees if worktree.path != normalized_path]
+        self._worktrees = [
+            worktree for worktree in self._worktrees if worktree.path != normalized_path
+        ]
         self._snapshots.pop(normalized_path, None)
         return GitWorktreeRemoveOutcome(
             path=normalized_path,
@@ -106,7 +108,9 @@ class FakeGit:
         del cwd, expire
         if not dry_run:
             prunable_paths = {worktree.path for worktree in self._worktrees if worktree.is_prunable}
-            self._worktrees = [worktree for worktree in self._worktrees if worktree.path not in prunable_paths]
+            self._worktrees = [
+                worktree for worktree in self._worktrees if worktree.path not in prunable_paths
+            ]
             for path in prunable_paths:
                 self._snapshots.pop(path, None)
         return GitWorktreePruneOutcome(
@@ -118,7 +122,9 @@ class FakeGit:
 
 class WorktreeServiceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.runtime_dir = Path(__file__).resolve().parent / "_runtime_worktree_service" / self._testMethodName
+        self.runtime_dir = (
+            Path(__file__).resolve().parent / "_runtime_worktree_service" / self._testMethodName
+        )
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.addCleanup(self._cleanup_runtime_dir)
         self.repo_root = self.runtime_dir / "repo"
@@ -130,7 +136,9 @@ class WorktreeServiceTests(unittest.TestCase):
                 state_dir=self.runtime_dir / "state",
                 workspace_root=self.workspace_root,
                 database_path=self.runtime_dir / "state" / DEFAULT_DATABASE_FILE_NAME,
-                fallback_database_path=self.runtime_dir / "legacy-state" / DEFAULT_DATABASE_FILE_NAME,
+                fallback_database_path=self.runtime_dir
+                / "legacy-state"
+                / DEFAULT_DATABASE_FILE_NAME,
             ),
             config_file=self.runtime_dir / "config.toml",
         )
@@ -169,7 +177,9 @@ class WorktreeServiceTests(unittest.TestCase):
         if self.runtime_dir.exists():
             shutil.rmtree(self.runtime_dir)
 
-    def _make_agent(self, *, agent_id: str = "agent-123", worktree_path: str | None = None) -> Agent:
+    def _make_agent(
+        self, *, agent_id: str = "agent-123", worktree_path: str | None = None
+    ) -> Agent:
         started_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
         return Agent(
             id=agent_id,
@@ -204,7 +214,9 @@ class WorktreeServiceTests(unittest.TestCase):
         self.assertEqual(plan.slug, "fix-api-state")
         self.assertEqual(plan.branch_name, "task/fix-api-state")
         self.assertEqual(plan.worktree_name, f"{self.repo_root.name}--fix-api-state")
-        self.assertEqual(plan.worktree_path, self.workspace_root / f"{self.repo_root.name}--fix-api-state")
+        self.assertEqual(
+            plan.worktree_path, self.workspace_root / f"{self.repo_root.name}--fix-api-state"
+        )
 
     def test_create_worktree_persists_snapshot(self) -> None:
         self.store.upsert_agent(self._make_agent(agent_id="agent-123"))
@@ -224,7 +236,9 @@ class WorktreeServiceTests(unittest.TestCase):
 
     def test_attach_rejects_reassignment_without_override(self) -> None:
         self.store.upsert_agent(
-            self._make_agent(agent_id="agent-1", worktree_path=str(self.workspace_root / "repo--task-one"))
+            self._make_agent(
+                agent_id="agent-1", worktree_path=str(self.workspace_root / "repo--task-one")
+            )
         )
         tracked = Worktree(
             id="worktree-123",

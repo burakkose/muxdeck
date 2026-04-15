@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any, Literal, cast
 
 import pytest
 
-from copilot_commander.app import CommanderApp
+from copilot_commander.app import CommanderApp, CommanderRuntime
 from copilot_commander.controllers import (
     DashboardAgentListItemView,
     DashboardAlertView,
@@ -27,6 +28,7 @@ from copilot_commander.controllers import (
     WorktreeSummaryView,
 )
 from copilot_commander.domain.enums import AgentStatus
+from copilot_commander.domain.models import Session
 
 
 class FakeConfig:
@@ -39,15 +41,16 @@ class FakeConfig:
 
 class FakeStore:
     def __init__(self) -> None:
-        self.sessions = {
-            "session-1": type("S", (), {"id": "session-1", "agent_id": "agent-1"})(),
-            "session-2": type("S", (), {"id": "session-2", "agent_id": "agent-2"})(),
+        timestamp = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        self.sessions: dict[str, Session] = {
+            "session-1": Session(id="session-1", agent_id="agent-1", created_at=timestamp),
+            "session-2": Session(id="session-2", agent_id="agent-2", created_at=timestamp),
         }
 
-    def get_session(self, session_id: str):
+    def get_session(self, session_id: str) -> Session | None:
         return self.sessions.get(session_id)
 
-    def list_sessions(self, agent_id: str | None = None):
+    def list_sessions(self, agent_id: str | None = None) -> tuple[Session, ...]:
         sessions = tuple(self.sessions.values())
         if agent_id is None:
             return sessions
@@ -66,7 +69,7 @@ class FakeDashboardController:
     ) -> DashboardState:
         del preview_line_limit, alert_limit, sort
         timestamp = datetime(2025, 1, 1, 12, tzinfo=UTC)
-        agents = (
+        agents: tuple[DashboardAgentListItemView, ...] = (
             DashboardAgentListItemView(
                 agent_id="agent-1",
                 name="Planner",
@@ -106,7 +109,9 @@ class FakeDashboardController:
         )
         if filters and filters.normalized_query() == "planner":
             agents = (agents[0],)
-        selected = next((agent for agent in agents if agent.agent_id == selected_agent_id), agents[0])
+        selected = next(
+            (agent for agent in agents if agent.agent_id == selected_agent_id), agents[0]
+        )
         return DashboardState(
             generated_at=timestamp,
             metrics=(
@@ -159,18 +164,26 @@ class FakeDashboardController:
 
 
 class FakeAgentController:
-    def mark_complete(self, agent_id: str):
+    def mark_complete(self, agent_id: str) -> object:
         return type(
             "Result",
             (),
-            {"agent": type("AgentTarget", (), {"name": agent_id})(), "session_id": "session-1", "session_ended": True},
+            {
+                "agent": type("AgentTarget", (), {"name": agent_id})(),
+                "session_id": "session-1",
+                "session_ended": True,
+            },
         )()
 
-    def interrupt_intent(self, agent_id: str):
+    def interrupt_intent(self, agent_id: str) -> object:
         return type(
             "Intent",
             (),
-            {"label": "Interrupt agent", "agent": type("AgentTarget", (), {"name": agent_id})(), "metadata": (("pane_target", "%1"),)},
+            {
+                "label": "Interrupt agent",
+                "agent": type("AgentTarget", (), {"name": agent_id})(),
+                "metadata": (("pane_target", "%1"),),
+            },
         )()
 
     open_pane_intent = interrupt_intent
@@ -178,7 +191,7 @@ class FakeAgentController:
 
 
 class FakeWorktreeController:
-    def list_worktrees(self):
+    def list_worktrees(self) -> tuple[WorktreeSummaryView, ...]:
         return (
             WorktreeSummaryView(
                 worktree_id="worktree-1",
@@ -199,7 +212,7 @@ class FakeWorktreeController:
             ),
         )
 
-    def get_worktree_detail(self, worktree_id: str):
+    def get_worktree_detail(self, worktree_id: str) -> WorktreeDetailView:
         del worktree_id
         summary = self.list_worktrees()[0]
         return WorktreeDetailView(
@@ -218,7 +231,12 @@ class FakeWorktreeController:
             pane_targets=("%1",),
         )
 
-    def start_agent_intent(self, worktree_id: str, *, model: str | None = None):
+    def start_agent_intent(
+        self,
+        worktree_id: str,
+        *,
+        model: str | None = None,
+    ) -> WorktreeStartAgentIntent:
         del worktree_id
         return WorktreeStartAgentIntent(
             worktree_id="worktree-1",
@@ -233,7 +251,13 @@ class FakeWorktreeController:
 
 
 class FakeReplayController:
-    def load_state(self, *, session_id: str | None = None, selected_index: int | None = None, **_: object):
+    def load_state(
+        self,
+        *,
+        session_id: str | None = None,
+        selected_index: int | None = None,
+        **_: object,
+    ) -> ReplayStateView:
         timestamp = "2025-01-01T12:00:00+00:00"
         return ReplayStateView(
             session_id=session_id or "session-1",
@@ -261,12 +285,18 @@ class FakeReplayController:
                 ),
             ),
             jump_markers=(
-                ReplayJumpMarkerView(index=0, timestamp=timestamp, label="session.created", kind="event"),
+                ReplayJumpMarkerView(
+                    index=0, timestamp=timestamp, label="session.created", kind="event"
+                ),
                 ReplayJumpMarkerView(index=1, timestamp=timestamp, label="stdout", kind="log"),
             ),
         )
 
-    def jump_to_marker(self, state: ReplayStateView, marker_ordinal: int):
+    def jump_to_marker(
+        self,
+        state: ReplayStateView,
+        marker_ordinal: int,
+    ) -> ReplayStateView:
         target_index = state.jump_markers[marker_ordinal].index
         return ReplayStateView(
             session_id=state.session_id,
@@ -288,7 +318,12 @@ class FakeReplayController:
             jump_markers=state.jump_markers,
         )
 
-    def build_export_intent(self, state: ReplayStateView, *, export_format: str = "text"):
+    def build_export_intent(
+        self,
+        state: ReplayStateView,
+        *,
+        export_format: Literal["text", "json"] = "text",
+    ) -> ReplayExportIntent:
         return ReplayExportIntent(
             session_id=state.session_id,
             format=export_format,
@@ -307,14 +342,14 @@ class FakeRuntime:
         self.agents = FakeAgentController()
 
 
-def rendered_text(widget) -> str:
-    renderable = widget.render()
+def rendered_text(widget: object) -> str:
+    renderable = cast(Any, widget).render()
     return renderable.plain if hasattr(renderable, "plain") else str(renderable)
 
 
 @pytest.mark.asyncio
 async def test_textual_shell_navigation_and_updates() -> None:
-    app = CommanderApp(FakeRuntime())
+    app = CommanderApp(cast(CommanderRuntime, FakeRuntime()))
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -331,7 +366,9 @@ async def test_textual_shell_navigation_and_updates() -> None:
 
         await pilot.press("s")
         await pilot.pause()
-        assert "Continue work for task/ui" in rendered_text(app.screen.query_one("#worktrees-intent"))
+        assert "Continue work for task/ui" in rendered_text(
+            app.screen.query_one("#worktrees-intent")
+        )
 
         app.action_show_replay()
         await pilot.pause()
@@ -343,4 +380,6 @@ async def test_textual_shell_navigation_and_updates() -> None:
 
         app.action_show_help()
         await pilot.pause()
-        assert "COPILOT COMMANDER OPERATOR CONSOLE" in rendered_text(app.screen.query_one("#help-content"))
+        assert "COPILOT COMMANDER OPERATOR CONSOLE" in rendered_text(
+            app.screen.query_one("#help-content")
+        )

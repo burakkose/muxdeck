@@ -1,17 +1,17 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-import json
-from typing import Protocol
+from typing import Literal, Protocol
 
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.domain.events import Event, LogChunk
 from copilot_commander.domain.models import Agent, Session, Worktree
 from copilot_commander.domain.value_objects import utc_now
 from copilot_commander.exceptions import DomainValidationError, PersistenceError
-from copilot_commander.types import JsonValue
+from copilot_commander.types import Clock, JsonValue
 
 
 class SessionStorePort(Protocol):
@@ -75,7 +75,7 @@ class SessionService:
         self,
         *,
         store: SessionStorePort,
-        clock: callable = utc_now,
+        clock: Clock = utc_now,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -140,7 +140,9 @@ class SessionService:
             id=existing.id,
             agent_id=existing.agent_id,
             copilot_session_id=(
-                copilot_session_id if copilot_session_id is not None else existing.copilot_session_id
+                copilot_session_id
+                if copilot_session_id is not None
+                else existing.copilot_session_id
             ),
             task_title=task_title if task_title is not None else existing.task_title,
             created_at=existing.created_at,
@@ -236,7 +238,7 @@ class SessionService:
         self,
         session_id: str,
         *,
-        source: str,
+        source: Literal["tmux_capture", "stdout", "stderr", "system"],
         content_blocks: Sequence[str],
         captured_at: datetime | None = None,
         agent_id: str | None = None,
@@ -244,7 +246,10 @@ class SessionService:
         session = self._require_session(session_id)
         effective_agent_id = agent_id or session.agent_id
         if effective_agent_id != session.agent_id:
-            msg = f"session {session_id} belongs to agent {session.agent_id}, not {effective_agent_id}"
+            msg = (
+                f"session {session_id} belongs to agent {session.agent_id}, "
+                f"not {effective_agent_id}"
+            )
             raise DomainValidationError(msg)
         next_sequence = self._next_sequence_no(session_id)
         timestamp = captured_at or self._clock()
@@ -284,7 +289,9 @@ class SessionService:
         copilot_session_id: str | None = None,
         tmux_pane_id: str | None = None,
     ) -> SessionReplayLookup | None:
-        locators = [value for value in (session_id, copilot_session_id, tmux_pane_id) if value is not None]
+        locators = [
+            value for value in (session_id, copilot_session_id, tmux_pane_id) if value is not None
+        ]
         if len(locators) != 1:
             msg = "exactly one session locator must be provided"
             raise DomainValidationError(msg)
@@ -379,15 +386,24 @@ class SessionService:
             )
         return tuple(normalized)
 
-    def _normalize_log_chunks(self, session: Session, log_chunks: Sequence[LogChunk]) -> tuple[LogChunk, ...]:
+    def _normalize_log_chunks(
+        self,
+        session: Session,
+        log_chunks: Sequence[LogChunk],
+    ) -> tuple[LogChunk, ...]:
         normalized: list[LogChunk] = []
         next_sequence = self._next_sequence_no(session.id)
         for index, chunk in enumerate(log_chunks):
             if chunk.session_id is not None and chunk.session_id != session.id:
-                msg = f"log chunk {chunk.id} belongs to session {chunk.session_id}, not {session.id}"
+                msg = (
+                    f"log chunk {chunk.id} belongs to session {chunk.session_id}, not {session.id}"
+                )
                 raise DomainValidationError(msg)
             if chunk.agent_id != session.agent_id:
-                msg = f"log chunk {chunk.id} belongs to agent {chunk.agent_id}, not {session.agent_id}"
+                msg = (
+                    f"log chunk {chunk.id} belongs to agent "
+                    f"{chunk.agent_id}, not {session.agent_id}"
+                )
                 raise DomainValidationError(msg)
             normalized.append(
                 LogChunk(

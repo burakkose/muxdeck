@@ -259,7 +259,9 @@ class AgentService:
             pid=(
                 facts.pid
                 if facts.pid is not None
-                else existing.pid if existing is not None else None
+                else existing.pid
+                if existing is not None
+                else None
             ),
             status=facts.status,
             started_at=existing.started_at if existing is not None else observed_at,
@@ -271,22 +273,30 @@ class AgentService:
             token_input=(
                 facts.token_input
                 if facts.token_input is not None
-                else existing.token_input if existing else None
+                else existing.token_input
+                if existing
+                else None
             ),
             token_output=(
                 facts.token_output
                 if facts.token_output is not None
-                else existing.token_output if existing else None
+                else existing.token_output
+                if existing
+                else None
             ),
             token_total=(
                 facts.token_total
                 if facts.token_total is not None
-                else existing.token_total if existing else None
+                else existing.token_total
+                if existing
+                else None
             ),
             estimated_cost_usd=(
                 facts.estimated_cost_usd
                 if facts.estimated_cost_usd is not None
-                else existing.estimated_cost_usd if existing is not None else None
+                else existing.estimated_cost_usd
+                if existing is not None
+                else None
             ),
         )
 

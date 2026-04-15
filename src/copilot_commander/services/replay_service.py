@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-import json
 from typing import Literal, Protocol
 
 from copilot_commander.domain.events import Event, LogChunk

@@ -7,10 +7,11 @@ from typing import Literal, Protocol
 
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.domain.enums import AgentStatus
+from copilot_commander.domain.events import Event, LogChunk
 from copilot_commander.domain.models import Agent, Session, Worktree
 from copilot_commander.domain.value_objects import utc_now
 from copilot_commander.exceptions import PersistenceError
-from copilot_commander.services.session_service import SessionBundle
+from copilot_commander.services.session_service import SessionBundle, SessionContextPatch
 from copilot_commander.types import Clock
 
 AgentIntentKind = Literal[
@@ -39,7 +40,7 @@ class AgentSessionPort(Protocol):
         *,
         task_title: str | None = None,
         copilot_session_id: str | None = None,
-        context: object | None = None,
+        context: SessionContextPatch | None = None,
         occurred_at: datetime | None = None,
     ) -> SessionBundle: ...
 
@@ -49,8 +50,8 @@ class AgentSessionPort(Protocol):
         *,
         exit_reason: str,
         ended_at: datetime | None = None,
-        final_events: Sequence[object] = (),
-        final_log_chunks: Sequence[object] = (),
+        final_events: Sequence[Event] = (),
+        final_log_chunks: Sequence[LogChunk] = (),
     ) -> SessionBundle: ...
 
 

@@ -19,7 +19,9 @@ from copilot_commander.services.session_service import SessionService
 
 class ReplayServiceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.runtime_dir = Path(__file__).resolve().parent / "_runtime_replay_service" / self._testMethodName
+        self.runtime_dir = (
+            Path(__file__).resolve().parent / "_runtime_replay_service" / self._testMethodName
+        )
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.addCleanup(self._cleanup_runtime_dir)
         self.repo_root = self.runtime_dir / "repo"
@@ -31,7 +33,9 @@ class ReplayServiceTests(unittest.TestCase):
                 state_dir=self.runtime_dir / "state",
                 workspace_root=self.runtime_dir / "worktrees",
                 database_path=self.runtime_dir / "state" / DEFAULT_DATABASE_FILE_NAME,
-                fallback_database_path=self.runtime_dir / "legacy-state" / DEFAULT_DATABASE_FILE_NAME,
+                fallback_database_path=(
+                    self.runtime_dir / "legacy-state" / DEFAULT_DATABASE_FILE_NAME
+                ),
             ),
             config_file=self.runtime_dir / "config.toml",
         )
@@ -103,7 +107,9 @@ class ReplayServiceTests(unittest.TestCase):
             bundle.session.id,
             source="stdout",
             content_blocks=(
-                "Prompt: summarize\nwaiting for confirmation before applying patch\nfatal: merge conflict",
+                "Prompt: summarize\n"
+                "waiting for confirmation before applying patch\n"
+                "fatal: merge conflict",
             ),
             captured_at=timestamp,
         )

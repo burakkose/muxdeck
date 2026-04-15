@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-import re
 from typing import Protocol
 
 from copilot_commander.adapters.git_adapter import (
@@ -19,6 +19,7 @@ from copilot_commander.config import AppConfig
 from copilot_commander.domain.models import Agent, Worktree
 from copilot_commander.domain.value_objects import WorktreeId, utc_now
 from copilot_commander.exceptions import DomainValidationError, PersistenceError
+from copilot_commander.types import Clock
 
 _SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
 
@@ -78,7 +79,11 @@ class AgentStorePort(Protocol):
 
 
 class SessionContextStorePort(Protocol):
-    def list_session_contexts_for_worktree(self, worktree_id: str, /) -> Sequence[SessionContextRecord]: ...
+    def list_session_contexts_for_worktree(
+        self,
+        worktree_id: str,
+        /,
+    ) -> Sequence[SessionContextRecord]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,7 +149,7 @@ class WorktreeService:
         worktrees: WorktreeStorePort,
         agents: AgentStorePort,
         session_contexts: SessionContextStorePort,
-        clock: callable = utc_now,
+        clock: Clock = utc_now,
     ) -> None:
         self._config = config
         self._git = git
@@ -169,8 +174,16 @@ class WorktreeService:
     ) -> WorktreeNamingPlan:
         repo_root = self._git.discover_repo_root(cwd)
         repo_name = repo_root.name
-        effective_slug = self._derive_slug(slug=slug, task_title=task_title, branch=branch)
-        branch_name = branch.strip() if branch and branch.strip() else self._default_branch_name(effective_slug)
+        effective_slug = self._derive_slug(
+            slug=slug,
+            task_title=task_title,
+            branch=branch,
+        )
+        branch_name = (
+            branch.strip()
+            if branch and branch.strip()
+            else self._default_branch_name(effective_slug)
+        )
         effective_base_branch = (base_branch or self._config.general.default_base_branch).strip()
         worktree_name = self._config.naming.worktree_name(repo=repo_name, slug=effective_slug)
         workspace_root = self._config.paths.workspace_root.expanduser().resolve(strict=False)
@@ -206,7 +219,11 @@ class WorktreeService:
         )
         known_worktrees = self._git.list_worktrees(plan.repo_root)
         self._ensure_create_safe(plan=plan, worktrees=known_worktrees, force=force)
-        request = self._build_create_request(plan=plan, explicit_branch=branch is not None, force=force)
+        request = self._build_create_request(
+            plan=plan,
+            explicit_branch=branch is not None,
+            force=force,
+        )
         outcome = self._git.create_worktree(plan.repo_root, request)
         existing = self._worktrees.get_worktree_by_path(str(plan.worktree_path))
         persisted = self._refresh_worktree_record(
@@ -238,7 +255,11 @@ class WorktreeService:
         existing = self._worktrees.get_worktree_by_path(str(git_worktree.path))
         previous_assignment = None if existing is None else existing.assigned_agent_id
         if agent_id is not None:
-            self._ensure_attach_safe(existing=existing, agent_id=agent_id, allow_reassign=allow_reassign)
+            self._ensure_attach_safe(
+                existing=existing,
+                agent_id=agent_id,
+                allow_reassign=allow_reassign,
+            )
         persisted = self._worktree_from_snapshot(
             snapshot=snapshot,
             git_worktree=git_worktree,
@@ -292,7 +313,12 @@ class WorktreeService:
         before_paths = {worktree.path for worktree in before}
         after_paths = {worktree.path for worktree in outcome.worktrees}
         if dry_run:
-            pruned_paths = tuple(sorted((worktree.path for worktree in before if worktree.is_prunable), key=str))
+            pruned_paths = tuple(
+                sorted(
+                    (worktree.path for worktree in before if worktree.is_prunable),
+                    key=str,
+                )
+            )
         else:
             pruned_paths = tuple(sorted(before_paths - after_paths, key=str))
         conflicts = self.detect_orphan_conflicts(repo_root)
@@ -332,7 +358,8 @@ class WorktreeService:
                     WorktreeOrphanConflict(
                         code="branch_conflict",
                         message=(
-                            f"stored branch {stored.branch} does not match git branch {git_worktree.branch} "
+                            f"stored branch {stored.branch} "
+                            f"does not match git branch {git_worktree.branch} "
                             f"for {stored.path}"
                         ),
                         repo_root=repo_root,
@@ -348,7 +375,8 @@ class WorktreeService:
                         WorktreeOrphanConflict(
                             code="session_context_path_conflict",
                             message=(
-                                f"session context for worktree {stored.id} points at {context.worktree_path} "
+                                f"session context for worktree {stored.id} "
+                                f"points at {context.worktree_path} "
                                 f"instead of {stored.path}"
                             ),
                             repo_root=repo_root,
@@ -386,7 +414,12 @@ class WorktreeService:
                         agent_id=agent_id,
                     )
                 )
-        return tuple(sorted(conflicts, key=lambda item: (item.code, str(item.path), item.agent_id or "")))
+        return tuple(
+            sorted(
+                conflicts,
+                key=lambda item: (item.code, str(item.path), item.agent_id or ""),
+            )
+        )
 
     def _build_create_request(
         self,
@@ -396,7 +429,11 @@ class WorktreeService:
         force: bool,
     ) -> GitWorktreeCreateRequest:
         if explicit_branch:
-            return GitWorktreeCreateRequest(path=plan.worktree_path, branch=plan.branch_name, force=force)
+            return GitWorktreeCreateRequest(
+                path=plan.worktree_path,
+                branch=plan.branch_name,
+                force=force,
+            )
         return GitWorktreeCreateRequest(
             path=plan.worktree_path,
             branch=plan.branch_name,
@@ -440,7 +477,11 @@ class WorktreeService:
         force: bool,
     ) -> None:
         normalized_path = plan.worktree_path
-        if normalized_path.exists() and not force and all(item.path != normalized_path for item in worktrees):
+        if (
+            normalized_path.exists()
+            and not force
+            and all(item.path != normalized_path for item in worktrees)
+        ):
             msg = f"target path already exists outside managed git worktrees: {normalized_path}"
             raise DomainValidationError(msg)
         if any(item.path == normalized_path for item in worktrees):
@@ -457,9 +498,15 @@ class WorktreeService:
         agent_id: str,
         allow_reassign: bool,
     ) -> None:
-        if existing is not None and existing.assigned_agent_id not in (None, agent_id) and not allow_reassign:
+        if (
+            existing is not None
+            and existing.assigned_agent_id not in (None, agent_id)
+            and not allow_reassign
+        ):
             msg = (
-                f"worktree {existing.path} is already assigned to agent {existing.assigned_agent_id}; "
+                "worktree "
+                f"{existing.path} is already assigned to agent "
+                f"{existing.assigned_agent_id}; "
                 "set allow_reassign=True to override"
             )
             raise DomainValidationError(msg)
@@ -519,14 +566,20 @@ class WorktreeService:
                 or (existing.branch if existing is not None else None)
                 or "detached"
             ),
-            base_branch=base_branch if base_branch is not None else (existing.base_branch if existing is not None else None),
+            base_branch=(
+                base_branch
+                if base_branch is not None
+                else (existing.base_branch if existing is not None else None)
+            ),
             is_main_worktree=git_worktree.is_main_worktree,
             is_dirty=snapshot.is_dirty,
             ahead_count=snapshot.ahead_behind.ahead,
             behind_count=snapshot.ahead_behind.behind,
             locked=git_worktree.is_locked,
             assigned_agent_id=(
-                assigned_agent_id if assigned_agent_id is not None else (existing.assigned_agent_id if existing is not None else None)
+                assigned_agent_id
+                if assigned_agent_id is not None
+                else (existing.assigned_agent_id if existing is not None else None)
             ),
             created_at=existing.created_at if existing is not None else now,
             last_seen_at=now,
@@ -538,7 +591,9 @@ class WorktreeService:
         direct = self._worktrees.get_worktree(path_or_id)
         if direct is not None:
             return direct
-        return self._worktrees.get_worktree_by_path(str(Path(path_or_id).expanduser().resolve(strict=False)))
+        return self._worktrees.get_worktree_by_path(
+            str(Path(path_or_id).expanduser().resolve(strict=False))
+        )
 
 
 __all__ = [

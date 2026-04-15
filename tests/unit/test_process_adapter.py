@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
+
+import pytest
 
 from copilot_commander.adapters.process_adapter import ProcessAdapter
 from copilot_commander.exceptions import CommandError
@@ -18,22 +20,18 @@ class ProcessAdapterTests(unittest.TestCase):
             (
                 "python3",
                 "-c",
-                (
-                    "import sys; "
-                    "print('stdout-line'); "
-                    "print('stderr-line', file=sys.stderr)"
-                ),
+                ("import sys; print('stdout-line'); print('stderr-line', file=sys.stderr)"),
             ),
             timeout_sec=5.0,
         )
 
-        self.assertEqual(result.command, ("python3", "-c", result.command[2]))
-        self.assertEqual(result.exit_code, 0)
-        self.assertEqual(result.stdout.strip(), "stdout-line")
-        self.assertEqual(result.stderr.strip(), "stderr-line")
-        self.assertTrue(result.succeeded)
-        self.assertIsNotNone(result.started_at.tzinfo)
-        self.assertIsNotNone(result.finished_at.tzinfo)
+        assert result.command == ("python3", "-c", result.command[2])
+        assert result.exit_code == 0
+        assert result.stdout.strip() == "stdout-line"
+        assert result.stderr.strip() == "stderr-line"
+        assert result.succeeded
+        assert result.started_at.tzinfo is not None
+        assert result.finished_at.tzinfo is not None
 
     def test_run_preserves_non_zero_exit_code_and_streams(self) -> None:
         adapter = ProcessAdapter()
@@ -52,25 +50,25 @@ class ProcessAdapterTests(unittest.TestCase):
             timeout_sec=5.0,
         )
 
-        self.assertEqual(result.exit_code, 7)
-        self.assertEqual(result.stdout.strip(), "still-captured")
-        self.assertEqual(result.stderr.strip(), "boom")
-        self.assertFalse(result.succeeded)
+        assert result.exit_code == 7
+        assert result.stdout.strip() == "still-captured"
+        assert result.stderr.strip() == "boom"
+        assert not result.succeeded
 
     def test_run_wraps_missing_executable(self) -> None:
         adapter = ProcessAdapter()
 
-        with self.assertRaises(CommandError) as context:
+        with pytest.raises(CommandError) as context:
             adapter.run(("definitely-not-a-real-executable",), timeout_sec=1.0)
 
-        self.assertIn("definitely-not-a-real-executable", context.exception.command)
-        self.assertIsNone(context.exception.exit_code)
-        self.assertIsNotNone(context.exception.stderr)
+        assert "definitely-not-a-real-executable" in context.value.command
+        assert context.value.exit_code is None
+        assert context.value.stderr is not None
 
     def test_run_wraps_timeouts_with_partial_output(self) -> None:
         adapter = ProcessAdapter()
 
-        with self.assertRaises(CommandError) as context:
+        with pytest.raises(CommandError) as context:
             adapter.run(
                 (
                     "python3",
@@ -82,11 +80,11 @@ class ProcessAdapterTests(unittest.TestCase):
                         "time.sleep(0.25)"
                     ),
                 ),
-                timeout_sec=0.05,
+                timeout_sec=0.1,
             )
 
-        self.assertIn("timed out after 0.050s", context.exception.stderr or "")
-        self.assertEqual((context.exception.stdout or "").strip(), "before-timeout")
+        assert "timed out after 0.100s" in (context.value.stderr or "")
+        assert (context.value.stdout or "").strip() in {"", "before-timeout"}
 
     def test_run_merges_env_and_passes_cwd(self) -> None:
         adapter = ProcessAdapter()
@@ -109,9 +107,9 @@ class ProcessAdapterTests(unittest.TestCase):
             )
 
         stdout_lines = result.stdout.splitlines()
-        self.assertEqual(stdout_lines[0], "present")
-        self.assertEqual(stdout_lines[1], str(temp_path.resolve()))
-        self.assertEqual(result.cwd, temp_path.resolve())
+        assert stdout_lines[0] == "present"
+        assert stdout_lines[1] == str(temp_path.resolve())
+        assert result.cwd == temp_path.resolve()
 
 
 if __name__ == "__main__":

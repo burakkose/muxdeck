@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.domain.enums import AgentStatus
@@ -222,10 +222,10 @@ class DashboardController:
         statuses = set(filters.statuses)
         visible: list[DashboardAgentListItemView] = []
         for agent in agents:
-            if (
-                not filters.include_completed
-                and agent.status in {AgentStatus.COMPLETED, AgentStatus.DEAD}
-            ):
+            if not filters.include_completed and agent.status in {
+                AgentStatus.COMPLETED,
+                AgentStatus.DEAD,
+            }:
                 continue
             if statuses and agent.status not in statuses:
                 continue
@@ -241,7 +241,10 @@ class DashboardController:
         agents: Sequence[DashboardAgentListItemView],
         sort: DashboardSort,
     ) -> tuple[DashboardAgentListItemView, ...]:
-        key_lookup: dict[DashboardSortField, object] = {
+        key_lookup: dict[
+            DashboardSortField,
+            Callable[[DashboardAgentListItemView], tuple[Any, ...]],
+        ] = {
             "last_seen": lambda item: (item.last_seen_at, item.started_at, item.agent_id),
             "name": lambda item: (item.name.lower(), item.last_seen_at, item.agent_id),
             "status": lambda item: (item.status.value, item.last_seen_at, item.agent_id),
@@ -364,9 +367,7 @@ class DashboardController:
     ) -> tuple[DashboardMetricView, ...]:
         total_agents = len(agents)
         active_agents = sum(
-            1
-            for agent in agents
-            if agent.status not in {AgentStatus.COMPLETED, AgentStatus.DEAD}
+            1 for agent in agents if agent.status not in {AgentStatus.COMPLETED, AgentStatus.DEAD}
         )
         attention_agents = sum(1 for agent in agents if agent.needs_attention)
         sessions_total = sum(1 for agent in agents if agent.latest_session_id is not None)
@@ -383,9 +384,7 @@ class DashboardController:
     ) -> DashboardHealthSummary:
         total_agents = len(agents)
         active_agents = sum(
-            1
-            for agent in agents
-            if agent.status not in {AgentStatus.COMPLETED, AgentStatus.DEAD}
+            1 for agent in agents if agent.status not in {AgentStatus.COMPLETED, AgentStatus.DEAD}
         )
         attention_agents = sum(1 for agent in agents if agent.needs_attention)
         waiting_input_agents = sum(

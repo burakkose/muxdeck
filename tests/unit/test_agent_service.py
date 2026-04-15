@@ -1,3 +1,4 @@
+# mypy: disable-error-code=no-untyped-def
 # ruff: noqa: E402,E501,ANN001,ANN201
 
 from __future__ import annotations
@@ -31,13 +32,23 @@ class InMemoryAgentStore:
 
     def get_agent_by_pane_id(self, pane_id: str, /) -> Agent | None:
         matches = [agent for agent in self.agents.values() if agent.tmux_pane_id == pane_id]
-        return sorted(matches, key=lambda agent: (agent.last_seen_at, agent.id), reverse=True)[0] if matches else None
+        return (
+            sorted(matches, key=lambda agent: (agent.last_seen_at, agent.id), reverse=True)[0]
+            if matches
+            else None
+        )
 
     def get_agent_by_copilot_session_id(self, copilot_session_id: str, /) -> Agent | None:
         matches = [
-            agent for agent in self.agents.values() if agent.copilot_session_id == copilot_session_id
+            agent
+            for agent in self.agents.values()
+            if agent.copilot_session_id == copilot_session_id
         ]
-        return sorted(matches, key=lambda agent: (agent.last_seen_at, agent.id), reverse=True)[0] if matches else None
+        return (
+            sorted(matches, key=lambda agent: (agent.last_seen_at, agent.id), reverse=True)[0]
+            if matches
+            else None
+        )
 
 
 class InMemorySessionStore:
@@ -101,7 +112,9 @@ class InMemoryContextStore:
     def get_session_context(self, session_id: str, /) -> SessionContextRecord | None:
         return self.contexts.get(session_id)
 
-    def get_session_context_by_tmux_pane_id(self, tmux_pane_id: str, /) -> SessionContextRecord | None:
+    def get_session_context_by_tmux_pane_id(
+        self, tmux_pane_id: str, /
+    ) -> SessionContextRecord | None:
         for context in self.contexts.values():
             if context.tmux_pane_id == tmux_pane_id:
                 return context

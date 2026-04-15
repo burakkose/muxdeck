@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from tempfile import TemporaryDirectory
 import stat
 import textwrap
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from copilot_commander.adapters.process_adapter import ProcessAdapter
 from copilot_commander.adapters.tmux_adapter import TmuxAdapter
@@ -58,12 +58,12 @@ class TmuxAdapterIntegrationTests(unittest.TestCase):
             capture = adapter.capture_pane("%1")
             send_result = adapter.send_keys("%1", ("echo hi",), literal=True, append_enter=True)
 
-        self.assertEqual(len(panes.panes), 1)
-        self.assertEqual(panes.panes[0].pane_id, "%1")
-        self.assertEqual(metadata.window_name, "editor")
-        self.assertFalse(metadata.pane_dead)
-        self.assertEqual(capture.splitlines(), ["pane line one", "pane line two"])
-        self.assertEqual(send_result.stderr, "sent")
+        assert len(panes.panes) == 1
+        assert panes.panes[0].pane_id == "%1"
+        assert metadata.window_name == "editor"
+        assert not metadata.pane_dead
+        assert capture.splitlines() == ["pane line one", "pane line two"]
+        assert send_result.stderr == "sent"
 
 
 if __name__ == "__main__":

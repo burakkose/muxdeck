@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-import json
 from typing import Protocol
 
 from copilot_commander.adapters.copilot_adapter import CopilotSessionEvidence
@@ -14,7 +14,7 @@ from copilot_commander.domain.events import Event
 from copilot_commander.domain.models import Session
 from copilot_commander.domain.value_objects import TokenUsage, utc_now
 from copilot_commander.exceptions import PersistenceError
-from copilot_commander.types import JsonValue
+from copilot_commander.types import Clock, JsonValue
 
 _COST_EVENT_KIND = "costing.usage_recorded"
 
@@ -90,7 +90,7 @@ class CostingService:
         *,
         config: AppConfig,
         store: CostingStorePort,
-        clock: callable = utc_now,
+        clock: Clock = utc_now,
     ) -> None:
         self._config = config
         self._store = store
@@ -105,7 +105,9 @@ class CostingService:
         source: str = "copilot_output",
         observed_at: datetime | None = None,
     ) -> CostFact:
-        snapshot = evidence.latest_usage or (evidence.usage_snapshots[-1] if evidence.usage_snapshots else None)
+        snapshot = evidence.latest_usage or (
+            evidence.usage_snapshots[-1] if evidence.usage_snapshots else None
+        )
         if snapshot is None:
             msg = "copilot evidence does not contain a usage snapshot"
             raise PersistenceError(msg)
@@ -126,15 +128,19 @@ class CostingService:
                 output_cost=snapshot.cost,
             )
         estimated_cost = None
-        if self._config.costing.estimation_enabled and input_tokens is not None and output_tokens is not None:
+        if (
+            self._config.costing.estimation_enabled
+            and input_tokens is not None
+            and output_tokens is not None
+        ):
             estimate = self._config.costing.pricing.estimate_cost(
                 TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
             )
             estimated_cost = CostBucket(
                 currency=estimate.currency,
                 estimated=True,
-                input_cost=estimate.input_cost,
-                output_cost=estimate.output_cost,
+                input_cost=Decimal(estimate.input_cost),
+                output_cost=Decimal(estimate.output_cost),
             )
         observed = observed_at or self._clock()
         return CostFact(
@@ -228,8 +234,7 @@ class CostingService:
                 estimated_count += 1
                 self._merge_bucket(bucket_map, fact.estimated_cost)
         cost_buckets = tuple(
-            bucket_map[key_]
-            for key_ in sorted(bucket_map, key=lambda item: (item[0], item[1]))
+            bucket_map[key_] for key_ in sorted(bucket_map, key=lambda item: (item[0], item[1]))
         )
         return CostAggregate(
             scope=scope,
