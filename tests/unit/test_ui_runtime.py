@@ -39,6 +39,8 @@ class FakeRuntime:
         self.worktrees = object()
         self.replay = object()
         self.agents = object()
+        self.synchronizer = None
+        self.sync_store = None
 
 
 def test_resolve_replay_session_prefers_selected_agent() -> None:

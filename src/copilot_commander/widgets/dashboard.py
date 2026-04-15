@@ -18,39 +18,68 @@ from copilot_commander.controllers import (
     DashboardSelectedAgentView,
 )
 from copilot_commander.domain.enums import AgentStatus
+from copilot_commander.theme import (
+    ATTENTION_ROW_BG,
+    BADGE_BG,
+    BADGE_FG,
+    BLUE,
+    BORDER,
+    FG,
+    FG1,
+    FG3,
+    FG4,
+    ORANGE,
+    SELECTED_ROW_BG,
+    SEVERITY_ERROR,
+    SEVERITY_INFO,
+    SEVERITY_WARNING,
+    STATUS_BLOCKED,
+    STATUS_COMPLETED,
+    STATUS_DEAD,
+    STATUS_DISCOVERED,
+    STATUS_ERROR,
+    STATUS_IDLE,
+    STATUS_RUNNING,
+    STATUS_STARTING,
+    STATUS_UNKNOWN,
+    STATUS_WAITING_INPUT,
+    TONE_CRITICAL_BG,
+    TONE_CRITICAL_FG,
+    TONE_HEALTHY_BG,
+    TONE_HEALTHY_FG,
+    TONE_WARNING_BG,
+    TONE_WARNING_FG,
+)
 from copilot_commander.widgets.common import format_short_timestamp, format_timestamp, join_lines
 
-_SOFT_TEXT = "rgb(219,226,239)"
-_MUTED_TEXT = "rgb(153,169,191)"
-_SURFACE_TEXT = "rgb(19,24,32)"
-_SEVERITY_STYLES = {
-    "info": "bold rgb(167,206,255)",
-    "warning": "bold rgb(255,209,128)",
-    "error": "bold rgb(255,166,166)",
+_SEVERITY_STYLES: dict[str, str] = {
+    "info": f"bold {SEVERITY_INFO}",
+    "warning": f"bold {SEVERITY_WARNING}",
+    "error": f"bold {SEVERITY_ERROR}",
 }
-_STATUS_STYLES = {
-    AgentStatus.RUNNING: "bold rgb(146,227,169)",
-    AgentStatus.IDLE: "bold rgb(255,216,128)",
-    AgentStatus.WAITING_INPUT: "bold rgb(255,209,128)",
-    AgentStatus.BLOCKED: "bold rgb(255,183,77)",
-    AgentStatus.ERROR: "bold rgb(255,138,128)",
-    AgentStatus.DEAD: "bold rgb(255,138,128)",
-    AgentStatus.COMPLETED: "bold rgb(144,164,174)",
-    AgentStatus.DISCOVERED: "bold rgb(167,206,255)",
-    AgentStatus.STARTING: "bold rgb(167,206,255)",
-    AgentStatus.UNKNOWN: "bold rgb(189,189,189)",
+_STATUS_STYLES: dict[AgentStatus, str] = {
+    AgentStatus.RUNNING: f"bold {STATUS_RUNNING}",
+    AgentStatus.IDLE: f"bold {STATUS_IDLE}",
+    AgentStatus.WAITING_INPUT: f"bold {STATUS_WAITING_INPUT}",
+    AgentStatus.BLOCKED: f"bold {STATUS_BLOCKED}",
+    AgentStatus.ERROR: f"bold {STATUS_ERROR}",
+    AgentStatus.DEAD: f"bold {STATUS_DEAD}",
+    AgentStatus.COMPLETED: f"bold {STATUS_COMPLETED}",
+    AgentStatus.DISCOVERED: f"bold {STATUS_DISCOVERED}",
+    AgentStatus.STARTING: f"bold {STATUS_STARTING}",
+    AgentStatus.UNKNOWN: f"bold {STATUS_UNKNOWN}",
 }
-_HEALTH_TONE_STYLES = {
-    "healthy": ("rgb(14,20,27) on rgb(157,230,178)", "bold rgb(157,230,178)"),
-    "warning": ("rgb(14,20,27) on rgb(255,213,128)", "bold rgb(255,213,128)"),
-    "critical": ("rgb(14,20,27) on rgb(255,171,171)", "bold rgb(255,171,171)"),
+_HEALTH_TONE_STYLES: dict[str, tuple[str, str]] = {
+    "healthy": (f"{BADGE_FG} on {TONE_HEALTHY_BG}", f"bold {TONE_HEALTHY_FG}"),
+    "warning": (f"{BADGE_FG} on {TONE_WARNING_BG}", f"bold {TONE_WARNING_FG}"),
+    "critical": (f"{BADGE_FG} on {TONE_CRITICAL_BG}", f"bold {TONE_CRITICAL_FG}"),
 }
 
 
 class MetricStrip(Static):
     def set_metrics(self, metrics: Sequence[DashboardMetricView]) -> None:
         if not metrics:
-            self.update(Text("NO METRICS", style=f"bold {_MUTED_TEXT}"))
+            self.update(Text("NO METRICS", style=f"bold {FG4}"))
             return
         chips = Text()
         for index, metric in enumerate(metrics):
@@ -58,9 +87,9 @@ class MetricStrip(Static):
                 chips.append("  ")
             chips.append(
                 f" {metric.label.upper()} ",
-                style="bold rgb(19,24,32) on rgb(167,206,255)",
+                style=f"bold {BADGE_FG} on {BADGE_BG}",
             )
-            chips.append(f" {metric.value} ", style=f"bold {_SOFT_TEXT}")
+            chips.append(f" {metric.value} ", style=f"bold {FG}")
         self.update(chips)
 
 
@@ -81,8 +110,8 @@ class HealthBanner(Static):
             ("errors", health.error_agents),
         ):
             summary.append("  ")
-            summary.append(f"{label} ", style=f"bold {_MUTED_TEXT}")
-            summary.append(str(value), style=f"bold {_SOFT_TEXT}")
+            summary.append(f"{label} ", style=f"bold {FG4}")
+            summary.append(str(value), style=f"bold {FG}")
         self.update(summary)
 
 
@@ -138,7 +167,7 @@ class AgentListPanel(Static, can_focus=True):
             self.update(
                 Text(
                     "No agents discovered yet. Press r to rescan tmux.",
-                    style=_MUTED_TEXT,
+                    style=FG4,
                 )
             )
             return
@@ -177,9 +206,9 @@ class AgentListPanel(Static, can_focus=True):
         table = Table(
             expand=True,
             box=box.SIMPLE_HEAVY,
-            header_style="bold rgb(176,190,215)",
-            border_style="rgb(69,90,116)",
-            row_styles=("rgb(219,226,239)", "rgb(201,212,231)"),
+            header_style=f"bold {FG3}",
+            border_style=BORDER,
+            row_styles=(FG, FG1),
             pad_edge=False,
         )
         table.add_column("", width=2, no_wrap=True)
@@ -202,20 +231,20 @@ class AgentListPanel(Static, can_focus=True):
                     _marker_text(agent, selected=is_selected),
                     style=_marker_style(agent, is_selected),
                 ),
-                Text(agent.name, style=f"bold {_SOFT_TEXT}" if is_selected else _SOFT_TEXT),
+                Text(agent.name, style=f"bold {FG}" if is_selected else FG),
                 _status_text(agent.status),
-                Text(agent.repo_name or "-", style=_SOFT_TEXT),
-                Text(agent.branch or "-", style=_SOFT_TEXT),
-                Text(agent.worktree_name or "-", style=_SOFT_TEXT),
-                Text(agent.pane_id, style="bold rgb(167,206,255)"),
-                Text(agent.task_title or "-", style=_SOFT_TEXT),
-                Text(f"{agent.idle_seconds}s", style=_SOFT_TEXT),
-                Text(_short_session(agent.latest_session_id), style=_MUTED_TEXT),
+                Text(agent.repo_name or "-", style=FG),
+                Text(agent.branch or "-", style=FG),
+                Text(agent.worktree_name or "-", style=FG),
+                Text(agent.pane_id, style=f"bold {BLUE}"),
+                Text(agent.task_title or "-", style=FG),
+                Text(f"{agent.idle_seconds}s", style=FG),
+                Text(_short_session(agent.latest_session_id), style=FG4),
                 Text(
                     str(agent.token_total) if agent.token_total is not None else "-",
-                    style=_SOFT_TEXT,
+                    style=FG,
                 ),
-                Text(_format_cost(agent.estimated_cost_usd), style=_SOFT_TEXT),
+                Text(_format_cost(agent.estimated_cost_usd), style=FG),
                 style=row_style,
             )
         return table
@@ -269,10 +298,10 @@ class AlertPanel(Static):
         lines: list[Text] = []
         for alert in alerts:
             line = Text()
-            line.append(f"{format_short_timestamp(alert.occurred_at)} ", style=_MUTED_TEXT)
+            line.append(f"{format_short_timestamp(alert.occurred_at)} ", style=FG4)
             line.append(f"{alert.severity.upper():<7}", style=_SEVERITY_STYLES[alert.severity])
-            line.append(f" {alert.agent_name}: ", style=f"bold {_SOFT_TEXT}")
-            line.append(alert.message, style=_SOFT_TEXT)
+            line.append(f" {alert.agent_name}: ", style=f"bold {FG}")
+            line.append(alert.message, style=FG)
             lines.append(line)
         joined = Text()
         for index, line in enumerate(lines):
@@ -290,10 +319,10 @@ def _format_cost(value: str | None) -> str:
 
 def _marker_style(agent: DashboardAgentListItemView, selected: bool) -> str:
     if selected:
-        return "bold rgb(167,206,255)"
+        return f"bold {BLUE}"
     if agent.needs_attention:
-        return "bold rgb(255,209,128)"
-    return _MUTED_TEXT
+        return f"bold {ORANGE}"
+    return FG4
 
 
 def _marker_text(agent: DashboardAgentListItemView, *, selected: bool) -> str:
@@ -306,11 +335,11 @@ def _marker_text(agent: DashboardAgentListItemView, *, selected: bool) -> str:
 
 def _row_style(agent: DashboardAgentListItemView, *, selected: bool) -> str:
     if selected:
-        return "on rgb(34,43,56)"
+        return f"on {SELECTED_ROW_BG}"
     if agent.status in {AgentStatus.COMPLETED, AgentStatus.DEAD}:
         return "dim"
     if agent.needs_attention:
-        return "on rgb(43,38,31)"
+        return f"on {ATTENTION_ROW_BG}"
     return ""
 
 
@@ -322,7 +351,7 @@ def _short_session(session_id: str | None) -> str:
 
 def _status_text(status: AgentStatus) -> Text:
     label = status.value.replace("_", " ")
-    return Text(label, style=_STATUS_STYLES.get(status, f"bold {_SOFT_TEXT}"))
+    return Text(label, style=_STATUS_STYLES.get(status, f"bold {FG}"))
 
 
 __all__ = [

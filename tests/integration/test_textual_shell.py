@@ -346,6 +346,8 @@ class FakeRuntime:
         self.worktrees = FakeWorktreeController()
         self.replay = FakeReplayController()
         self.agents = FakeAgentController()
+        self.synchronizer = None
+        self.sync_store = None
 
 
 def rendered_text(widget: object) -> str:
