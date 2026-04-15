@@ -136,6 +136,7 @@ class DashboardAgentListItemView:
     attention_reason: str | None
     token_total: int | None
     estimated_cost_usd: str | None
+    window_name: str | None = None
     current_activity: str | None = None
     sparkline: str = "        "
     is_potentially_stuck: bool = False
@@ -303,6 +304,7 @@ class DashboardController:
             attention_reason=attention_reason,
             token_total=agent.token_total,
             estimated_cost_usd=estimated_cost,
+            window_name=agent.tmux_window_name,
             current_activity=current_activity,
             sparkline=sparkline,
             is_potentially_stuck=is_potentially_stuck,
