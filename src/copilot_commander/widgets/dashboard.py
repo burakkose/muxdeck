@@ -20,7 +20,6 @@ from copilot_commander.controllers import (
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.theme import (
     ATTENTION_ROW_BG,
-    BADGE_FG,
     BLUE,
     BORDER,
     FG,
@@ -32,12 +31,6 @@ from copilot_commander.theme import (
     SEVERITY_ERROR,
     SEVERITY_INFO,
     SEVERITY_WARNING,
-    TONE_CRITICAL_BG,
-    TONE_CRITICAL_FG,
-    TONE_HEALTHY_BG,
-    TONE_HEALTHY_FG,
-    TONE_WARNING_BG,
-    TONE_WARNING_FG,
 )
 from copilot_commander.widgets.common import (
     format_short_timestamp,
@@ -51,36 +44,70 @@ _SEVERITY_STYLES: dict[str, str] = {
     "warning": f"bold {SEVERITY_WARNING}",
     "error": f"bold {SEVERITY_ERROR}",
 }
-_HEALTH_TONE_STYLES: dict[str, tuple[str, str]] = {
-    "healthy": (f"{BADGE_FG} on {TONE_HEALTHY_BG}", f"bold {TONE_HEALTHY_FG}"),
-    "warning": (f"{BADGE_FG} on {TONE_WARNING_BG}", f"bold {TONE_WARNING_FG}"),
-    "critical": (f"{BADGE_FG} on {TONE_CRITICAL_BG}", f"bold {TONE_CRITICAL_FG}"),
+
+_SHORT_STATUS: dict[AgentStatus, str] = {
+    AgentStatus.RUNNING: "run",
+    AgentStatus.IDLE: "idle",
+    AgentStatus.WAITING_INPUT: "wait",
+    AgentStatus.BLOCKED: "blk",
+    AgentStatus.ERROR: "err",
+    AgentStatus.DEAD: "dead",
+    AgentStatus.COMPLETED: "done",
+    AgentStatus.DISCOVERED: "disc",
+    AgentStatus.STARTING: "init",
+    AgentStatus.UNKNOWN: "?",
 }
 
 
+def _short_status(status: AgentStatus) -> str:
+    return _SHORT_STATUS.get(status, "?")
+
+
+def _display_name(
+    agent: DashboardAgentListItemView,
+    all_agents: tuple[DashboardAgentListItemView, ...],
+) -> str:
+    """Pick a unique, human-readable display name for the agent list.
+
+    Prefer the process name (e.g. Planner, Reviewer). If multiple agents
+    share the same name, disambiguate with the repo or worktree name.
+    """
+    name = agent.name
+    duplicates = sum(1 for a in all_agents if a.name == name)
+    if duplicates <= 1:
+        return name
+    suffix = agent.worktree_name or agent.repo_name
+    if suffix and suffix != name:
+        return f"{name}/{suffix}"
+    return name
+
+
 class StatusBar(Static):
-    """Compact 1-line bar showing health + key metrics."""
+    """Compact 1-line bar: subtle inline metrics, no colored background."""
 
     def set_state(
         self,
         health: DashboardHealthSummary,
         metrics: Sequence[DashboardMetricView],
     ) -> None:
-        self.remove_class("tone-healthy", "tone-warning", "tone-critical")
-        self.add_class(f"tone-{health.tone}")
-        badge_style, _value_style = _HEALTH_TONE_STYLES[health.tone]
         line = Text()
-        line.append(f" {health.message.upper()} ", style=badge_style)
-        for metric in metrics:
-            line.append("  ")
+        for i, metric in enumerate(metrics):
+            if i:
+                line.append(" · ", style=FG4)
             line.append(f"{metric.label.lower()} ", style=FG4)
             line.append(str(metric.value), style=f"bold {FG}")
+        if health.attention_agents:
+            line.append(" · ", style=FG4)
+            line.append(
+                f"{health.attention_agents} need attention",
+                style=f"bold {ORANGE}",
+            )
         self.update(line)
 
 
 class FilterBar(Vertical):
     def compose(self) -> ComposeResult:
-        yield Input(placeholder="/ filter agents", id="dashboard-filter-input")
+        yield Input(placeholder="/ filter", id="dashboard-filter-input")
 
     def set_query(self, value: str | None) -> None:
         self.query_one(Input).value = value or ""
@@ -156,28 +183,21 @@ class AgentListPanel(Static, can_focus=True):
             border_style=BORDER,
             pad_edge=False,
             show_edge=False,
+            show_header=False,
         )
         table.add_column("", width=1, no_wrap=True)
-        table.add_column("name", min_width=8, max_width=18, overflow="ellipsis")
-        table.add_column("status", min_width=6, max_width=10, overflow="ellipsis")
-        table.add_column("branch", min_width=6, max_width=14, overflow="ellipsis")
-        table.add_column("pane", width=4, no_wrap=True)
-        table.add_column("idle", width=5, justify="right")
-        table.add_column("info", min_width=8, overflow="ellipsis")
+        table.add_column("name", min_width=6, no_wrap=True, ratio=2)
+        table.add_column("st", width=4, no_wrap=True)
+        table.add_column("branch", min_width=4, no_wrap=True, ratio=2, overflow="ellipsis")
         for index, agent in enumerate(self._agents):
             is_selected = index == self._selected_index
             row_style = _row_style(agent, selected=is_selected)
-            display_name = agent.repo_name or agent.worktree_name or agent.name
-            info = agent.attention_reason or agent.task_title or ""
-            status_label = agent.status.value.replace("_", " ")
+            display_name = _display_name(agent, self._agents)
             table.add_row(
                 status_glyph(agent.status, selected=is_selected),
                 Text(display_name, style=f"bold {FG}" if is_selected else FG),
-                Text(status_label, style=FG3),
-                Text(agent.branch or "-", style=FG1),
-                Text(agent.pane_id, style=f"bold {BLUE}"),
-                Text(_format_idle(agent.idle_seconds), style=FG4),
-                Text(info, style=f"{ORANGE}" if agent.needs_attention else FG4),
+                Text(_short_status(agent.status), style=FG3),
+                Text(agent.branch or "-", style=FG1, overflow="ellipsis"),
                 style=row_style,
             )
         return table
@@ -194,26 +214,28 @@ class AgentDetailPanel(Static):
             self.update(Text("No agent selected", style=FG4))
             return
         item = agent.item
+        fields: list[tuple[str, str, str]] = [
+            ("name", item.name, f"bold {FG}"),
+            ("task", item.task_title or "", FG),
+            ("status", item.status.value, FG1),
+            ("branch", item.branch or "", FG1),
+            ("pane", item.pane_id, f"bold {BLUE}"),
+            ("repo", item.repo_name or "", FG1),
+            ("idle", _format_idle(item.idle_seconds), FG1),
+            ("tokens", str(item.token_total) if item.token_total is not None else "", FG1),
+            ("cost", _format_cost(item.estimated_cost_usd), FG1),
+            ("session", agent.open_session_id or item.latest_session_id or "", FG4),
+            ("seen", format_timestamp(item.last_seen_at), FG4),
+        ]
+        if item.needs_attention and item.attention_reason:
+            fields.append(("attn", item.attention_reason, f"bold {ORANGE}"))
         lines: list[Text] = []
-        for label, value in (
-            ("name", item.name),
-            ("status", item.status.value),
-            ("repo", item.repo_name or "-"),
-            ("branch", item.branch or "-"),
-            ("pane", item.pane_id),
-            ("task", item.task_title or "-"),
-            ("session", agent.open_session_id or item.latest_session_id or "-"),
-            ("sessions", str(agent.session_count)),
-            ("seen", format_timestamp(item.last_seen_at)),
-            ("started", format_timestamp(item.started_at)),
-            ("idle", _format_idle(item.idle_seconds)),
-            ("tokens", str(item.token_total) if item.token_total is not None else "-"),
-            ("cost", _format_cost(item.estimated_cost_usd)),
-            ("attn", item.attention_reason or "-"),
-        ):
+        for label, value, style in fields:
+            if not value or value == "-":
+                continue
             line = Text()
-            line.append(f"{label:<9}", style=FG4)
-            line.append(str(value), style=FG)
+            line.append(f"{label:<7} ", style=FG4)
+            line.append(value, style=style)
             lines.append(line)
         result = Text()
         for i, line in enumerate(lines):
@@ -231,12 +253,14 @@ class LogPreviewPanel(Static):
 
     def set_logs(self, agent: DashboardSelectedAgentView | None) -> None:
         if agent is None or not agent.log_preview:
-            self.update(Text("No recent logs", style=FG4))
+            self.update(Text("—", style=FG4))
             return
-        lines = [
-            f"{format_short_timestamp(line.captured_at)} {line.source:<8.8} {line.content}"
-            for line in agent.log_preview
-        ]
+        src_map = {"stdout": "out", "stderr": "err"}
+        lines: list[str] = []
+        for line in agent.log_preview:
+            ts = format_short_timestamp(line.captured_at)
+            src = src_map.get(line.source, line.source[:3])
+            lines.append(f"{ts} {src:<3} {line.content}")
         self.update(join_lines(lines))
 
 
@@ -248,13 +272,14 @@ class AlertPanel(Static):
 
     def set_alerts(self, alerts: Sequence[DashboardAlertView]) -> None:
         if not alerts:
-            self.update(Text("No active alerts", style=FG4))
+            self.update(Text("—", style=FG4))
             return
         lines: list[Text] = []
         for alert in alerts:
             line = Text()
             line.append(f"{format_short_timestamp(alert.occurred_at)} ", style=FG4)
-            line.append(f"{alert.severity.upper():<5}", style=_SEVERITY_STYLES[alert.severity])
+            short_sev = alert.severity[:4]
+            line.append(f"{short_sev:<4}", style=_SEVERITY_STYLES[alert.severity])
             line.append(f" {alert.agent_name}: ", style=f"bold {FG}")
             line.append(alert.message, style=FG1)
             lines.append(line)
@@ -277,7 +302,10 @@ def _format_idle(seconds: int) -> str:
 def _format_cost(value: str | None) -> str:
     if value is None:
         return "-"
-    return f"${value}"
+    try:
+        return f"${float(value):.2f}"
+    except (ValueError, TypeError):
+        return f"${value}"
 
 
 def _row_style(agent: DashboardAgentListItemView, *, selected: bool) -> str:

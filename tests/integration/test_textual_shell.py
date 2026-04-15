@@ -1,4 +1,3 @@
-# ruff: noqa: ANN001,ANN201,E501
 
 from __future__ import annotations
 
