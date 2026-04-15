@@ -18,6 +18,7 @@ def _agent(
     name: str = "node",
     repo_name: str | None = "myrepo",
     worktree_name: str | None = "myworktree",
+    window_name: str | None = None,
     branch: str | None = "main",
     status: AgentStatus = AgentStatus.RUNNING,
     idle_seconds: int = 0,
@@ -45,6 +46,7 @@ def _agent(
         attention_reason=attention_reason,
         token_total=None,
         estimated_cost_usd=None,
+        window_name=window_name,
     )
 
 
@@ -69,7 +71,7 @@ class TestFormatIdle:
 
 
 class TestAgentListTable:
-    """Verify the compact table builds with 4 columns."""
+    """Verify the compact table builds with 5 columns."""
 
     def test_table_has_five_columns(self):
         from copilot_commander.widgets.dashboard import AgentListPanel
@@ -106,6 +108,29 @@ class TestAgentListTable:
         cells = table.columns[1]._cells
         assert "wt-a" in str(cells[0])
         assert "wt-b" in str(cells[1])
+
+    def test_display_name_uses_window_name_when_repo_and_worktree_match(self):
+        from copilot_commander.widgets.dashboard import AgentListPanel
+
+        a1 = _agent(
+            name="CosmosDB",
+            repo_name="CosmosDB",
+            worktree_name="native",
+            window_name="ParallelTransformation",
+        )
+        a2 = _agent(
+            name="CosmosDB",
+            repo_name="CosmosDB",
+            worktree_name="native",
+            window_name="Expired Transactions",
+        )
+        panel = AgentListPanel(widget_id="test")
+        panel._agents = (a1, a2)
+        panel._selected_index = 0
+        table = panel._build_table()
+        cells = table.columns[1]._cells
+        assert "ParallelTransformation" in str(cells[0])
+        assert "Expired Transactions" in str(cells[1])
 
     def test_display_name_falls_back_to_process_name(self):
         from copilot_commander.widgets.dashboard import AgentListPanel

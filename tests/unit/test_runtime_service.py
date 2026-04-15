@@ -256,6 +256,86 @@ class RuntimeSynchronizerTests(unittest.TestCase):
             "task/task-one",
         ]
 
+    def test_refresh_prefers_branch_from_powershell_prompt_capture(self) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        pane = PaneDiscovery(
+            snapshot=DiscoveryPaneSnapshot(
+                pane_id="%17",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@3",
+                pane_current_path="/repo/worktrees/task-one",
+                pane_current_command="copilot chat",
+            ),
+            discovered_at=now,
+            classification="unmanaged_probable_agent",
+            reasons=("command:copilot_binary",),
+            command_detection=CopilotCommandDetection(
+                candidate=("copilot", "chat"),
+                is_likely_copilot=True,
+                reason="copilot_binary",
+            ),
+            captured_output=(
+                "PS  [16:33] Q:\\src\\cosmosdb-wt\\coroutine-agents "
+                "[users/burakkose/coroutine-agents]> copilot\n"
+            ),
+        )
+        discovery = FakeDiscovery(
+            PaneDiscoveryReport(
+                discovered_at=now,
+                panes=(pane,),
+                managed_agents=(),
+                unmanaged_probable_agents=(pane,),
+                non_agent_panes=(),
+            )
+        )
+        monitoring = FakeMonitoring(now)
+        git = CountingGit(branch="task/task-one")
+
+        report = RuntimeSynchronizer(discovery, monitoring, git).refresh()
+
+        assert report.error is None
+        assert monitoring.seen[0].snapshot.repo_root == "/repo"
+        assert monitoring.seen[0].snapshot.branch == "users/burakkose/coroutine-agents"
+
+    def test_refresh_uses_branch_from_copilot_banner_when_git_branch_is_stale(self) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        pane = PaneDiscovery(
+            snapshot=DiscoveryPaneSnapshot(
+                pane_id="%19",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@4",
+                pane_current_path="/repo/worktrees/task-one",
+                pane_current_command="copilot chat",
+            ),
+            discovered_at=now,
+            classification="unmanaged_probable_agent",
+            reasons=("command:copilot_binary",),
+            command_detection=CopilotCommandDetection(
+                candidate=("copilot", "chat"),
+                is_likely_copilot=True,
+                reason="copilot_binary",
+            ),
+            captured_output=(
+                " Q:\\src\\CosmosDB [⎇ users/burakkose/rcm-opencontext*%] GPT-5.4 (xhigh)\n"
+            ),
+        )
+        discovery = FakeDiscovery(
+            PaneDiscoveryReport(
+                discovered_at=now,
+                panes=(pane,),
+                managed_agents=(),
+                unmanaged_probable_agents=(pane,),
+                non_agent_panes=(),
+            )
+        )
+        monitoring = FakeMonitoring(now)
+        git = CountingGit(branch="users/burakkose/fm/xp-imp")
+
+        report = RuntimeSynchronizer(discovery, monitoring, git).refresh()
+
+        assert report.error is None
+        assert monitoring.seen[0].snapshot.branch == "users/burakkose/rcm-opencontext"
+
 
 if __name__ == "__main__":
     unittest.main()

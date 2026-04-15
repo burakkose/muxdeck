@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -23,6 +24,13 @@ _NON_REPOSITORY_SNIPPETS: Final[tuple[str, ...]] = (
     "cannot chdir",
     "no such file or directory",
 )
+_CAPTURE_BRANCH_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"\[⎇\s+(?P<branch>[^\]]+)\]"),
+    re.compile(
+        r"PS\s+(?:\[[^\]]+\]\s+)?[A-Za-z]:\\[^\[]*?\[(?P<branch>[^\]]+)\]>",
+    ),
+)
+_CAPTURE_BRANCH_DECORATION: Final[re.Pattern[str]] = re.compile(r"[*%+!~]+$")
 
 
 @runtime_checkable
@@ -229,17 +237,24 @@ class RuntimeSynchronizer:
     ) -> PaneDiscovery:
         snapshot = discovery.snapshot
         pane_current_path = snapshot.pane_current_path
+        capture_branch = _infer_capture_branch(discovery.captured_output)
         if pane_current_path is None or snapshot.repo_root is not None:
-            return discovery
+            return _apply_capture_branch(discovery, capture_branch)
         stored_context = self._stored_git_context(discovery, pane_current_path)
         if stored_context is not None:
             git_context_cache[pane_current_path] = stored_context
-            return self._apply_git_context(discovery, stored_context)
+            return _apply_capture_branch(
+                self._apply_git_context(discovery, stored_context),
+                capture_branch,
+            )
         cached_context = git_context_cache.get(pane_current_path)
         if pane_current_path in git_context_cache:
             if cached_context is None:
-                return discovery
-            return self._apply_git_context(discovery, cached_context)
+                return _apply_capture_branch(discovery, capture_branch)
+            return _apply_capture_branch(
+                self._apply_git_context(discovery, cached_context),
+                capture_branch,
+            )
         try:
             git_context = _GitContext(
                 repo_root=str(self._git.discover_repo_root(pane_current_path)),
@@ -248,16 +263,19 @@ class RuntimeSynchronizer:
         except GitCommandError as exc:
             if self._is_non_repository_error(exc):
                 git_context_cache[pane_current_path] = None
-                return discovery
+                return _apply_capture_branch(discovery, capture_branch)
             warnings.append(
                 RuntimeSyncWarning(
                     message=self._format_git_error(exc),
                     pane_id=snapshot.pane_id,
                 )
             )
-            return discovery
+            return _apply_capture_branch(discovery, capture_branch)
         git_context_cache[pane_current_path] = git_context
-        return self._apply_git_context(discovery, git_context)
+        return _apply_capture_branch(
+            self._apply_git_context(discovery, git_context),
+            capture_branch,
+        )
 
     def _apply_git_context(
         self,
@@ -309,6 +327,37 @@ class RuntimeSynchronizer:
     def _is_non_repository_error(self, exc: GitCommandError) -> bool:
         stderr = (exc.stderr or "").casefold()
         return any(snippet in stderr for snippet in _NON_REPOSITORY_SNIPPETS)
+
+
+def _infer_capture_branch(captured_output: str | None, /) -> str | None:
+    if captured_output is None:
+        return None
+    for raw_line in reversed(captured_output.splitlines()):
+        line = raw_line.strip()
+        if not line:
+            continue
+        for pattern in _CAPTURE_BRANCH_PATTERNS:
+            match = pattern.search(line)
+            if match is None:
+                continue
+            branch = _normalize_capture_branch(match.group("branch"))
+            if branch is not None:
+                return branch
+    return None
+
+
+def _normalize_capture_branch(value: str, /) -> str | None:
+    normalized = value.strip()
+    if not normalized:
+        return None
+    normalized = _CAPTURE_BRANCH_DECORATION.sub("", normalized).strip()
+    return normalized or None
+
+
+def _apply_capture_branch(discovery: PaneDiscovery, branch: str | None, /) -> PaneDiscovery:
+    if branch is None or discovery.snapshot.branch == branch:
+        return discovery
+    return replace(discovery, snapshot=replace(discovery.snapshot, branch=branch))
 
 
 __all__ = [

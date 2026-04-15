@@ -86,15 +86,22 @@ def _display_name(
     """Pick a unique, human-readable display name for the agent list.
 
     Prefer the process name (e.g. Planner, Reviewer). If multiple agents
-    share the same name, disambiguate with the repo or worktree name.
+    share the same name, disambiguate with worktree, repo, window, or pane.
     """
     name = agent.name
-    duplicates = sum(1 for a in all_agents if a.name == name)
-    if duplicates <= 1:
+    duplicates = tuple(a for a in all_agents if a.name == name)
+    if len(duplicates) <= 1:
         return name
-    suffix = agent.worktree_name or agent.repo_name
-    if suffix and suffix != name:
-        return f"{name}/{suffix}"
+    for values, suffix in (
+        (tuple(item.worktree_name for item in duplicates), agent.worktree_name),
+        (tuple(item.repo_name for item in duplicates), agent.repo_name),
+        (tuple(item.window_name for item in duplicates), agent.window_name),
+        (tuple(item.pane_id for item in duplicates), agent.pane_id),
+    ):
+        if suffix is None or suffix == name:
+            continue
+        if values.count(suffix) == 1:
+            return f"{name}/{suffix}"
     return name
 
 
