@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.timer import Timer
 from textual.widgets import Input
 
 from copilot_commander.bindings import DASHBOARD_BINDINGS, DASHBOARD_HINTS
@@ -52,6 +53,7 @@ class DashboardScreen(ShellScreen):
         self._sort = DashboardSort()
         self._selected_agent_id: str | None = None
         self._state: DashboardState | None = None
+        self._detail_timer: Timer | None = None
 
     @property
     def current_filters(self) -> DashboardFilterState:
@@ -90,13 +92,18 @@ class DashboardScreen(ShellScreen):
         if pre_built is not None:
             self._state = pre_built
             self.commander_app.last_dashboard_state = None
-        elif self._state is not None:
-            # Already have state from a prior cycle; keep it until worker delivers fresh data.
-            pass
         else:
-            # First mount with no worker result yet — show empty state, don't block.
-            self.set_status("Discovering agents…")
-            return
+            # Build state directly from controller (ensures filters/sort are applied).
+            try:
+                self._state = self.runtime.dashboard.build_state(
+                    filters=self._filters,
+                    sort=self._sort,
+                    selected_agent_id=self._selected_agent_id,
+                )
+            except Exception:
+                if self._state is None:
+                    self.set_status("Discovering agents…")
+                return
         self._selected_agent_id = self._state.selected_agent_id
         if self._selected_agent_id is not None:
             self.commander_app.remember_agent_selection(self._selected_agent_id)
@@ -135,7 +142,12 @@ class DashboardScreen(ShellScreen):
         if message.agent_id == self._selected_agent_id:
             return
         self._selected_agent_id = message.agent_id
-        self.refresh_data()
+        self.commander_app.remember_agent_selection(self._selected_agent_id)
+        # Debounce: cancel any pending detail load and schedule a new one.
+        # This prevents stacking 200ms DB calls while the user holds arrow keys.
+        if self._detail_timer is not None:
+            self._detail_timer.stop()
+        self._detail_timer = self.set_timer(0.05, self._update_selected_detail)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "dashboard-filter-input":
@@ -281,3 +293,29 @@ class DashboardScreen(ShellScreen):
             if agent.agent_id == self._selected_agent_id:
                 return agent
         return None
+
+    def _update_selected_detail(self) -> None:
+        """Lightweight: rebuild only the detail panels for the newly selected agent."""
+        item = self._find_selected_agent()
+        if item is None:
+            self.query_one(AgentDetailPanel).set_agent(None)
+            self.query_one(LogPreviewPanel).set_logs(None)
+            return
+        try:
+            selected_view = self.runtime.dashboard.build_selected_agent_view(item)
+        except Exception:
+            return
+        if self._state is not None:
+            self._state = DashboardState(
+                generated_at=self._state.generated_at,
+                metrics=self._state.metrics,
+                filters=self._state.filters,
+                sort=self._state.sort,
+                health=self._state.health,
+                alerts=self._state.alerts,
+                agents=self._state.agents,
+                selected_agent_id=item.agent_id,
+                selected_agent=selected_view,
+            )
+        self.query_one(AgentDetailPanel).set_agent(selected_view)
+        self.query_one(LogPreviewPanel).set_logs(selected_view)

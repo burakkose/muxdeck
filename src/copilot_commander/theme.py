@@ -76,8 +76,8 @@ HEADER_BG: Final[str] = BG_HARD
 FOOTER_BG: Final[str] = BG_HARD
 BADGE_BG: Final[str] = BLUE_DIM
 BADGE_FG: Final[str] = "#e2e8f0"
-SELECTED_ROW_BG: Final[str] = "#1e293b"
-ATTENTION_ROW_BG: Final[str] = "#291f0f"
+SELECTED_ROW_BG: Final[str] = "#1e3a5f"
+ATTENTION_ROW_BG: Final[str] = "#3b2308"
 SCROLLBAR_BG: Final[str] = BG1
 SCROLLBAR_FG: Final[str] = BG3
 

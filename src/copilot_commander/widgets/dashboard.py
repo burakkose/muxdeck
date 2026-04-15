@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from rich import box
 from rich.table import Table
 from rich.text import Text
 from textual.app import ComposeResult
@@ -22,9 +21,9 @@ from copilot_commander.theme import (
     AQUA,
     ATTENTION_ROW_BG,
     BLUE,
-    BORDER,
     FG,
     FG1,
+    FG2,
     FG3,
     FG4,
     GREEN,
@@ -100,7 +99,7 @@ def _display_name(
 
 
 class StatusBar(Static):
-    """Compact 1-line bar: subtle inline metrics, no colored background."""
+    """Compact 1-line metrics bar with modern styling."""
 
     def set_state(
         self,
@@ -110,13 +109,13 @@ class StatusBar(Static):
         line = Text()
         for i, metric in enumerate(metrics):
             if i:
-                line.append(" · ", style=FG4)
-            line.append(f"{metric.label.lower()} ", style=FG4)
-            line.append(str(metric.value), style=f"bold {FG}")
+                line.append("  │  ", style=FG4)
+            line.append(f"{metric.label.lower()} ", style=FG3)
+            line.append(str(metric.value), style=f"bold {FG1}")
         if health.attention_agents:
-            line.append(" · ", style=FG4)
+            line.append("  │  ", style=FG4)
             line.append(
-                f"{health.attention_agents} need attention",
+                f"⚠ {health.attention_agents} need attention",
                 style=f"bold {ORANGE}",
             )
         self.update(line)
@@ -158,7 +157,7 @@ class AgentListPanel(Static, can_focus=True):
         self._agents = tuple(agents)
         if not self._agents:
             self._selected_index = 0
-            self.update(Text("No agents discovered — press r to scan", style=FG4))
+            self.update(Text("  No agents found · press r to scan", style=FG4))
             return
         selected_index = next(
             (
@@ -194,12 +193,13 @@ class AgentListPanel(Static, can_focus=True):
     def _build_table(self) -> Table:
         table = Table(
             expand=True,
-            box=box.SIMPLE,
+            box=None,
             header_style=f"bold {FG3}",
-            border_style=BORDER,
+            border_style=FG4,
             pad_edge=False,
             show_edge=False,
             show_header=False,
+            padding=(0, 1, 0, 0),
         )
         table.add_column("", width=1, no_wrap=True)
         table.add_column("name", min_width=6, no_wrap=True, ratio=2)
@@ -231,48 +231,45 @@ class AgentDetailPanel(Static):
 
     def set_agent(self, agent: DashboardSelectedAgentView | None) -> None:
         if agent is None:
-            self.update(Text("No agent selected", style=FG4))
+            self.update(Text("Select an agent to view details", style=FG4))
             return
         item = agent.item
+        result = Text()
+        # Name as prominent header
+        result.append(f"  {item.name}", style=f"bold {FG}")
+        if item.status.value:
+            result.append(f"  {item.status.value}", style=FG3)
+        result.append("\n")
+        # Task as subtitle
+        if item.task_title:
+            result.append(f"  {item.task_title}", style=FG2)
+            result.append("\n")
+        # Separator
+        result.append("  ─────\n", style=FG4)
+        # Metadata as clean key-value pairs
         fields: list[tuple[str, str, str]] = [
-            ("name", item.name, f"bold {FG}"),
-            ("task", item.task_title or "", FG),
-            ("status", item.status.value, FG1),
             ("branch", item.branch or "", FG1),
-            ("pane", item.pane_id, f"bold {BLUE}"),
-            ("repo", item.repo_name or "", FG1),
-            ("idle", _format_idle(item.idle_seconds), FG1),
-            ("tokens", str(item.token_total) if item.token_total is not None else "", FG1),
-            ("cost", _format_cost(item.estimated_cost_usd), FG1),
+            ("pane", item.pane_id, BLUE),
+            ("repo", item.repo_name or "", FG2),
+            ("idle", _format_idle(item.idle_seconds), FG2),
+            ("tokens", str(item.token_total) if item.token_total is not None else "", FG2),
+            ("cost", _format_cost(item.estimated_cost_usd), FG2),
             ("session", agent.open_session_id or item.latest_session_id or "", FG4),
             ("seen", format_timestamp(item.last_seen_at), FG4),
         ]
         if item.needs_attention and item.attention_reason:
-            fields.append(("attn", item.attention_reason, f"bold {ORANGE}"))
-        lines: list[Text] = []
+            fields.insert(0, ("⚠ attn", item.attention_reason, f"bold {ORANGE}"))
         for label, value, style in fields:
             if not value or value == "-":
                 continue
-            line = Text()
-            line.append(f"{label:<7} ", style=FG4)
-            line.append(value, style=style)
-            lines.append(line)
-        # Recent events section
+            result.append(f"  {label:<8}", style=FG4)
+            result.append(f"{value}\n", style=style)
+        # Recent events
         if agent.recent_events:
-            lines.append(Text())  # blank separator
-            header = Text()
-            header.append("─── recent events ", style=FG4)
-            lines.append(header)
+            result.append("\n  ─── recent ─────\n", style=FG4)
             for event in agent.recent_events:
-                eline = Text()
                 color = _event_color(event)
-                eline.append(f"  {event}", style=color)
-                lines.append(eline)
-        result = Text()
-        for i, line in enumerate(lines):
-            if i:
-                result.append("\n")
-            result.append_text(line)
+                result.append(f"  {event}\n", style=color)
         self.update(result)
 
 
@@ -281,14 +278,14 @@ class LogPreviewPanel(Static):
 
     def set_logs(self, agent: DashboardSelectedAgentView | None) -> None:
         if agent is None or not agent.log_preview:
-            self.update(Text("—", style=FG4))
+            self.update(Text("  no recent output", style=FG4))
             return
         src_map = {"stdout": "out", "stderr": "err"}
         lines: list[str] = []
         for line in agent.log_preview:
             ts = format_short_timestamp(line.captured_at)
             src = src_map.get(line.source, line.source[:3])
-            lines.append(f"{ts} {src:<3} {line.content}")
+            lines.append(f"  {ts} {src:<3} {line.content}")
         self.update(join_lines(lines))
 
 
@@ -297,16 +294,16 @@ class AlertPanel(Static):
 
     def set_alerts(self, alerts: Sequence[DashboardAlertView]) -> None:
         if not alerts:
-            self.update(Text("—", style=FG4))
+            self.update(Text("  no active alerts", style=FG4))
             return
         lines: list[Text] = []
         for alert in alerts:
             line = Text()
-            line.append(f"{format_short_timestamp(alert.occurred_at)} ", style=FG4)
+            line.append(f"  {format_short_timestamp(alert.occurred_at)} ", style=FG4)
             short_sev = alert.severity[:4]
             line.append(f"{short_sev:<4}", style=_SEVERITY_STYLES[alert.severity])
-            line.append(f" {alert.agent_name}: ", style=f"bold {FG}")
-            line.append(alert.message, style=FG1)
+            line.append(f" {alert.agent_name}: ", style=f"bold {FG1}")
+            line.append(alert.message, style=FG2)
             lines.append(line)
         joined = Text()
         for index, line in enumerate(lines):
