@@ -41,6 +41,8 @@ _GENERAL_KEYS = frozenset(
         "dead_grace_period_sec",
         "log_preview_lines",
         "default_base_branch",
+        "max_cost_usd",
+        "max_runtime_minutes",
     }
 )
 _PATH_KEYS = frozenset({"state_dir", "workspace_root", "database_path", "fallback_database_path"})
@@ -59,6 +61,18 @@ def _resolve_path(value: PathLike, *, base_dir: Path | None = None) -> Path:
     if not candidate.is_absolute() and base_dir is not None:
         candidate = base_dir / candidate
     return candidate.resolve(strict=False)
+
+
+def _parse_optional_decimal(value: object, *, field_name: str) -> Decimal | None:
+    if value is None:
+        return None
+    return ensure_non_negative_decimal(value, field_name=field_name)
+
+
+def _parse_optional_positive_int(value: object, *, field_name: str) -> int | None:
+    if value is None:
+        return None
+    return _require_positive_int(value, field_name=field_name)
 
 
 def _require_table(value: object, *, section: str) -> Mapping[str, Any]:
@@ -111,6 +125,8 @@ class GeneralConfig:
     dead_grace_period_sec: int = DEFAULT_DEAD_GRACE_PERIOD_SEC
     log_preview_lines: int = DEFAULT_LOG_PREVIEW_LINES
     default_base_branch: str = DEFAULT_BASE_BRANCH
+    max_cost_usd: Decimal | None = None
+    max_runtime_minutes: int | None = None
 
     def __post_init__(self) -> None:
         if self.discovery_interval_sec <= 0:
@@ -136,6 +152,19 @@ class GeneralConfig:
                 field_name="general.default_base_branch",
             ),
         )
+        if self.max_cost_usd is not None:
+            validated = ensure_non_negative_decimal(
+                self.max_cost_usd,
+                field_name="general.max_cost_usd",
+            )
+            object.__setattr__(self, "max_cost_usd", validated)
+        if self.max_runtime_minutes is not None and (
+            not isinstance(self.max_runtime_minutes, int)
+            or isinstance(self.max_runtime_minutes, bool)
+            or self.max_runtime_minutes <= 0
+        ):
+            msg = "general.max_runtime_minutes must be a positive integer"
+            raise ConfigValidationError(msg)
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,6 +343,14 @@ class AppConfig:
                 default_base_branch=_require_non_empty_string(
                     general_section.get("default_base_branch", DEFAULT_BASE_BRANCH),
                     field_name="general.default_base_branch",
+                ),
+                max_cost_usd=_parse_optional_decimal(
+                    general_section.get("max_cost_usd"),
+                    field_name="general.max_cost_usd",
+                ),
+                max_runtime_minutes=_parse_optional_positive_int(
+                    general_section.get("max_runtime_minutes"),
+                    field_name="general.max_runtime_minutes",
                 ),
             )
             state_dir = _resolve_path(
