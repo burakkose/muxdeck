@@ -440,6 +440,74 @@ class SQLiteStoreTests(unittest.TestCase):
         with self.assertRaises(PersistenceError):
             self.store.upsert_session(self._make_session())
 
+    def test_count_sessions_for_agent(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.assertEqual(self.store.count_sessions_for_agent("agent-123"), 0)
+        self.store.upsert_session(self._make_session())
+        self.assertEqual(self.store.count_sessions_for_agent("agent-123"), 1)
+        s2 = Session(
+            id="session-456",
+            agent_id="agent-123",
+            created_at=datetime(2025, 1, 1, 13, 0, tzinfo=UTC),
+        )
+        self.store.upsert_session(s2)
+        self.assertEqual(self.store.count_sessions_for_agent("agent-123"), 2)
+        self.assertEqual(self.store.count_sessions_for_agent("nonexistent"), 0)
+
+    def test_get_open_session_for_agent(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.assertIsNone(self.store.get_open_session_for_agent("agent-123"))
+        # Insert an open session (no ended_at)
+        open_session = Session(
+            id="session-open",
+            agent_id="agent-123",
+            created_at=datetime(2025, 1, 1, 12, 0, tzinfo=UTC),
+        )
+        self.store.upsert_session(open_session)
+        result = self.store.get_open_session_for_agent("agent-123")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.id, "session-open")
+        # Close it
+        closed = Session(
+            id="session-open",
+            agent_id="agent-123",
+            created_at=datetime(2025, 1, 1, 12, 0, tzinfo=UTC),
+            ended_at=datetime(2025, 1, 1, 12, 30, tzinfo=UTC),
+        )
+        self.store.upsert_session(closed)
+        self.assertIsNone(self.store.get_open_session_for_agent("agent-123"))
+
+    def test_list_recent_log_chunks(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        chunks = []
+        for i in range(25):
+            chunks.append(
+                LogChunk(
+                    id=f"log-{i:03d}",
+                    agent_id="agent-123",
+                    session_id="session-123",
+                    source="stdout",
+                    sequence_no=i,
+                    captured_at=datetime(2025, 1, 1, 12, i, tzinfo=UTC),
+                    content=f"line-{i}",
+                )
+            )
+        self.store.append_log_chunks(tuple(chunks))
+        # Default limit=20 returns last 20 in chronological order
+        recent = self.store.list_recent_log_chunks("session-123")
+        self.assertEqual(len(recent), 20)
+        self.assertEqual(recent[0].id, "log-005")
+        self.assertEqual(recent[-1].id, "log-024")
+        # Custom limit
+        recent5 = self.store.list_recent_log_chunks("session-123", limit=5)
+        self.assertEqual(len(recent5), 5)
+        self.assertEqual(recent5[0].id, "log-020")
+        self.assertEqual(recent5[-1].id, "log-024")
+        # Empty session
+        self.assertEqual(self.store.list_recent_log_chunks("nonexistent"), ())
+
 
 if __name__ == "__main__":
     unittest.main()

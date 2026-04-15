@@ -94,7 +94,7 @@ _TAB_ITEMS: Final[tuple[tuple[str, str], ...]] = (
 
 
 class TabBar(Static):
-    """Single-line tab bar replacing the Textual Header widget."""
+    """Single-line tab bar — clean modern branding."""
 
     active_tab = reactive("dashboard")
 
@@ -104,16 +104,17 @@ class TabBar(Static):
 
     def render(self) -> Text:
         bar = Text()
-        bar.append(" ⌘ ", style=f"bold {BADGE_FG} on {BADGE_BG}")
+        bar.append(" ◆ ", style=f"bold {BLUE}")
+        bar.append("commander", style=f"bold {FG}")
+        bar.append("  ", style=FG4)
         for key, label in _TAB_ITEMS:
-            bar.append("  ")
             is_active = label.lower() == self.active_tab.lower()
             if is_active:
-                bar.append(f" {key}", style=f"bold {BLUE}")
-                bar.append(f" {label} ", style=f"bold {FG}")
+                bar.append(f" {key}·", style=f"bold {BLUE}")
+                bar.append(f"{label} ", style=f"bold {FG}")
             else:
-                bar.append(f" {key}", style=FG4)
-                bar.append(f" {label} ", style=FG4)
+                bar.append(f" {key}·", style=FG4)
+                bar.append(f"{label} ", style=FG4)
         return bar
 
 
@@ -137,11 +138,13 @@ class KeyHintFooter(Static):
 
     def render(self) -> Text:
         footer = Text()
-        footer.append(f" {self.status} ", style=f"{FG} on {BG1}")
-        for hint in self.hints:
-            footer.append(" ")
-            footer.append(f" {hint.key} ", style=f"bold {BADGE_FG} on {PANEL_BG}")
-            footer.append(f"{hint.label}", style=FG1)
+        footer.append(f" {self.status} ", style=f"bold {FG2}")
+        footer.append(" │ ", style=FG4)
+        for i, hint in enumerate(self.hints):
+            if i:
+                footer.append("  ")
+            footer.append(f"{hint.key}", style=f"bold {BLUE}")
+            footer.append(f" {hint.label}", style=FG3)
         return footer
 
 

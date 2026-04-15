@@ -90,13 +90,13 @@ class DashboardScreen(ShellScreen):
         if pre_built is not None:
             self._state = pre_built
             self.commander_app.last_dashboard_state = None
+        elif self._state is not None:
+            # Already have state from a prior cycle; keep it until worker delivers fresh data.
+            pass
         else:
-            self._state = self.runtime.dashboard.build_state(
-                filters=self._filters,
-                sort=self._sort,
-                selected_agent_id=self._selected_agent_id,
-                preview_line_limit=min(self.runtime.config.general.log_preview_lines, 12),
-            )
+            # First mount with no worker result yet — show empty state, don't block.
+            self.set_status("Discovering agents…")
+            return
         self._selected_agent_id = self._state.selected_agent_id
         if self._selected_agent_id is not None:
             self.commander_app.remember_agent_selection(self._selected_agent_id)

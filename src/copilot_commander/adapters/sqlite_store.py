@@ -671,6 +671,43 @@ class SQLiteStore:
         )
         return None if row is None else _row_to_session(row)
 
+    def count_sessions_for_agent(self, agent_id: str, /) -> int:
+        """Return the number of sessions for an agent."""
+        row = self._fetch_one(
+            "SELECT COUNT(*) FROM sessions WHERE agent_id = ?",
+            (agent_id,),
+            operation="count sessions for agent",
+        )
+        return int(row[0]) if row else 0
+
+    def get_open_session_for_agent(self, agent_id: str, /) -> Session | None:
+        """Return the currently open (no ended_at) session for an agent, or None."""
+        row = self._fetch_one(
+            (
+                f"{_SELECT_SESSION_SQL} WHERE agent_id = ? AND ended_at IS NULL "
+                "ORDER BY created_at DESC LIMIT 1"
+            ),
+            (agent_id,),
+            operation="get open session for agent",
+        )
+        return None if row is None else _row_to_session(row)
+
+    def list_recent_log_chunks(
+        self, session_id: str, /, *, limit: int = 20
+    ) -> tuple[LogChunk, ...]:
+        """Return the most recent *limit* log chunks for a session, in chronological order."""
+        rows = self._fetch_all(
+            (
+                f"SELECT * FROM (SELECT {', '.join(_LOG_CHUNK_COLUMNS)} FROM log_chunks "
+                "WHERE session_id = ? "
+                "ORDER BY sequence_no DESC, captured_at DESC, rowid DESC "
+                f"LIMIT ?) ORDER BY sequence_no ASC, captured_at ASC, rowid ASC"
+            ),
+            (session_id, limit),
+            operation="list recent log chunks",
+        )
+        return tuple(_row_to_log_chunk(row) for row in rows)
+
     def list_log_chunks_for_agent(self, agent_id: str, /) -> tuple[LogChunk, ...]:
         rows = self._fetch_all(
             (
