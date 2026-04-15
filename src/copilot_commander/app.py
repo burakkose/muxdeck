@@ -72,6 +72,7 @@ class CommanderApp(App[None]):
         self.last_sync_report: RuntimeSyncReport | None = None
         self._sync_in_progress: bool = False
         self._refresh_pending: bool = False
+        self._manual_refresh: bool = False
 
     def on_mount(self) -> None:
         self.add_mode("dashboard", lambda: DashboardScreen(self.runtime))
@@ -96,7 +97,7 @@ class CommanderApp(App[None]):
         self.switch_mode("help")
 
     def action_refresh_screen(self) -> None:
-        self._refresh_current_screen()
+        self._refresh_current_screen(manual=True)
 
     def remember_agent_selection(self, agent_id: str) -> None:
         self.selected_agent_id = agent_id
@@ -127,15 +128,19 @@ class CommanderApp(App[None]):
 
     # ── sync lifecycle ───────────────────────────────────────────────
 
-    def _refresh_current_screen(self) -> None:
+    def _refresh_current_screen(self, *, manual: bool = False) -> None:
         synchronizer = self.runtime.synchronizer
         if synchronizer is None:
-            self._refresh_screen_widgets()
+            self._refresh_screen_widgets(force=True)
             return
         if self._sync_in_progress:
             self._refresh_pending = True
+            if manual:
+                self._manual_refresh = True
             return
         self._sync_in_progress = True
+        if manual:
+            self._manual_refresh = True
         self.run_worker(
             self._run_sync,
             thread=True,
@@ -158,17 +163,23 @@ class CommanderApp(App[None]):
             return
         if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
             self._sync_in_progress = False
+            manual = self._manual_refresh
+            self._manual_refresh = False
             if event.state == WorkerState.SUCCESS and event.worker.result is not None:
                 self.last_sync_report = event.worker.result
             elif event.state == WorkerState.ERROR:
                 _log.warning("sync worker failed: %s", event.worker.error)
-            self._refresh_screen_widgets()
+            self._refresh_screen_widgets(force=manual)
             if self._refresh_pending:
                 self._refresh_pending = False
                 self._refresh_current_screen()
 
-    def _refresh_screen_widgets(self) -> None:
+    def _refresh_screen_widgets(self, *, force: bool = False) -> None:
         screen = self.screen
+        # Periodic sync only auto-refreshes the dashboard.
+        # Other screens refresh on tab switch (on_show) or manual r key.
+        if not force and not isinstance(screen, DashboardScreen):
+            return
         refresher = getattr(screen, "refresh_data", None)
         if callable(refresher):
             refresher()

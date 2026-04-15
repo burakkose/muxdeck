@@ -212,39 +212,28 @@ class AgentListPanel(Static, can_focus=True):
             pad_edge=False,
         )
         table.add_column("", width=2, no_wrap=True)
-        table.add_column("name", min_width=12, max_width=18, overflow="ellipsis")
-        table.add_column("status", min_width=10, max_width=14, overflow="ellipsis")
-        table.add_column("repo", min_width=10, max_width=14, overflow="ellipsis")
-        table.add_column("branch", min_width=12, max_width=18, overflow="ellipsis")
-        table.add_column("worktree", min_width=10, max_width=14, overflow="ellipsis")
-        table.add_column("pane", width=6, no_wrap=True)
-        table.add_column("task", min_width=14, max_width=20, overflow="ellipsis")
+        table.add_column("name", min_width=10, max_width=20, overflow="ellipsis")
+        table.add_column("status", min_width=8, max_width=12, overflow="ellipsis")
+        table.add_column("branch", min_width=8, max_width=16, overflow="ellipsis")
+        table.add_column("pane", width=5, no_wrap=True)
         table.add_column("idle", width=7, justify="right")
-        table.add_column("session", width=10, no_wrap=True)
-        table.add_column("tok", width=7, justify="right")
-        table.add_column("cost", width=10, justify="right")
+        table.add_column("info", min_width=10, overflow="ellipsis")
         for index, agent in enumerate(self._agents):
             is_selected = index == self._selected_index
             row_style = _row_style(agent, selected=is_selected)
+            display_name = agent.worktree_name or agent.name
+            info = agent.attention_reason or agent.task_title or ""
             table.add_row(
                 Text(
                     _marker_text(agent, selected=is_selected),
                     style=_marker_style(agent, is_selected),
                 ),
-                Text(agent.name, style=f"bold {FG}" if is_selected else FG),
+                Text(display_name, style=f"bold {FG}" if is_selected else FG),
                 _status_text(agent.status),
-                Text(agent.repo_name or "-", style=FG),
                 Text(agent.branch or "-", style=FG),
-                Text(agent.worktree_name or "-", style=FG),
                 Text(agent.pane_id, style=f"bold {BLUE}"),
-                Text(agent.task_title or "-", style=FG),
-                Text(f"{agent.idle_seconds}s", style=FG),
-                Text(_short_session(agent.latest_session_id), style=FG4),
-                Text(
-                    str(agent.token_total) if agent.token_total is not None else "-",
-                    style=FG,
-                ),
-                Text(_format_cost(agent.estimated_cost_usd), style=FG),
+                Text(_format_idle(agent.idle_seconds), style=FG),
+                Text(info, style=f"{ORANGE}" if agent.needs_attention else FG4),
                 style=row_style,
             )
         return table
@@ -259,20 +248,20 @@ class AgentDetailPanel(Static):
         lines = (
             f"NAME      {item.name}",
             f"STATUS    {item.status.value}",
-            f"TASK      {item.task_title or '-'}",
-            f"REPO      {agent.repo_root or '-'}",
+            f"REPO      {item.repo_name or '-'}",
             f"BRANCH    {item.branch or '-'}",
             f"WORKTREE  {item.worktree_path or '-'}",
             f"PANE      {item.pane_id}",
+            f"TASK      {item.task_title or '-'}",
             f"SESSION   {agent.open_session_id or item.latest_session_id or '-'}",
             f"SESSIONS  {agent.session_count}",
             f"LAST EVT  {agent.latest_event_kind or '-'}",
             f"SEVERITY  {agent.latest_event_severity or '-'}",
             f"LAST SEEN {format_timestamp(item.last_seen_at)}",
             f"STARTED   {format_timestamp(item.started_at)}",
-            f"IDLE      {item.idle_seconds}s",
+            f"IDLE      {_format_idle(item.idle_seconds)}",
             f"TOKENS    {item.token_total if item.token_total is not None else '-'}",
-            f"COST USD  {item.estimated_cost_usd or '-'}",
+            f"COST USD  {_format_cost(item.estimated_cost_usd)}",
             f"ATTN      {item.attention_reason or '-'}",
         )
         self.update(join_lines(lines))
@@ -311,6 +300,14 @@ class AlertPanel(Static):
         self.update(joined)
 
 
+def _format_idle(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60}m"
+
+
 def _format_cost(value: str | None) -> str:
     if value is None:
         return "-"
@@ -341,12 +338,6 @@ def _row_style(agent: DashboardAgentListItemView, *, selected: bool) -> str:
     if agent.needs_attention:
         return f"on {ATTENTION_ROW_BG}"
     return ""
-
-
-def _short_session(session_id: str | None) -> str:
-    if session_id is None:
-        return "-"
-    return session_id[:8]
 
 
 def _status_text(status: AgentStatus) -> Text:
