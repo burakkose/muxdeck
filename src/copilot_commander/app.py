@@ -181,7 +181,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     store = SQLiteStore.from_config(resolved_config)
     # Dedicated store for the sync worker thread to avoid cross-thread
     # sqlite3 access.  Both connections target the same WAL-mode database.
-    sync_store = SQLiteStore.from_config(resolved_config)
+    sync_store = SQLiteStore.from_config(resolved_config, check_same_thread=False)
     process_adapter = ProcessAdapter()
     git_adapter = GitAdapter(process_adapter)
     tmux_adapter = TmuxAdapter(process_adapter)
