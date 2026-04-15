@@ -32,6 +32,7 @@ class ReplayScreen(ShellScreen):
         self._selected_index: int | None = None
         self._state: ReplayStateView | None = None
         self._export_format: ReplayExportFormat = "text"
+        self._refreshing: bool = False
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="replay-root"):
@@ -53,6 +54,13 @@ class ReplayScreen(ShellScreen):
         return cast("CommanderApp", self.app)
 
     def refresh_data(self) -> None:
+        self._refreshing = True
+        try:
+            self._refresh_data_inner()
+        finally:
+            self._refreshing = False
+
+    def _refresh_data_inner(self) -> None:
         resolved_session_id = self.commander_app.resolve_replay_session_id(self._session_id)
         self._session_id = resolved_session_id
         if resolved_session_id is None:
@@ -95,6 +103,10 @@ class ReplayScreen(ShellScreen):
         message: ReplayTranscriptPanel.TranscriptSelected,
     ) -> None:
         if self._state is None or self._session_id is None:
+            return
+        if self._refreshing:
+            return
+        if self._selected_index == message.transcript_index:
             return
         self._selected_index = message.transcript_index
         self.refresh_data()
