@@ -18,7 +18,7 @@ Screen {
     height: 1fr;
     layout: vertical;
     background: #282828;
-    padding: 0 1;
+    padding: 0 0;
 }
 
 #shell-footer {
@@ -44,25 +44,8 @@ Screen {
 .muted {
     background: #32302f;
     color: #d5c4a1;
-    height: auto;
+    height: 1;
     padding: 0 1;
-}
-
-/* ── health tones (applied to status bar) ────────────────────────── */
-
-.tone-healthy {
-    background: #2b3328;
-    color: #b8bb26;
-}
-
-.tone-warning {
-    background: #3c3020;
-    color: #fabd2f;
-}
-
-.tone-critical {
-    background: #3c2020;
-    color: #fb4934;
 }
 
 /* ── screen roots ────────────────────────────────────────────────── */
@@ -78,12 +61,12 @@ Screen {
 
 #dashboard-status-bar {
     height: 1;
-    margin-bottom: 0;
+    background: #32302f;
+    padding: 0 1;
 }
 
 #dashboard-filter-row {
-    height: 3;
-    margin-bottom: 0;
+    height: 1;
 }
 
 #dashboard-main {
@@ -91,69 +74,65 @@ Screen {
 }
 
 #dashboard-agents {
-    width: 60%;
-    margin-right: 1;
+    width: 35%;
 }
 
 #dashboard-sidebar {
-    width: 40%;
+    width: 65%;
     height: 1fr;
     layout: vertical;
 }
 
 #dashboard-detail {
-    height: 2fr;
-    margin-bottom: 0;
+    height: 1fr;
+    min-height: 6;
 }
 
 #dashboard-log {
-    height: 1fr;
-    margin-bottom: 0;
+    height: auto;
+    max-height: 8;
 }
 
 #dashboard-alerts {
-    height: 1fr;
+    height: auto;
+    max-height: 6;
 }
 
 /* ── worktrees ───────────────────────────────────────────────────── */
-
-#worktrees-summary {
-    height: auto;
-}
 
 #worktrees-main {
     height: 1fr;
 }
 
 #worktrees-list {
-    width: 60%;
-    margin-right: 1;
+    width: 35%;
 }
 
 #worktrees-sidebar {
-    width: 40%;
+    width: 65%;
     height: 1fr;
     layout: vertical;
 }
 
 #worktrees-detail {
     height: 1fr;
-    margin-bottom: 0;
+    min-height: 6;
 }
 
 #worktrees-conflicts {
-    height: 1fr;
-    margin-bottom: 0;
+    height: auto;
+    max-height: 6;
 }
 
 #worktrees-intent {
-    height: 1fr;
+    height: auto;
+    max-height: 10;
 }
 
 /* ── replay ──────────────────────────────────────────────────────── */
 
 #replay-summary {
-    height: auto;
+    height: 1;
 }
 
 #replay-main {
@@ -162,7 +141,6 @@ Screen {
 
 #replay-markers {
     width: 26%;
-    margin-right: 1;
 }
 
 #replay-transcript {
@@ -170,7 +148,8 @@ Screen {
 }
 
 #replay-detail {
-    height: 1fr;
+    height: auto;
+    max-height: 8;
 }
 
 /* ── inputs ──────────────────────────────────────────────────────── */
@@ -178,12 +157,24 @@ Screen {
 Input {
     background: #1d2021;
     color: #ebdbb2;
-    border: solid #504945;
-    height: 3;
+    border: none;
+    height: 1;
+    padding: 0 0;
 }
 
 Input:focus {
-    border: solid #83a598;
+    border: none;
+}
+
+#dashboard-filter-input {
+    border: none;
+    height: 1;
+    padding: 0 0;
+}
+
+#dashboard-filter-input:focus {
+    border: none;
+    height: 1;
 }
 
 /* ── scrollbars ──────────────────────────────────────────────────── */
@@ -201,7 +192,7 @@ Static {
     border: solid #504945;
     border-title-color: #bdae93;
     border-title-style: bold;
-    padding: 1 2;
+    padding: 0 1;
     background: #3c3836;
 }
 

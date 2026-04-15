@@ -93,22 +93,18 @@ class DashboardScreen(ShellScreen):
         self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
         if sync_report is None:
-            self.set_status(f"{len(self._state.agents)} agents | {self._state.health.message}")
+            self.set_status(f"{len(self._state.agents)} agents · {self._state.health.message}")
             return
         if sync_report.error is not None:
             self.set_status(sync_report.error)
             return
-        parts = [
-            f"scanned {sync_report.observed_panes}",
-            f"synced {sync_report.persisted_agents}",
-            f"visible {len(self._state.agents)}",
-        ]
+        parts = [f"{len(self._state.agents)} visible"]
         if self._filters.attention_only:
             parts.append("attn-only")
         if not self._filters.include_completed:
             parts.append("hide-done")
         parts.append(f"sort:{self._sort.field}")
-        self.set_status(" │ ".join(parts))
+        self.set_status(" · ".join(parts))
 
     @property
     def commander_app(self) -> CommanderApp:

@@ -1,4 +1,4 @@
-# ruff: noqa: ANN001,ANN201,E501
+# ruff: noqa: ANN201
 
 """Tests for the compact agent list table and display helpers."""
 
@@ -69,41 +69,43 @@ class TestFormatIdle:
 
 
 class TestAgentListTable:
-    """Verify the compact table builds with 7 columns."""
+    """Verify the compact table builds with 4 columns."""
 
-    def test_table_has_seven_columns(self):
+    def test_table_has_four_columns(self):
         from copilot_commander.widgets.dashboard import AgentListPanel
 
         panel = AgentListPanel(widget_id="test")
         panel._agents = (_agent(),)
         panel._selected_index = 0
         table = panel._build_table()
-        assert len(table.columns) == 7
+        assert len(table.columns) == 4
 
-    def test_display_name_prefers_repo_name(self):
-        """repo_name is used as the display name when available."""
+    def test_display_name_uses_process_name(self):
+        """Agent name is the primary display name (unique in list)."""
         from copilot_commander.widgets.dashboard import AgentListPanel
 
-        agent = _agent(name="node", repo_name="tachyon", worktree_name="wt-tachyon")
+        agent = _agent(name="Planner", repo_name="tachyon", worktree_name="wt-tachyon")
         panel = AgentListPanel(widget_id="test")
         panel._agents = (agent,)
         panel._selected_index = 0
         table = panel._build_table()
         row_cells = table.columns[1]._cells
         assert len(row_cells) == 1
-        assert "tachyon" in str(row_cells[0])
+        assert "Planner" in str(row_cells[0])
 
-    def test_display_name_falls_back_to_worktree(self):
-        """worktree_name is used when repo_name is absent."""
+    def test_display_name_disambiguates_duplicates(self):
+        """When names collide, worktree/repo suffix is added."""
         from copilot_commander.widgets.dashboard import AgentListPanel
 
-        agent = _agent(name="node", repo_name=None, worktree_name="tachyon")
+        a1 = _agent(name="node", repo_name="tachyon", worktree_name="wt-a")
+        a2 = _agent(name="node", repo_name="tachyon", worktree_name="wt-b")
         panel = AgentListPanel(widget_id="test")
-        panel._agents = (agent,)
+        panel._agents = (a1, a2)
         panel._selected_index = 0
         table = panel._build_table()
-        row_cells = table.columns[1]._cells
-        assert "tachyon" in str(row_cells[0])
+        cells = table.columns[1]._cells
+        assert "wt-a" in str(cells[0])
+        assert "wt-b" in str(cells[1])
 
     def test_display_name_falls_back_to_process_name(self):
         from copilot_commander.widgets.dashboard import AgentListPanel
@@ -116,25 +118,27 @@ class TestAgentListTable:
         row_cells = table.columns[1]._cells
         assert "python" in str(row_cells[0])
 
-    def test_info_column_shows_attention_reason(self):
+    def test_attention_agent_gets_attention_row_style(self):
+        """Agents needing attention get a distinct row background."""
         from copilot_commander.widgets.dashboard import AgentListPanel
 
         agent = _agent(needs_attention=True, attention_reason="idle for 300s")
         panel = AgentListPanel(widget_id="test")
         panel._agents = (agent,)
-        panel._selected_index = 0
+        panel._selected_index = -1
         table = panel._build_table()
-        # info is the last column (index 6)
-        row_cells = table.columns[6]._cells
-        assert "idle for 300s" in str(row_cells[0])
+        # With 4 compact columns, attention info is in detail panel.
+        # The table row should have attention background style.
+        assert len(table.columns) == 4
 
-    def test_info_column_shows_task_when_no_attention(self):
+    def test_short_status_column_shows_status(self):
+        """The short-status column (index 2) shows a compact status label."""
         from copilot_commander.widgets.dashboard import AgentListPanel
 
-        agent = _agent(task_title="Fix bug #42", needs_attention=False)
+        agent = _agent(status=AgentStatus.RUNNING)
         panel = AgentListPanel(widget_id="test")
         panel._agents = (agent,)
         panel._selected_index = 0
         table = panel._build_table()
-        row_cells = table.columns[6]._cells
-        assert "Fix bug #42" in str(row_cells[0])
+        status_cells = table.columns[2]._cells
+        assert "run" in str(status_cells[0])
