@@ -71,14 +71,14 @@ class TestFormatIdle:
 class TestAgentListTable:
     """Verify the compact table builds with 4 columns."""
 
-    def test_table_has_four_columns(self):
+    def test_table_has_five_columns(self):
         from copilot_commander.widgets.dashboard import AgentListPanel
 
         panel = AgentListPanel(widget_id="test")
         panel._agents = (_agent(),)
         panel._selected_index = 0
         table = panel._build_table()
-        assert len(table.columns) == 4
+        assert len(table.columns) == 5
 
     def test_display_name_uses_process_name(self):
         """Agent name is the primary display name (unique in list)."""
@@ -127,9 +127,10 @@ class TestAgentListTable:
         panel._agents = (agent,)
         panel._selected_index = -1
         table = panel._build_table()
-        # With 4 compact columns, attention info is in detail panel.
+        # With 5 columns (glyph, name, status, activity, branch),
+        # attention info is in detail panel.
         # The table row should have attention background style.
-        assert len(table.columns) == 4
+        assert len(table.columns) == 5
 
     def test_short_status_column_shows_status(self):
         """The short-status column (index 2) shows a compact status label."""
