@@ -19,6 +19,7 @@ from copilot_commander.controllers import (
 )
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.theme import (
+    AQUA,
     ATTENTION_ROW_BG,
     BLUE,
     BORDER,
@@ -26,11 +27,13 @@ from copilot_commander.theme import (
     FG1,
     FG3,
     FG4,
+    GREEN,
     ORANGE,
     SELECTED_ROW_BG,
     SEVERITY_ERROR,
     SEVERITY_INFO,
     SEVERITY_WARNING,
+    YELLOW,
 )
 from copilot_commander.widgets.common import (
     format_short_timestamp,
@@ -44,6 +47,20 @@ _SEVERITY_STYLES: dict[str, str] = {
     "warning": f"bold {SEVERITY_WARNING}",
     "error": f"bold {SEVERITY_ERROR}",
 }
+
+
+def _event_color(event: str) -> str:
+    """Pick a Gruvbox color based on event emoji prefix."""
+    if event.startswith(("📖", "✏️", "🔍")):
+        return AQUA
+    if event.startswith("⚡"):
+        return GREEN
+    if event.startswith(("💭", "🔧")):
+        return YELLOW
+    if event.startswith("⚠"):
+        return ORANGE
+    return FG
+
 
 _SHORT_STATUS: dict[AgentStatus, str] = {
     AgentStatus.RUNNING: "run",
@@ -188,15 +205,22 @@ class AgentListPanel(Static, can_focus=True):
         table.add_column("", width=1, no_wrap=True)
         table.add_column("name", min_width=6, no_wrap=True, ratio=2)
         table.add_column("st", width=4, no_wrap=True)
+        table.add_column("activity", width=10, no_wrap=True)
         table.add_column("branch", min_width=4, no_wrap=True, ratio=2, overflow="ellipsis")
         for index, agent in enumerate(self._agents):
             is_selected = index == self._selected_index
             row_style = _row_style(agent, selected=is_selected)
             display_name = _display_name(agent, self._agents)
+            status_text = _short_status(agent.status)
+            status_style = FG3
+            if agent.is_potentially_stuck:
+                status_text = "⚠stk"
+                status_style = YELLOW
             table.add_row(
                 status_glyph(agent.status, selected=is_selected),
                 Text(display_name, style=f"bold {FG}" if is_selected else FG),
-                Text(_short_status(agent.status), style=FG3),
+                Text(status_text, style=status_style),
+                Text(agent.sparkline, style=AQUA),
                 Text(agent.branch or "-", style=FG1, overflow="ellipsis"),
                 style=row_style,
             )
@@ -237,6 +261,17 @@ class AgentDetailPanel(Static):
             line.append(f"{label:<7} ", style=FG4)
             line.append(value, style=style)
             lines.append(line)
+        # Recent events section
+        if agent.recent_events:
+            lines.append(Text())  # blank separator
+            header = Text()
+            header.append("─── recent events ", style=FG4)
+            lines.append(header)
+            for event in agent.recent_events:
+                eline = Text()
+                color = _event_color(event)
+                eline.append(f"  {event}", style=color)
+                lines.append(eline)
         result = Text()
         for i, line in enumerate(lines):
             if i:

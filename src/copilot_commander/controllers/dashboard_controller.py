@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -12,11 +13,20 @@ from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.events import Event, LogChunk
 from copilot_commander.domain.models import Agent, Session, Worktree
 from copilot_commander.domain.value_objects import utc_now
+from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
 from copilot_commander.types import Clock
 
 DashboardSortField = Literal["last_seen", "name", "status", "cost", "idle_seconds", "started_at"]
 HealthTone = Literal["healthy", "warning", "critical"]
 AlertSeverity = Literal["info", "warning", "error"]
+
+_SPARK_CHARS: str = " ▁▂▃▄▅▆▇"
+_ACTIVITY_HISTORY_CAP: int = 100
+_STALE_THRESHOLD_SECONDS: int = 120
+
+# Module-level state for sparkline activity history and heartbeat staleness.
+_activity_history: dict[str, list[datetime]] = {}
+_output_hashes: dict[str, tuple[str, datetime]] = {}
 
 
 class DashboardStorePort(Protocol):
@@ -112,6 +122,8 @@ class DashboardAgentListItemView:
     token_total: int | None
     estimated_cost_usd: str | None
     current_activity: str | None = None
+    sparkline: str = "        "
+    is_potentially_stuck: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +137,7 @@ class DashboardSelectedAgentView:
     latest_event_severity: str | None
     latest_event_at: datetime | None
     log_preview: tuple[DashboardLogLineView, ...]
+    recent_events: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +236,36 @@ class DashboardController:
             needs_attention = True
             attention_reason = runaway
 
+        current_activity = _activity_from_task_title(agent.task_title)
+        now = self._clock()
+
+        # Sparkline: record activity and build visualization
+        _record_activity(agent.id, current_activity, now)
+        sparkline = _build_sparkline(
+            _activity_history.get(agent.id, []),
+            now=now,
+        )
+
+        # Heartbeat: detect stuck agents via output hash staleness
+        output_blob = (agent.task_title or "") + (
+            latest_log.content if latest_log is not None else ""
+        )
+        is_potentially_stuck = _check_stale_output(
+            agent.id,
+            output_blob,
+            now=now,
+            agent_status=agent.status,
+        )
+        if is_potentially_stuck and not needs_attention:
+            stale_entry = _output_hashes.get(agent.id)
+            stale_secs = (
+                int((now - stale_entry[1]).total_seconds())
+                if stale_entry is not None
+                else _STALE_THRESHOLD_SECONDS
+            )
+            needs_attention = True
+            attention_reason = f"output unchanged for {stale_secs}s — may be stuck"
+
         return DashboardAgentListItemView(
             agent_id=agent.id,
             name=agent.name,
@@ -243,9 +286,9 @@ class DashboardController:
             attention_reason=attention_reason,
             token_total=agent.token_total,
             estimated_cost_usd=estimated_cost,
-            current_activity=_activity_from_task_title(
-                agent.task_title,
-            ),
+            current_activity=current_activity,
+            sparkline=sparkline,
+            is_potentially_stuck=is_potentially_stuck,
         )
 
     def _filter_agents(
@@ -344,6 +387,7 @@ class DashboardController:
             latest_event_severity=latest_event.severity if latest_event is not None else None,
             latest_event_at=latest_event.occurred_at if latest_event is not None else None,
             log_preview=self._build_log_preview(logs, preview_line_limit=preview_line_limit),
+            recent_events=_extract_recent_events(logs),
         )
 
     def _build_log_preview(
@@ -497,6 +541,52 @@ _ACTIVITY_PREFIXES = (
 )
 
 
+_EVENT_EMOJI: dict[str, str] = {
+    "file_read": "📖",
+    "file_write": "✏️",
+    "command": "⚡",
+    "search": "🔍",
+    "thinking": "💭",
+    "tool_use": "🔧",
+}
+
+_MAX_RECENT_EVENTS = 20
+
+
+def _extract_recent_events(
+    logs: Sequence[LogChunk],
+    *,
+    limit: int = _MAX_RECENT_EVENTS,
+) -> tuple[str, ...]:
+    """Parse log content through activity patterns and return emoji-prefixed event strings."""
+    content_parts: list[str] = []
+    for chunk in logs:
+        content_parts.append(chunk.content)
+    if not content_parts:
+        return ()
+    combined = "\n".join(content_parts)
+    result = parse_copilot_output(combined)
+    events: list[str] = []
+    # Sort activity markers by their line position to preserve order
+    sorted_markers = sorted(result.activity_markers, key=lambda m: m.span.start_line)
+    for marker in sorted_markers:
+        emoji = _EVENT_EMOJI.get(marker.category, "●")
+        activity = marker.activity
+        # Capitalize first letter after emoji
+        if activity:
+            activity = activity[0].upper() + activity[1:]
+        events.append(f"{emoji} {activity}")
+    # Also include errors as events
+    for error in result.errors:
+        events.append(f"⚠️ {error.message[:80]}")
+    # Deduplicate consecutive identical events
+    deduped: list[str] = []
+    for event in events:
+        if not deduped or deduped[-1] != event:
+            deduped.append(event)
+    return tuple(deduped[-limit:])
+
+
 def _activity_from_task_title(title: str | None) -> str | None:
     if title is None:
         return None
@@ -539,6 +629,67 @@ def _check_runaway(
     return None
 
 
+def _build_sparkline(
+    activity_timestamps: Sequence[datetime],
+    *,
+    now: datetime | None = None,
+    window_minutes: int = 10,
+    bars: int = 8,
+) -> str:
+    """Map recent activity timestamps into a sparkline string of length *bars*."""
+    if now is None:
+        now = datetime.now(UTC)
+    window = timedelta(minutes=window_minutes)
+    cutoff = now - window
+    relevant = [ts for ts in activity_timestamps if ts >= cutoff]
+    if not relevant:
+        return " " * bars
+    bucket_width = window / bars
+    counts: list[int] = [0] * bars
+    for ts in relevant:
+        bucket_index = int((ts - cutoff) / bucket_width)
+        bucket_index = min(bucket_index, bars - 1)
+        counts[bucket_index] += 1
+    max_count = max(counts)
+    if max_count == 0:
+        return " " * bars
+    last_index = len(_SPARK_CHARS) - 1
+    return "".join(
+        _SPARK_CHARS[min(round(count / max_count * last_index), last_index)] for count in counts
+    )
+
+
+def _record_activity(agent_id: str, current_activity: str | None, now: datetime) -> None:
+    """Append a timestamp to activity history when the agent has activity."""
+    if current_activity is None:
+        return
+    history = _activity_history.setdefault(agent_id, [])
+    history.append(now)
+    if len(history) > _ACTIVITY_HISTORY_CAP:
+        _activity_history[agent_id] = history[-_ACTIVITY_HISTORY_CAP:]
+
+
+def _check_stale_output(
+    agent_id: str,
+    output_blob: str,
+    *,
+    now: datetime,
+    agent_status: AgentStatus,
+) -> bool:
+    """Return True when running agent output hasn't changed beyond threshold."""
+    terminal = {AgentStatus.COMPLETED, AgentStatus.DEAD, AgentStatus.ERROR}
+    if agent_status in terminal:
+        _output_hashes.pop(agent_id, None)
+        return False
+    current_hash = hashlib.md5(output_blob.encode(), usedforsecurity=False).hexdigest()
+    previous = _output_hashes.get(agent_id)
+    if previous is None or previous[0] != current_hash:
+        _output_hashes[agent_id] = (current_hash, now)
+        return False
+    stale_seconds = (now - previous[1]).total_seconds()
+    return stale_seconds > _STALE_THRESHOLD_SECONDS
+
+
 __all__ = [
     "DashboardAgentListItemView",
     "DashboardAlertView",
@@ -550,4 +701,6 @@ __all__ = [
     "DashboardSelectedAgentView",
     "DashboardSort",
     "DashboardState",
+    "_build_sparkline",
+    "_check_stale_output",
 ]

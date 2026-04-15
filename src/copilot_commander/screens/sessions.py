@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.widgets import Input
 
 from copilot_commander.bindings import SESSIONS_BINDINGS, SESSIONS_HINTS
 from copilot_commander.screens.base import ShellScreen
@@ -36,6 +37,10 @@ class SessionsScreen(ShellScreen):
     def compose_body(self) -> ComposeResult:
         with Vertical(id="sessions-root"):
             yield SessionSummaryBar(widget_id="sessions-summary", classes="muted")
+            yield Input(
+                placeholder="/ filter sessions",
+                id="sessions-filter-input",
+            )
             with Horizontal(id="sessions-main"):
                 yield SessionListPanel(
                     widget_id="sessions-list",
@@ -89,6 +94,15 @@ class SessionsScreen(ShellScreen):
         self.refresh_data()
 
     # ── actions ──────────────────────────────────────────────────────
+
+    def action_focus_filter(self) -> None:
+        """Focus the filter input."""
+        self.query_one("#sessions-filter-input", Input).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "sessions-filter-input":
+            self._filter_text = event.value
+            self.refresh_data()
 
     def action_cursor_down(self) -> None:
         sid = self.query_one(SessionListPanel).move_cursor(1)

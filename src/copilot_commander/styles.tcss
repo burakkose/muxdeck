@@ -225,6 +225,11 @@ ListView > ListItem.--highlight {
     margin-bottom: 0;
 }
 
+#sessions-filter-input {
+    height: 3;
+    margin-bottom: 0;
+}
+
 #sessions-main {
     height: 1fr;
 }

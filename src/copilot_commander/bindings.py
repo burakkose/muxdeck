@@ -120,6 +120,7 @@ REPLAY_HINTS = (
 SESSIONS_BINDINGS: Final[list[BindingSpec]] = [
     Binding("j", "cursor_down", "Next session", show=False),
     Binding("k", "cursor_up", "Prev session", show=False),
+    Binding("slash", "focus_filter", "Filter", show=False),
     Binding("r", "resume_session", "Resume", show=False),
     Binding("x", "toggle_completed", "Toggle completed", show=False),
     Binding("y", "copy_session_id", "Copy ID", show=False),
@@ -128,6 +129,7 @@ SESSIONS_BINDINGS: Final[list[BindingSpec]] = [
 
 SESSIONS_HINTS = (
     KeyHint("j/k", "move"),
+    KeyHint("/", "filter"),
     KeyHint("r", "resume"),
     KeyHint("x", "completed"),
     KeyHint("y", "copy ID"),
