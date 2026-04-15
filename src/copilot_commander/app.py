@@ -210,6 +210,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         tmux_adapter,
         copilot_adapter,
         sync_store,
+        process_inspector=process_adapter,
         capture_start_line=-max(resolved_config.general.log_preview_lines, 200),
     )
     worktree_service = WorktreeService(

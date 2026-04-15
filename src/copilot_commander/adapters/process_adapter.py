@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import shlex
 import subprocess
@@ -10,6 +11,8 @@ from pathlib import Path
 from copilot_commander.domain.value_objects import CommandResult
 from copilot_commander.exceptions import CommandError
 from copilot_commander.types import Clock
+
+_log = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT_SEC = 30.0
 
@@ -116,3 +119,41 @@ class ProcessAdapter:
             stderr=stderr,
             cwd=cwd,
         )
+
+    def get_child_cmdlines(self, pid: int, /) -> tuple[str, ...]:
+        """Read command lines of descendant processes from ``/proc``.
+
+        Walks the process tree up to 4 levels deep and returns each
+        descendant's full command line as a space-joined string.
+        Silently ignores processes that have exited or are unreadable.
+        """
+        result: list[str] = []
+        self._collect_child_cmdlines(pid, result, depth=0, max_depth=4)
+        return tuple(result)
+
+    def _collect_child_cmdlines(
+        self,
+        pid: int,
+        result: list[str],
+        depth: int,
+        max_depth: int,
+    ) -> None:
+        if depth >= max_depth:
+            return
+        try:
+            children_text = Path(f"/proc/{pid}/task/{pid}/children").read_text()
+        except OSError:
+            return
+        for token in children_text.split():
+            try:
+                child_pid = int(token)
+            except ValueError:
+                continue
+            try:
+                raw = Path(f"/proc/{child_pid}/cmdline").read_text()
+                cmdline = raw.replace("\0", " ").strip()
+                if cmdline:
+                    result.append(cmdline)
+            except OSError:
+                _log.debug("cannot read /proc/%d/cmdline", child_pid)
+            self._collect_child_cmdlines(child_pid, result, depth + 1, max_depth)

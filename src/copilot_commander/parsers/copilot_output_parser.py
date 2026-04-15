@@ -95,6 +95,15 @@ _ERROR_PATTERNS = (
     re.compile(r"\bexception\b", re.IGNORECASE),
     re.compile(r"^traceback \(most recent call last\):?$", re.IGNORECASE),
 )
+_COPILOT_UI_MARKER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("slash_commands", re.compile(r"/\s*commands\b")),
+    ("enqueue_binding", re.compile(r"ctrl\+q\s+enqueue", re.IGNORECASE)),
+    ("autopilot_prompt", re.compile(r"\bautopilot\s*·\s*/\s*commands\b")),
+    ("esc_to_cancel", re.compile(r"\bEsc to cancel\b")),
+    ("copilot_model", re.compile(r"\bClaude (?:Opus|Sonnet|Haiku)\b")),
+    ("copilot_model", re.compile(r"\bGPT-\d", re.IGNORECASE)),
+    ("copilot_model", re.compile(r"\bGemini\b", re.IGNORECASE)),
+)
 _INPUT_TOKENS_PATTERNS = (
     re.compile(r"\binput(?:_tokens?| tokens?)\s*[:=]\s*(?P<value>\d[\d,]*)", re.IGNORECASE),
     re.compile(r"\b(?P<value>\d[\d,]*)\s+input tokens?\b", re.IGNORECASE),
@@ -231,12 +240,19 @@ class CopilotErrorEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class CopilotUIMarker:
+    kind: str
+    span: CopilotEvidenceSpan
+
+
+@dataclass(frozen=True, slots=True)
 class CopilotOutputParseResult:
     session_ids: tuple[CopilotSessionIdCandidate, ...]
     boundaries: tuple[CopilotTranscriptBoundary, ...]
     usage_snapshots: tuple[CopilotUsageSnapshot, ...]
     blocking_issues: tuple[CopilotBlockingIssue, ...]
     errors: tuple[CopilotErrorEvidence, ...]
+    ui_markers: tuple[CopilotUIMarker, ...]
     evidence_spans: tuple[CopilotEvidenceSpan, ...]
 
 
@@ -246,6 +262,7 @@ def parse_copilot_output(output: str) -> CopilotOutputParseResult:
     usage_snapshots: list[CopilotUsageSnapshot] = []
     blocking_issues: list[CopilotBlockingIssue] = []
     errors: list[CopilotErrorEvidence] = []
+    ui_markers: list[CopilotUIMarker] = []
     evidence_spans: list[CopilotEvidenceSpan] = []
 
     usage_lines: list[str] = []
@@ -376,6 +393,19 @@ def parse_copilot_output(output: str) -> CopilotOutputParseResult:
             errors.append(CopilotErrorEvidence(message=line, span=span))
             evidence_spans.append(span)
 
+        for marker_kind, marker_pattern in _COPILOT_UI_MARKER_PATTERNS:
+            if marker_pattern.search(line) is None:
+                continue
+            span = _build_span(
+                category=f"ui_marker:{marker_kind}",
+                start_line=line_number,
+                end_line=line_number,
+                lines=[raw_line],
+                confidence=Decimal("0.9200"),
+            )
+            ui_markers.append(CopilotUIMarker(kind=marker_kind, span=span))
+            evidence_spans.append(span)
+
         if not matched_usage and usage_start_line is not None:
             flush_usage()
 
@@ -386,5 +416,6 @@ def parse_copilot_output(output: str) -> CopilotOutputParseResult:
         usage_snapshots=tuple(usage_snapshots),
         blocking_issues=tuple(blocking_issues),
         errors=tuple(errors),
+        ui_markers=tuple(ui_markers),
         evidence_spans=tuple(evidence_spans),
     )
