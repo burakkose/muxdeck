@@ -93,6 +93,12 @@ class RuntimeSyncReport:
         return len(self.monitoring_report.results)
 
 
+@dataclass(frozen=True, slots=True)
+class _GitContext:
+    repo_root: str
+    branch: str | None
+
+
 class RuntimeSynchronizer:
     def __init__(
         self,
@@ -119,9 +125,14 @@ class RuntimeSynchronizer:
             return RuntimeSyncReport(error=self._format_tmux_error(exc))
 
         warnings: list[RuntimeSyncWarning] = []
+        git_context_cache: dict[str, _GitContext | None] = {}
         with timed("sync.enrich"):
             enriched_panes = tuple(
-                self._enrich_discovery(discovery, warnings=warnings)
+                self._enrich_discovery(
+                    discovery,
+                    warnings=warnings,
+                    git_context_cache=git_context_cache,
+                )
                 for discovery in discovery_report.panes
             )
         refreshed_report = PaneDiscoveryReport(
@@ -214,15 +225,29 @@ class RuntimeSynchronizer:
         /,
         *,
         warnings: list[RuntimeSyncWarning],
+        git_context_cache: dict[str, _GitContext | None],
     ) -> PaneDiscovery:
         snapshot = discovery.snapshot
-        if snapshot.pane_current_path is None or snapshot.repo_root is not None:
+        pane_current_path = snapshot.pane_current_path
+        if pane_current_path is None or snapshot.repo_root is not None:
             return discovery
+        stored_context = self._stored_git_context(discovery, pane_current_path)
+        if stored_context is not None:
+            git_context_cache[pane_current_path] = stored_context
+            return self._apply_git_context(discovery, stored_context)
+        cached_context = git_context_cache.get(pane_current_path)
+        if pane_current_path in git_context_cache:
+            if cached_context is None:
+                return discovery
+            return self._apply_git_context(discovery, cached_context)
         try:
-            repo_root = str(self._git.discover_repo_root(snapshot.pane_current_path))
-            branch = self._git.current_branch(snapshot.pane_current_path)
+            git_context = _GitContext(
+                repo_root=str(self._git.discover_repo_root(pane_current_path)),
+                branch=self._git.current_branch(pane_current_path),
+            )
         except GitCommandError as exc:
             if self._is_non_repository_error(exc):
+                git_context_cache[pane_current_path] = None
                 return discovery
             warnings.append(
                 RuntimeSyncWarning(
@@ -231,8 +256,47 @@ class RuntimeSynchronizer:
                 )
             )
             return discovery
-        enriched_snapshot = replace(snapshot, repo_root=repo_root, branch=branch)
+        git_context_cache[pane_current_path] = git_context
+        return self._apply_git_context(discovery, git_context)
+
+    def _apply_git_context(
+        self,
+        discovery: PaneDiscovery,
+        git_context: _GitContext,
+        /,
+    ) -> PaneDiscovery:
+        enriched_snapshot = replace(
+            discovery.snapshot,
+            repo_root=git_context.repo_root,
+            branch=git_context.branch,
+        )
         return replace(discovery, snapshot=enriched_snapshot)
+
+    def _stored_git_context(
+        self,
+        discovery: PaneDiscovery,
+        pane_current_path: str,
+        /,
+    ) -> _GitContext | None:
+        matched_context = discovery.matched_context
+        if (
+            matched_context is not None
+            and matched_context.worktree_path == pane_current_path
+            and matched_context.repo_root is not None
+        ):
+            return _GitContext(
+                repo_root=matched_context.repo_root,
+                branch=matched_context.branch,
+            )
+        managed_agent = discovery.managed_agent
+        if managed_agent is None or managed_agent.repo_root is None:
+            return None
+        if pane_current_path not in {managed_agent.cwd, managed_agent.worktree_path}:
+            return None
+        return _GitContext(
+            repo_root=managed_agent.repo_root,
+            branch=managed_agent.branch,
+        )
 
     def _format_git_error(self, exc: GitCommandError) -> str:
         detail = (exc.stderr or str(exc)).strip()
