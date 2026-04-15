@@ -102,6 +102,10 @@ Header {
     color: #d5c4a1;
 }
 
+#dashboard-filters {
+    height: auto;
+}
+
 #dashboard-main,
 #worktrees-main,
 #replay-main {
