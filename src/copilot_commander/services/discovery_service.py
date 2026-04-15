@@ -66,6 +66,12 @@ class DiscoveryStore(Protocol):
         """Return a stored session context by tmux pane identifier."""
 
 
+@runtime_checkable
+class DiscoveryProcessInspector(Protocol):
+    def get_child_cmdlines(self, pid: int, /) -> tuple[str, ...]:
+        """Return command lines of descendant processes."""
+
+
 @dataclass(frozen=True, slots=True)
 class DiscoveryPaneSnapshot:
     pane_id: str
@@ -198,12 +204,14 @@ class DiscoveryService:
         copilot: DiscoveryCopilotGateway,
         store: DiscoveryStore,
         *,
+        process_inspector: DiscoveryProcessInspector | None = None,
         capture_start_line: int = -200,
         clock: Clock = utc_now,
     ) -> None:
         self._tmux = tmux
         self._copilot = copilot
         self._store = store
+        self._process_inspector = process_inspector
         self._capture_start_line = capture_start_line
         self._clock = clock
 
@@ -235,6 +243,17 @@ class DiscoveryService:
     ) -> PaneDiscovery:
         snapshot = DiscoveryPaneSnapshot.from_tmux_record(record)
         command_detection = self._copilot.detect_command(snapshot.pane_current_command or "")
+        # When the command name is ambiguous (e.g. just "node"), inspect the
+        # child process tree for the full command line containing "copilot".
+        if (
+            not command_detection.is_likely_copilot
+            and self._process_inspector is not None
+            and snapshot.pane_pid is not None
+        ):
+            command_detection = self._detect_via_process_tree(
+                snapshot.pane_pid,
+                fallback=command_detection,
+            )
         captured_output = self._tmux.capture_pane(
             snapshot.pane_id,
             start_line=self._capture_start_line,
@@ -265,6 +284,23 @@ class DiscoveryService:
             matched_context=matched_context,
         )
 
+    def _detect_via_process_tree(
+        self,
+        pane_pid: int,
+        *,
+        fallback: CopilotCommandDetection,
+    ) -> CopilotCommandDetection:
+        assert self._process_inspector is not None
+        try:
+            child_cmdlines = self._process_inspector.get_child_cmdlines(pane_pid)
+        except Exception:
+            return fallback
+        for cmdline in child_cmdlines:
+            detection = self._copilot.detect_command(cmdline)
+            if detection.is_likely_copilot:
+                return detection
+        return fallback
+
     def _iter_panes(self) -> tuple[PaneMetadataLike, ...]:
         listed = self._tmux.list_panes()
         panes = getattr(listed, "panes", listed)
@@ -283,5 +319,6 @@ def _has_session_signal(evidence: CopilotSessionEvidence | None, /) -> bool:
             bool(evidence.blocking_issue_kinds),
             bool(evidence.error_messages),
             bool(evidence.parse_result.boundaries),
+            bool(evidence.parse_result.ui_markers),
         )
     )

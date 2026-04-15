@@ -5,6 +5,7 @@ from copilot_commander.parsers.copilot_output_parser import (
     CopilotOutputParseResult,
     CopilotSessionIdCandidate,
     CopilotTranscriptBoundary,
+    CopilotUIMarker,
     CopilotUsageSnapshot,
     parse_copilot_output,
 )
@@ -31,6 +32,7 @@ __all__ = [
     "CopilotOutputParseResult",
     "CopilotSessionIdCandidate",
     "CopilotTranscriptBoundary",
+    "CopilotUIMarker",
     "CopilotUsageSnapshot",
     "GitStatusEntry",
     "GitStatusSummary",
