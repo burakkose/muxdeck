@@ -7,6 +7,7 @@ All state is module-level; safe to call from any thread.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -16,11 +17,20 @@ from dataclasses import dataclass
 from typing import Final
 
 _log = logging.getLogger(__name__)
+_log.addHandler(logging.NullHandler())
 
 _MAX_SAMPLES: Final[int] = 200
+_FALSEY_ENV_VALUES: Final[frozenset[str]] = frozenset({"", "0", "false", "no", "off"})
 
 _lock = threading.Lock()
 _spans: dict[str, deque[float]] = defaultdict(lambda: deque(maxlen=_MAX_SAMPLES))
+
+
+def _perf_logging_enabled() -> bool:
+    value = os.environ.get("COMMANDER_LOG")
+    if value is None:
+        return False
+    return value.strip().casefold() not in _FALSEY_ENV_VALUES
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,10 +54,11 @@ def timed(name: str) -> Iterator[None]:
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         with _lock:
             _spans[name].append(elapsed_ms)
-        if elapsed_ms > 100:
-            _log.warning("PERF SLOW %s: %.1fms", name, elapsed_ms)
-        elif elapsed_ms > 30:
-            _log.info("PERF %s: %.1fms", name, elapsed_ms)
+        if _perf_logging_enabled():
+            if elapsed_ms > 100:
+                _log.warning("PERF SLOW %s: %.1fms", name, elapsed_ms)
+            elif elapsed_ms > 30:
+                _log.info("PERF %s: %.1fms", name, elapsed_ms)
 
 
 def record(name: str, elapsed_ms: float) -> None:
@@ -88,7 +99,7 @@ def summarize(*, reset: bool = False) -> list[SpanSummary]:
 def log_summary(*, reset: bool = True) -> None:
     """Log a human-readable summary of all spans."""
     stats = summarize(reset=reset)
-    if not stats:
+    if not stats or not _perf_logging_enabled():
         return
     lines = ["─── PERF SUMMARY ───"]
     for s in stats:

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import unittest
+from unittest.mock import patch
 
-from copilot_commander.perf import record, summarize, timed
+from copilot_commander.perf import log_summary, record, summarize, timed
 
 
 class TimedContextManagerTests(unittest.TestCase):
@@ -54,3 +56,51 @@ class SummarizeTests(unittest.TestCase):
         record("test.big", 100.0)
         stats = summarize(reset=True)
         assert stats[0].name == "test.big"
+
+
+class LoggingTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        summarize(reset=True)
+
+    def test_timed_slow_span_skips_logging_by_default(self) -> None:
+        with (
+            patch.dict(os.environ, {"COMMANDER_LOG": "0"}, clear=False),
+            patch("copilot_commander.perf._log.warning") as warning_log,
+            patch("copilot_commander.perf._log.info") as info_log,
+            patch("copilot_commander.perf.time.perf_counter", side_effect=(10.0, 10.2)),
+            timed("test.slow"),
+        ):
+            pass
+
+        warning_log.assert_not_called()
+        info_log.assert_not_called()
+        stats = summarize(reset=True)
+        span = next(s for s in stats if s.name == "test.slow")
+        assert span.count == 1
+
+    def test_timed_slow_span_logs_when_command_logging_enabled(self) -> None:
+        with (
+            patch.dict(os.environ, {"COMMANDER_LOG": "1"}, clear=False),
+            patch("copilot_commander.perf._log.warning") as warning_log,
+            patch("copilot_commander.perf.time.perf_counter", side_effect=(20.0, 20.2)),
+            timed("test.slow.enabled"),
+        ):
+            pass
+
+        warning_log.assert_called_once()
+        args = warning_log.call_args.args
+        assert args[:2] == ("PERF SLOW %s: %.1fms", "test.slow.enabled")
+        assert round(args[2], 1) == 200.0
+        summarize(reset=True)
+
+    def test_log_summary_resets_without_emitting_when_logging_disabled(self) -> None:
+        record("test.summary", 25.0)
+
+        with (
+            patch.dict(os.environ, {"COMMANDER_LOG": "0"}, clear=False),
+            patch("copilot_commander.perf._log.warning") as warning_log,
+        ):
+            log_summary(reset=True)
+
+        warning_log.assert_not_called()
+        assert summarize() == []
