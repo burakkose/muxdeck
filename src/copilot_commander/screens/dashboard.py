@@ -254,13 +254,33 @@ class DashboardScreen(ShellScreen):
         if not confirmed:
             self.set_status("interrupt cancelled")
             return
-        self._set_agent_intent_status("interrupt", self.runtime.agents.interrupt_intent)
+        self._execute_agent_intent("interrupt", self.runtime.agents.interrupt_intent)
 
     def action_open_pane(self) -> None:
-        self._set_agent_intent_status("open_pane", self.runtime.agents.open_pane_intent)
+        self._execute_agent_intent("focus console", self.runtime.agents.open_pane_intent)
 
     def action_open_worktree(self) -> None:
         self._set_agent_intent_status("open_worktree", self.runtime.agents.open_worktree_intent)
+
+    def _execute_agent_intent(
+        self,
+        label: str,
+        loader: Callable[[str], AgentIntentView],
+    ) -> None:
+        if self._selected_agent_id is None:
+            self.set_status("no agent selected")
+            return
+        if self.runtime.actions is None:
+            self.set_status("✗ action service unavailable")
+            return
+        try:
+            intent = loader(self._selected_agent_id)
+        except Exception as exc:  # pragma: no cover - defensive UI boundary
+            self.set_status(f"{label} unavailable: {exc}")
+            return
+        result = self.runtime.actions.execute_intent(intent)
+        prefix = "✓" if result.success else "✗"
+        self.set_status(f"{prefix} {result.message}")
 
     def _set_agent_intent_status(
         self,

@@ -196,14 +196,61 @@ class FakeAgentController:
             "Intent",
             (),
             {
+                "kind": "interrupt",
                 "label": "Interrupt agent",
                 "agent": type("AgentTarget", (), {"name": agent_id})(),
                 "metadata": (("pane_target", "%1"),),
             },
         )()
 
-    open_pane_intent = interrupt_intent
-    open_worktree_intent = interrupt_intent
+    def open_pane_intent(self, agent_id: str) -> object:
+        return type(
+            "Intent",
+            (),
+            {
+                "kind": "open_pane",
+                "label": "Open pane",
+                "agent": type("AgentTarget", (), {"name": agent_id})(),
+                "metadata": (("pane_target", "%1"),),
+            },
+        )()
+
+    def open_worktree_intent(self, agent_id: str) -> object:
+        return type(
+            "Intent",
+            (),
+            {
+                "kind": "open_worktree",
+                "label": "Open worktree",
+                "agent": type("AgentTarget", (), {"name": agent_id})(),
+                "metadata": (("path", "/repo/worktrees/ui"),),
+            },
+        )()
+
+
+class FakeActionService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def execute_intent(self, intent: object) -> object:
+        record = cast(Any, intent)
+        metadata = dict(record.metadata)
+        pane_id = metadata.get("pane_target", "")
+        kind = record.kind
+        self.calls.append((kind, pane_id))
+        message = {
+            "interrupt": f"sent interrupt to pane {pane_id}",
+            "open_pane": f"focused pane {pane_id}",
+        }.get(kind, f"executed {kind}")
+        return type(
+            "ActionResult",
+            (),
+            {
+                "success": True,
+                "message": message,
+                "pane_id": pane_id,
+            },
+        )()
 
 
 class FakeWorktreeController:
@@ -468,7 +515,7 @@ class FakeRuntime:
         self.agents = FakeAgentController()
         self.synchronizer = None
         self.sync_store = None
-        self.actions = None
+        self.actions = FakeActionService()
 
 
 def rendered_text(widget: object) -> str:
@@ -478,7 +525,8 @@ def rendered_text(widget: object) -> str:
 
 @pytest.mark.asyncio
 async def test_textual_shell_navigation_and_updates() -> None:
-    app = CommanderApp(cast(CommanderRuntime, FakeRuntime()))
+    runtime = FakeRuntime()
+    app = CommanderApp(cast(CommanderRuntime, runtime))
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -486,6 +534,21 @@ async def test_textual_shell_navigation_and_updates() -> None:
         assert "output" in rendered_text(app.screen.query_one("#dashboard-log")).lower()
         assert "activity" in rendered_text(app.screen.query_one("#dashboard-activity")).lower()
         assert "fleet" in rendered_text(app.screen.query_one("#dashboard-health")).lower()
+
+        await pilot.press("p")
+        await pilot.pause()
+        assert runtime.actions.calls[-1] == ("open_pane", "%1")
+        assert "focused pane %1" in rendered_text(app.screen.query_one("#shell-footer")).lower()
+
+        await pilot.press("i")
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+        assert runtime.actions.calls[-1] == ("interrupt", "%1")
+        assert (
+            "sent interrupt to pane %1"
+            in rendered_text(app.screen.query_one("#shell-footer")).lower()
+        )
 
         await pilot.press("slash")
         await pilot.press("p", "l", "a", "n", "n", "e", "r")
