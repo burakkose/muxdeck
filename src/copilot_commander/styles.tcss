@@ -50,14 +50,14 @@ Screen {
 
 .section-top {
     border: none;
-    border-top: solid #1c2029;
+    border-top: solid #272c36;
     background: #151921;
     padding: 0 1;
 }
 
 .divider-right {
     border: none;
-    border-right: solid #1c2029;
+    border-right: solid #272c36;
     padding: 0 1;
 }
 
@@ -250,7 +250,7 @@ ListItem {
 }
 
 ListView > ListItem.--highlight {
-    background: #1e293b;
+    background: #1e3a5f;
 }
 
 /* ── sessions ────────────────────────────────────────────────────── */

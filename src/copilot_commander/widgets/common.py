@@ -12,17 +12,13 @@ from copilot_commander.bindings import KeyHint
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.theme import (
     AQUA,
-    BADGE_BG,
-    BADGE_FG,
-    BG1,
     BLUE,
     FG,
-    FG1,
+    FG2,
     FG3,
     FG4,
     GREEN,
     ORANGE,
-    PANEL_BG,
     RED,
     YELLOW,
 )

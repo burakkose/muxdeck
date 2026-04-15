@@ -361,6 +361,15 @@ class DashboardController:
                     return agent
         return agents[0] if agents else None
 
+    def build_selected_agent_view(
+        self,
+        item: DashboardAgentListItemView,
+        *,
+        preview_line_limit: int = 8,
+    ) -> DashboardSelectedAgentView:
+        """Public entry point: build detailed view for a single selected agent."""
+        return self._build_selected_agent(item, preview_line_limit=preview_line_limit)
+
     def _build_selected_agent(
         self,
         item: DashboardAgentListItemView,
