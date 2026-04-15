@@ -339,15 +339,25 @@ class SQLiteStore:
         /,
         *,
         database_path: PathLike | None = None,
+        check_same_thread: bool = True,
     ) -> None:
         self._config = AppConfig.default() if config is None else config
-        self._database_path, self._connection = self._connect(database_path)
+        self._database_path, self._connection = self._connect(
+            database_path,
+            check_same_thread=check_same_thread,
+        )
         self._bootstrap_migrations_table()
         self._run_migrations()
 
     @classmethod
-    def from_config(cls, config: AppConfig, /) -> SQLiteStore:
-        return cls(config)
+    def from_config(
+        cls,
+        config: AppConfig,
+        /,
+        *,
+        check_same_thread: bool = True,
+    ) -> SQLiteStore:
+        return cls(config, check_same_thread=check_same_thread)
 
     @property
     def database_path(self) -> Path:
@@ -811,12 +821,20 @@ class SQLiteStore:
             raise PersistenceError("failed to purge expired cache") from exc
         return cursor.rowcount
 
-    def _connect(self, database_path: PathLike | None) -> tuple[Path, sqlite3.Connection]:
+    def _connect(
+        self,
+        database_path: PathLike | None,
+        *,
+        check_same_thread: bool = True,
+    ) -> tuple[Path, sqlite3.Connection]:
         errors: list[str] = []
         for candidate in self._database_candidates(database_path):
             try:
                 candidate.parent.mkdir(parents=True, exist_ok=True)
-                connection = sqlite3.connect(candidate)
+                connection = sqlite3.connect(
+                    candidate,
+                    check_same_thread=check_same_thread,
+                )
                 connection.row_factory = sqlite3.Row
                 for pragma in _PRAGMAS:
                     connection.execute(pragma)
