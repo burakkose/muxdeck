@@ -20,10 +20,12 @@ from copilot_commander.controllers import (
 from copilot_commander.screens.base import ShellScreen
 from copilot_commander.screens.confirm_dialog import ConfirmScreen
 from copilot_commander.widgets.dashboard import (
+    ActivityPanel,
     AgentDetailPanel,
     AgentListPanel,
     AlertPanel,
     FilterBar,
+    FleetHealthPanel,
     LogPreviewPanel,
     StatusBar,
 )
@@ -74,9 +76,17 @@ class DashboardScreen(ShellScreen):
             with Horizontal(id="dashboard-main", classes="frame"):
                 yield AgentListPanel(widget_id="dashboard-agents", classes="divider-right")
                 with Vertical(id="dashboard-sidebar"):
-                    yield AgentDetailPanel(id="dashboard-detail", classes="section")
-                    yield LogPreviewPanel(id="dashboard-log", classes="section-top")
-                    yield AlertPanel(id="dashboard-alerts", classes="section-top")
+                    with Horizontal(id="dashboard-top"):
+                        yield AgentDetailPanel(
+                            id="dashboard-detail",
+                            classes="section divider-right",
+                        )
+                        yield FleetHealthPanel(id="dashboard-health", classes="section")
+                    with Horizontal(id="dashboard-bottom"):
+                        yield LogPreviewPanel(id="dashboard-log", classes="section divider-right")
+                        with Vertical(id="dashboard-sidepanels"):
+                            yield ActivityPanel(id="dashboard-activity", classes="section")
+                            yield AlertPanel(id="dashboard-alerts", classes="section-top")
 
     def on_mount(self) -> None:
         self.refresh_data()
@@ -99,6 +109,7 @@ class DashboardScreen(ShellScreen):
                     filters=self._filters,
                     sort=self._sort,
                     selected_agent_id=self._selected_agent_id,
+                    preview_line_limit=self._preview_line_limit(),
                 )
             except Exception:
                 if self._state is None:
@@ -115,6 +126,8 @@ class DashboardScreen(ShellScreen):
             selected_agent_id=self._state.selected_agent_id,
         )
         self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
+        self.query_one(FleetHealthPanel).set_state(self._state.health, self._state.selected_agent)
+        self.query_one(ActivityPanel).set_agent(self._state.selected_agent)
         self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
         if sync_report is None:
@@ -221,7 +234,7 @@ class DashboardScreen(ShellScreen):
             callback=self._on_interrupt_confirmed,
         )
 
-    def _on_interrupt_confirmed(self, confirmed: bool) -> None:
+    def _on_interrupt_confirmed(self, confirmed: bool | None) -> None:
         if not confirmed:
             self.set_status("interrupt cancelled")
             return
@@ -270,7 +283,7 @@ class DashboardScreen(ShellScreen):
             callback=self._on_stop_all_confirmed,
         )
 
-    def _on_stop_all_confirmed(self, confirmed: bool) -> None:
+    def _on_stop_all_confirmed(self, confirmed: bool | None) -> None:
         if not confirmed:
             self.set_status("stop cancelled")
             return
@@ -299,10 +312,16 @@ class DashboardScreen(ShellScreen):
         item = self._find_selected_agent()
         if item is None:
             self.query_one(AgentDetailPanel).set_agent(None)
+            if self._state is not None:
+                self.query_one(FleetHealthPanel).set_state(self._state.health, None)
+            self.query_one(ActivityPanel).set_agent(None)
             self.query_one(LogPreviewPanel).set_logs(None)
             return
         try:
-            selected_view = self.runtime.dashboard.build_selected_agent_view(item)
+            selected_view = self.runtime.dashboard.build_selected_agent_view(
+                item,
+                preview_line_limit=self._preview_line_limit(),
+            )
         except Exception:
             return
         if self._state is not None:
@@ -318,4 +337,10 @@ class DashboardScreen(ShellScreen):
                 selected_agent=selected_view,
             )
         self.query_one(AgentDetailPanel).set_agent(selected_view)
+        if self._state is not None:
+            self.query_one(FleetHealthPanel).set_state(self._state.health, selected_view)
+        self.query_one(ActivityPanel).set_agent(selected_view)
         self.query_one(LogPreviewPanel).set_logs(selected_view)
+
+    def _preview_line_limit(self) -> int:
+        return min(self.runtime.config.general.log_preview_lines, 24)

@@ -89,6 +89,8 @@ class FakeDashboardController:
                 attention_reason=None,
                 token_total=120,
                 estimated_cost_usd="0.120000",
+                current_activity="Planning dashboard layout",
+                sparkline="▁▂▄▆█",
             ),
             DashboardAgentListItemView(
                 agent_id="agent-2",
@@ -110,6 +112,8 @@ class FakeDashboardController:
                 attention_reason="waiting for operator",
                 token_total=33,
                 estimated_cost_usd="0.033000",
+                current_activity="Reviewing logs",
+                sparkline="▁▁▂▃▄▅",
             ),
         )
         if filters and filters.normalized_query() == "planner":
@@ -163,7 +167,14 @@ class FakeDashboardController:
                         sequence_no=0,
                         content="tail line",
                     ),
+                    DashboardLogLineView(
+                        captured_at=timestamp,
+                        source="stderr",
+                        sequence_no=1,
+                        content="warning line",
+                    ),
                 ),
+                recent_events=("⚡ Running tests", "⚠ Needs input"),
             ),
         )
 
@@ -410,6 +421,9 @@ async def test_textual_shell_navigation_and_updates() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         assert "Planner" in rendered_text(app.screen.query_one("#dashboard-detail"))
+        assert "output" in rendered_text(app.screen.query_one("#dashboard-log")).lower()
+        assert "activity" in rendered_text(app.screen.query_one("#dashboard-activity")).lower()
+        assert "fleet" in rendered_text(app.screen.query_one("#dashboard-health")).lower()
 
         await pilot.press("slash")
         await pilot.press("p", "l", "a", "n", "n", "e", "r")

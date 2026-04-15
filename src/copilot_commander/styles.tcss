@@ -98,28 +98,56 @@ Screen {
 }
 
 #dashboard-agents {
-    width: 35%;
+    width: 38%;
 }
 
 #dashboard-sidebar {
-    width: 65%;
+    width: 62%;
     height: 1fr;
     layout: vertical;
 }
 
-#dashboard-detail {
+#dashboard-top {
+    height: auto;
+    min-height: 12;
+    max-height: 16;
+}
+
+#dashboard-bottom {
     height: 1fr;
-    min-height: 4;
+    border-top: solid #272c36;
+}
+
+#dashboard-detail {
+    width: 62%;
+    height: 1fr;
+    min-height: 8;
+}
+
+#dashboard-health {
+    width: 38%;
+    min-width: 24;
 }
 
 #dashboard-log {
-    height: auto;
-    max-height: 8;
+    width: 68%;
+    height: 1fr;
+}
+
+#dashboard-sidepanels {
+    width: 32%;
+    height: 1fr;
+    layout: vertical;
+}
+
+#dashboard-activity {
+    height: 1fr;
+    min-height: 10;
 }
 
 #dashboard-alerts {
     height: auto;
-    max-height: 4;
+    max-height: 8;
 }
 
 /* ── worktrees ───────────────────────────────────────────────────── */
