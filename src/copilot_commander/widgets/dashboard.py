@@ -20,7 +20,6 @@ from copilot_commander.controllers import (
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.theme import (
     ATTENTION_ROW_BG,
-    BADGE_BG,
     BADGE_FG,
     BLUE,
     BORDER,
@@ -33,16 +32,6 @@ from copilot_commander.theme import (
     SEVERITY_ERROR,
     SEVERITY_INFO,
     SEVERITY_WARNING,
-    STATUS_BLOCKED,
-    STATUS_COMPLETED,
-    STATUS_DEAD,
-    STATUS_DISCOVERED,
-    STATUS_ERROR,
-    STATUS_IDLE,
-    STATUS_RUNNING,
-    STATUS_STARTING,
-    STATUS_UNKNOWN,
-    STATUS_WAITING_INPUT,
     TONE_CRITICAL_BG,
     TONE_CRITICAL_FG,
     TONE_HEALTHY_BG,
@@ -50,24 +39,17 @@ from copilot_commander.theme import (
     TONE_WARNING_BG,
     TONE_WARNING_FG,
 )
-from copilot_commander.widgets.common import format_short_timestamp, format_timestamp, join_lines
+from copilot_commander.widgets.common import (
+    format_short_timestamp,
+    format_timestamp,
+    join_lines,
+    status_glyph,
+)
 
 _SEVERITY_STYLES: dict[str, str] = {
     "info": f"bold {SEVERITY_INFO}",
     "warning": f"bold {SEVERITY_WARNING}",
     "error": f"bold {SEVERITY_ERROR}",
-}
-_STATUS_STYLES: dict[AgentStatus, str] = {
-    AgentStatus.RUNNING: f"bold {STATUS_RUNNING}",
-    AgentStatus.IDLE: f"bold {STATUS_IDLE}",
-    AgentStatus.WAITING_INPUT: f"bold {STATUS_WAITING_INPUT}",
-    AgentStatus.BLOCKED: f"bold {STATUS_BLOCKED}",
-    AgentStatus.ERROR: f"bold {STATUS_ERROR}",
-    AgentStatus.DEAD: f"bold {STATUS_DEAD}",
-    AgentStatus.COMPLETED: f"bold {STATUS_COMPLETED}",
-    AgentStatus.DISCOVERED: f"bold {STATUS_DISCOVERED}",
-    AgentStatus.STARTING: f"bold {STATUS_STARTING}",
-    AgentStatus.UNKNOWN: f"bold {STATUS_UNKNOWN}",
 }
 _HEALTH_TONE_STYLES: dict[str, tuple[str, str]] = {
     "healthy": (f"{BADGE_FG} on {TONE_HEALTHY_BG}", f"bold {TONE_HEALTHY_FG}"),
@@ -76,84 +58,52 @@ _HEALTH_TONE_STYLES: dict[str, tuple[str, str]] = {
 }
 
 
-class MetricStrip(Static):
-    def set_metrics(self, metrics: Sequence[DashboardMetricView]) -> None:
-        if not metrics:
-            self.update(Text("NO METRICS", style=f"bold {FG4}"))
-            return
-        chips = Text()
-        for index, metric in enumerate(metrics):
-            if index:
-                chips.append("  ")
-            chips.append(
-                f" {metric.label.upper()} ",
-                style=f"bold {BADGE_FG} on {BADGE_BG}",
-            )
-            chips.append(f" {metric.value} ", style=f"bold {FG}")
-        self.update(chips)
+class StatusBar(Static):
+    """Compact 1-line bar showing health + key metrics."""
 
-
-class HealthBanner(Static):
-    def set_health(self, health: DashboardHealthSummary) -> None:
+    def set_state(
+        self,
+        health: DashboardHealthSummary,
+        metrics: Sequence[DashboardMetricView],
+    ) -> None:
         self.remove_class("tone-healthy", "tone-warning", "tone-critical")
         self.add_class(f"tone-{health.tone}")
-        badge_style, value_style = _HEALTH_TONE_STYLES[health.tone]
-        summary = Text()
-        summary.append(" HEALTH ", style=badge_style)
-        summary.append(f" {health.message.upper()} ", style=value_style)
-        for label, value in (
-            ("agents", health.total_agents),
-            ("active", health.active_agents),
-            ("attention", health.attention_agents),
-            ("waiting", health.waiting_input_agents),
-            ("blocked", health.blocked_agents),
-            ("errors", health.error_agents),
-        ):
-            summary.append("  ")
-            summary.append(f"{label} ", style=f"bold {FG4}")
-            summary.append(str(value), style=f"bold {FG}")
-        self.update(summary)
+        badge_style, _value_style = _HEALTH_TONE_STYLES[health.tone]
+        line = Text()
+        line.append(f" {health.message.upper()} ", style=badge_style)
+        for metric in metrics:
+            line.append("  ")
+            line.append(f"{metric.label.lower()} ", style=FG4)
+            line.append(str(metric.value), style=f"bold {FG}")
+        self.update(line)
 
 
 class FilterBar(Vertical):
     def compose(self) -> ComposeResult:
-        yield Static(id="dashboard-filter-summary")
-        yield Input(placeholder="filter agents (/)", id="dashboard-filter-input")
-
-    def set_summary(
-        self,
-        *,
-        query: str | None,
-        attention_only: bool,
-        include_completed: bool,
-        sort_label: str,
-    ) -> None:
-        parts = [f"sort {sort_label}"]
-        if attention_only:
-            parts.append("attention only")
-        if not include_completed:
-            parts.append("hide completed")
-        if query:
-            parts.append(f"query {query!r}")
-        self.query_one("#dashboard-filter-summary", Static).update(" | ".join(parts).upper())
+        yield Input(placeholder="/ filter agents", id="dashboard-filter-input")
 
     def set_query(self, value: str | None) -> None:
-        self.query_one("#dashboard-filter-input", Input).value = value or ""
+        self.query_one(Input).value = value or ""
 
     def focus_input(self) -> None:
         self.query_one(Input).focus()
 
 
 class AgentListPanel(Static, can_focus=True):
+    """Compact agent table with border-title. Widget IS the panel."""
+
     class AgentSelected(Message):
         def __init__(self, agent_id: str) -> None:
             super().__init__()
             self.agent_id = agent_id
 
-    def __init__(self, *, widget_id: str | None = None) -> None:
-        super().__init__(id=widget_id)
+    def __init__(self, *, widget_id: str | None = None, classes: str | None = None) -> None:
+        super().__init__(id=widget_id, classes=classes)
         self._agents: tuple[DashboardAgentListItemView, ...] = ()
         self._selected_index = 0
+
+    def on_mount(self) -> None:
+        self.border_title = "Agents"
 
     def set_agents(
         self,
@@ -162,14 +112,10 @@ class AgentListPanel(Static, can_focus=True):
         selected_agent_id: str | None,
     ) -> None:
         self._agents = tuple(agents)
+        self.border_title = f"Agents ({len(self._agents)})"
         if not self._agents:
             self._selected_index = 0
-            self.update(
-                Text(
-                    "No agents discovered yet. Press r to rescan tmux.",
-                    style=FG4,
-                )
-            )
+            self.update(Text("No agents discovered — press r to scan", style=FG4))
             return
         selected_index = next(
             (
@@ -205,35 +151,32 @@ class AgentListPanel(Static, can_focus=True):
     def _build_table(self) -> Table:
         table = Table(
             expand=True,
-            box=box.SIMPLE_HEAVY,
+            box=box.SIMPLE,
             header_style=f"bold {FG3}",
             border_style=BORDER,
-            row_styles=(FG, FG1),
             pad_edge=False,
+            show_edge=False,
         )
-        table.add_column("", width=2, no_wrap=True)
-        table.add_column("name", min_width=10, max_width=20, overflow="ellipsis")
-        table.add_column("status", min_width=8, max_width=12, overflow="ellipsis")
-        table.add_column("branch", min_width=8, max_width=16, overflow="ellipsis")
-        table.add_column("pane", width=5, no_wrap=True)
-        table.add_column("idle", width=7, justify="right")
-        table.add_column("info", min_width=10, overflow="ellipsis")
+        table.add_column("", width=1, no_wrap=True)
+        table.add_column("name", min_width=8, max_width=18, overflow="ellipsis")
+        table.add_column("status", min_width=6, max_width=10, overflow="ellipsis")
+        table.add_column("branch", min_width=6, max_width=14, overflow="ellipsis")
+        table.add_column("pane", width=4, no_wrap=True)
+        table.add_column("idle", width=5, justify="right")
+        table.add_column("info", min_width=8, overflow="ellipsis")
         for index, agent in enumerate(self._agents):
             is_selected = index == self._selected_index
             row_style = _row_style(agent, selected=is_selected)
             display_name = agent.repo_name or agent.worktree_name or agent.name
-            activity = getattr(agent, "current_activity", None)
-            info = agent.attention_reason or activity or agent.task_title or ""
+            info = agent.attention_reason or agent.task_title or ""
+            status_label = agent.status.value.replace("_", " ")
             table.add_row(
-                Text(
-                    _marker_text(agent, selected=is_selected),
-                    style=_marker_style(agent, is_selected),
-                ),
+                status_glyph(agent.status, selected=is_selected),
                 Text(display_name, style=f"bold {FG}" if is_selected else FG),
-                _status_text(agent.status),
-                Text(agent.branch or "-", style=FG),
+                Text(status_label, style=FG3),
+                Text(agent.branch or "-", style=FG1),
                 Text(agent.pane_id, style=f"bold {BLUE}"),
-                Text(_format_idle(agent.idle_seconds), style=FG),
+                Text(_format_idle(agent.idle_seconds), style=FG4),
                 Text(info, style=f"{ORANGE}" if agent.needs_attention else FG4),
                 style=row_style,
             )
@@ -241,58 +184,79 @@ class AgentListPanel(Static, can_focus=True):
 
 
 class AgentDetailPanel(Static):
+    """Selected agent detail with border-title."""
+
+    def on_mount(self) -> None:
+        self.border_title = "Detail"
+
     def set_agent(self, agent: DashboardSelectedAgentView | None) -> None:
         if agent is None:
-            self.update("No agent selected.")
+            self.update(Text("No agent selected", style=FG4))
             return
         item = agent.item
-        activity = getattr(item, "current_activity", None) or "-"
-        lines = (
-            f"NAME      {item.name}",
-            f"STATUS    {item.status.value}",
-            f"ACTIVITY  {activity}",
-            f"REPO      {item.repo_name or '-'}",
-            f"BRANCH    {item.branch or '-'}",
-            f"WORKTREE  {item.worktree_path or '-'}",
-            f"PANE      {item.pane_id}",
-            f"TASK      {item.task_title or '-'}",
-            f"SESSION   {agent.open_session_id or item.latest_session_id or '-'}",
-            f"SESSIONS  {agent.session_count}",
-            f"LAST EVT  {agent.latest_event_kind or '-'}",
-            f"LAST SEEN {format_timestamp(item.last_seen_at)}",
-            f"STARTED   {format_timestamp(item.started_at)}",
-            f"IDLE      {_format_idle(item.idle_seconds)}",
-            f"TOKENS    {item.token_total if item.token_total is not None else '-'}",
-            f"COST USD  {_format_cost(item.estimated_cost_usd)}",
-            f"ATTN      {item.attention_reason or '-'}",
-        )
-        self.update(join_lines(lines))
+        lines: list[Text] = []
+        for label, value in (
+            ("name", item.name),
+            ("status", item.status.value),
+            ("repo", item.repo_name or "-"),
+            ("branch", item.branch or "-"),
+            ("pane", item.pane_id),
+            ("task", item.task_title or "-"),
+            ("session", agent.open_session_id or item.latest_session_id or "-"),
+            ("sessions", str(agent.session_count)),
+            ("seen", format_timestamp(item.last_seen_at)),
+            ("started", format_timestamp(item.started_at)),
+            ("idle", _format_idle(item.idle_seconds)),
+            ("tokens", str(item.token_total) if item.token_total is not None else "-"),
+            ("cost", _format_cost(item.estimated_cost_usd)),
+            ("attn", item.attention_reason or "-"),
+        ):
+            line = Text()
+            line.append(f"{label:<9}", style=FG4)
+            line.append(str(value), style=FG)
+            lines.append(line)
+        result = Text()
+        for i, line in enumerate(lines):
+            if i:
+                result.append("\n")
+            result.append_text(line)
+        self.update(result)
 
 
 class LogPreviewPanel(Static):
+    """Log tail with border-title."""
+
+    def on_mount(self) -> None:
+        self.border_title = "Log"
+
     def set_logs(self, agent: DashboardSelectedAgentView | None) -> None:
         if agent is None or not agent.log_preview:
-            self.update("No recent log lines.")
+            self.update(Text("No recent logs", style=FG4))
             return
         lines = [
-            f"{format_short_timestamp(line.captured_at)} {line.source:<10.10} {line.content}"
+            f"{format_short_timestamp(line.captured_at)} {line.source:<8.8} {line.content}"
             for line in agent.log_preview
         ]
         self.update(join_lines(lines))
 
 
 class AlertPanel(Static):
+    """Alert list with border-title."""
+
+    def on_mount(self) -> None:
+        self.border_title = "Alerts"
+
     def set_alerts(self, alerts: Sequence[DashboardAlertView]) -> None:
         if not alerts:
-            self.update("No active alerts.")
+            self.update(Text("No active alerts", style=FG4))
             return
         lines: list[Text] = []
         for alert in alerts:
             line = Text()
             line.append(f"{format_short_timestamp(alert.occurred_at)} ", style=FG4)
-            line.append(f"{alert.severity.upper():<7}", style=_SEVERITY_STYLES[alert.severity])
+            line.append(f"{alert.severity.upper():<5}", style=_SEVERITY_STYLES[alert.severity])
             line.append(f" {alert.agent_name}: ", style=f"bold {FG}")
-            line.append(alert.message, style=FG)
+            line.append(alert.message, style=FG1)
             lines.append(line)
         joined = Text()
         for index, line in enumerate(lines):
@@ -316,22 +280,6 @@ def _format_cost(value: str | None) -> str:
     return f"${value}"
 
 
-def _marker_style(agent: DashboardAgentListItemView, selected: bool) -> str:
-    if selected:
-        return f"bold {BLUE}"
-    if agent.needs_attention:
-        return f"bold {ORANGE}"
-    return FG4
-
-
-def _marker_text(agent: DashboardAgentListItemView, *, selected: bool) -> str:
-    if selected:
-        return ">"
-    if agent.needs_attention:
-        return "!"
-    return " "
-
-
 def _row_style(agent: DashboardAgentListItemView, *, selected: bool) -> str:
     if selected:
         return f"on {SELECTED_ROW_BG}"
@@ -342,17 +290,11 @@ def _row_style(agent: DashboardAgentListItemView, *, selected: bool) -> str:
     return ""
 
 
-def _status_text(status: AgentStatus) -> Text:
-    label = status.value.replace("_", " ")
-    return Text(label, style=_STATUS_STYLES.get(status, f"bold {FG}"))
-
-
 __all__ = [
     "AgentDetailPanel",
     "AgentListPanel",
     "AlertPanel",
     "FilterBar",
-    "HealthBanner",
     "LogPreviewPanel",
-    "MetricStrip",
+    "StatusBar",
 ]

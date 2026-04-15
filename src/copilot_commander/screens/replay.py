@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import ListView, Static
+from textual.widgets import ListView
 
 from copilot_commander.bindings import REPLAY_BINDINGS, REPLAY_HINTS
 from copilot_commander.controllers import ReplayStateView, ReplayTranscriptEntryView
@@ -35,17 +35,11 @@ class ReplayScreen(ShellScreen):
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="replay-root"):
-            yield ReplaySummaryPanel(id="replay-summary", classes="panel muted-panel")
-            with Horizontal(id="replay-main", classes="band"):
-                with Vertical(id="replay-markers-panel", classes="panel"):
-                    yield Static("JUMP MARKERS", classes="panel-title")
-                    yield ReplayMarkerListPanel(widget_id="replay-markers")
-                with Vertical(id="replay-transcript-panel", classes="panel"):
-                    yield Static("TRANSCRIPT", classes="panel-title")
-                    yield ReplayTranscriptPanel(widget_id="replay-transcript")
-            with Vertical(id="replay-detail-panel", classes="panel"):
-                yield Static("ENTRY DETAIL", classes="panel-title")
-                yield ReplayDetailPanel(id="replay-detail")
+            yield ReplaySummaryPanel(id="replay-summary", classes="muted")
+            with Horizontal(id="replay-main"):
+                yield ReplayMarkerListPanel(widget_id="replay-markers", classes="panel")
+                yield ReplayTranscriptPanel(widget_id="replay-transcript", classes="panel")
+            yield ReplayDetailPanel(id="replay-detail", classes="panel")
 
     def on_mount(self) -> None:
         self.refresh_data()
