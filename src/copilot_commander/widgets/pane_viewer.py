@@ -23,7 +23,12 @@ class PaneOutputPanel(Static):
         padding: 0 1;
         background: #1d2021;
         border: solid #504945;
-        border-title-color: #83a598;
+        border-title-color: #bdae93;
+        border-title-style: bold;
+    }
+
+    PaneOutputPanel:focus-within {
+        border: solid #83a598;
     }
     """
 

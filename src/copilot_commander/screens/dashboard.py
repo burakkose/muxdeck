@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Input, Static
+from textual.widgets import Input
 
 from copilot_commander.bindings import DASHBOARD_BINDINGS, DASHBOARD_HINTS
 from copilot_commander.controllers import (
@@ -21,9 +21,8 @@ from copilot_commander.widgets.dashboard import (
     AgentListPanel,
     AlertPanel,
     FilterBar,
-    HealthBanner,
     LogPreviewPanel,
-    MetricStrip,
+    StatusBar,
 )
 
 if TYPE_CHECKING:
@@ -54,24 +53,14 @@ class DashboardScreen(ShellScreen):
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="dashboard-root"):
-            with Vertical(id="dashboard-top", classes="band"):
-                yield HealthBanner(id="dashboard-health")
-                yield MetricStrip(id="dashboard-metrics")
-                yield FilterBar(id="dashboard-filters")
-            with Horizontal(id="dashboard-main", classes="band"):
-                with Vertical(id="dashboard-agents-panel", classes="panel"):
-                    yield Static("AGENTS", classes="panel-title")
-                    yield AgentListPanel(widget_id="dashboard-agents")
+            yield StatusBar(id="dashboard-status-bar")
+            yield FilterBar(id="dashboard-filter-row")
+            with Horizontal(id="dashboard-main"):
+                yield AgentListPanel(widget_id="dashboard-agents", classes="panel")
                 with Vertical(id="dashboard-sidebar"):
-                    with Vertical(id="dashboard-detail-panel", classes="panel"):
-                        yield Static("DETAIL", classes="panel-title")
-                        yield AgentDetailPanel(id="dashboard-detail")
-                    with Vertical(id="dashboard-log-panel", classes="panel"):
-                        yield Static("LOG PREVIEW", classes="panel-title")
-                        yield LogPreviewPanel(id="dashboard-log")
-                    with Vertical(id="dashboard-alerts-panel", classes="panel"):
-                        yield Static("ALERTS", classes="panel-title")
-                        yield AlertPanel(id="dashboard-alerts")
+                    yield AgentDetailPanel(id="dashboard-detail", classes="panel")
+                    yield LogPreviewPanel(id="dashboard-log", classes="panel")
+                    yield AlertPanel(id="dashboard-alerts", classes="panel")
 
     def on_mount(self) -> None:
         self.refresh_data()
@@ -91,16 +80,9 @@ class DashboardScreen(ShellScreen):
         self._selected_agent_id = self._state.selected_agent_id
         if self._selected_agent_id is not None:
             self.commander_app.remember_agent_selection(self._selected_agent_id)
-        self.query_one(HealthBanner).set_health(self._state.health)
-        self.query_one(MetricStrip).set_metrics(self._state.metrics)
+        self.query_one(StatusBar).set_state(self._state.health, self._state.metrics)
         filter_bar = self.query_one(FilterBar)
         filter_bar.set_query(self._filters.text_query)
-        filter_bar.set_summary(
-            query=self._filters.normalized_query(),
-            attention_only=self._filters.attention_only,
-            include_completed=self._filters.include_completed,
-            sort_label=self._sort.field,
-        )
         self.query_one(AgentListPanel).set_agents(
             self._state.agents,
             selected_agent_id=self._state.selected_agent_id,
@@ -110,18 +92,23 @@ class DashboardScreen(ShellScreen):
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
         if sync_report is None:
             self.set_status(
-                f"{len(self._state.agents)} visible agents | {self._state.health.message}"
+                f"{len(self._state.agents)} agents | {self._state.health.message}"
             )
             return
         if sync_report.error is not None:
             self.set_status(sync_report.error)
             return
-        warning_suffix = f" | warnings {len(sync_report.warnings)}" if sync_report.warnings else ""
-        self.set_status(
-            f"scanned {sync_report.observed_panes} panes"
-            f" | synced {sync_report.persisted_agents} agents"
-            f" | visible {len(self._state.agents)}{warning_suffix}"
-        )
+        parts = [
+            f"scanned {sync_report.observed_panes}",
+            f"synced {sync_report.persisted_agents}",
+            f"visible {len(self._state.agents)}",
+        ]
+        if self._filters.attention_only:
+            parts.append("attn-only")
+        if not self._filters.include_completed:
+            parts.append("hide-done")
+        parts.append(f"sort:{self._sort.field}")
+        self.set_status(" │ ".join(parts))
 
     @property
     def commander_app(self) -> CommanderApp:

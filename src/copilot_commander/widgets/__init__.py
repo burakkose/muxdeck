@@ -1,5 +1,10 @@
-from copilot_commander.widgets.common import KeyHintFooter
-from copilot_commander.widgets.dashboard import AgentDetailPanel, AgentListPanel, AlertPanel
+from copilot_commander.widgets.common import KeyHintFooter, TabBar
+from copilot_commander.widgets.dashboard import (
+    AgentDetailPanel,
+    AgentListPanel,
+    AlertPanel,
+    StatusBar,
+)
 from copilot_commander.widgets.replay import (
     ReplayDetailPanel,
     ReplayMarkerListPanel,
@@ -22,6 +27,8 @@ __all__ = [
     "ReplayMarkerListPanel",
     "ReplayTranscriptPanel",
     "StartIntentPanel",
+    "StatusBar",
+    "TabBar",
     "WorktreeDetailPanel",
     "WorktreeListPanel",
 ]
