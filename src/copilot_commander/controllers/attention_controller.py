@@ -1,194 +1,255 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from copilot_commander.controllers.dashboard_controller import (
     AlertSeverity,
     DashboardAgentListItemView,
-    DashboardAlertView,
     DashboardFilterState,
-    DashboardHealthSummary,
-    DashboardSort,
+    DashboardSelectedAgentView,
     DashboardState,
 )
-from copilot_commander.domain.enums import AgentStatus
+from copilot_commander.services.attention_service import (
+    AttentionInboxService,
+    AttentionNotification,
+    AttentionSignal,
+)
+from copilot_commander.services.operator_status_service import (
+    OperatorStatus,
+    describe_operator_status,
+)
 
-_ALERT_LIMIT = 256
 
-
+@runtime_checkable
 class AttentionDashboardPort(Protocol):
     def build_state(
         self,
         *,
         filters: DashboardFilterState | None = None,
-        sort: DashboardSort | None = None,
         selected_agent_id: str | None = None,
         preview_line_limit: int = 8,
-        alert_limit: int = 5,
-    ) -> DashboardState: ...
+        alert_limit: int = 20,
+    ) -> DashboardState:
+        """Build a dashboard state snapshot."""
+
+    def build_selected_agent_view(
+        self,
+        item: DashboardAgentListItemView,
+        *,
+        preview_line_limit: int = 8,
+    ) -> DashboardSelectedAgentView:
+        """Build a selected-agent detail view."""
 
 
 @dataclass(frozen=True, slots=True)
-class AttentionInboxRowView:
-    alert_key: str
+class AttentionFilterState:
+    unread_only: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AttentionItemView:
+    alert_id: str
     agent_id: str
     agent_name: str
     severity: AlertSeverity
-    title: str
+    operator_status: OperatorStatus
     message: str
     occurred_at: datetime
-    agent_status: AgentStatus
     branch: str | None
-    idle_seconds: int
-    current_activity: str | None
-    attention_reason: str | None
-    last_event_kind: str | None
-    is_acknowledged: bool
-    is_unread: bool
+    worktree_name: str | None
+    task_title: str | None
+    pane_id: str
+    unread: bool = False
 
 
 @dataclass(frozen=True, slots=True)
-class AttentionInboxSummaryView:
-    total_rows: int
-    unread_rows: int
-    acknowledged_rows: int
-    critical_rows: int
-    warning_rows: int
+class AttentionSummaryView:
+    total_items: int
+    unread_items: int
+    critical_items: int
 
 
 @dataclass(frozen=True, slots=True)
-class AttentionInboxState:
+class AttentionSelectedItemView:
+    item: AttentionItemView
+    agent: DashboardSelectedAgentView
+
+
+@dataclass(frozen=True, slots=True)
+class AttentionState:
     generated_at: datetime
-    health: DashboardHealthSummary
-    summary: AttentionInboxSummaryView
-    rows: tuple[AttentionInboxRowView, ...]
-    selected_alert_key: str | None
-    selected_row: AttentionInboxRowView | None
+    filters: AttentionFilterState
+    summary: AttentionSummaryView
+    items: tuple[AttentionItemView, ...]
+    selected_agent_id: str | None
+    selected_item: AttentionSelectedItemView | None
+    notifications: tuple[AttentionNotification, ...] = ()
 
 
-class AttentionInboxController:
-    def __init__(self, dashboard: AttentionDashboardPort) -> None:
+class AttentionController:
+    def __init__(
+        self,
+        dashboard: AttentionDashboardPort,
+        inbox: AttentionInboxService,
+    ) -> None:
         self._dashboard = dashboard
-        self._acknowledged: set[str] = set()
-        self._seen: set[str] = set()
+        self._inbox = inbox
 
     def build_state(
         self,
         *,
-        selected_alert_key: str | None = None,
-        include_acknowledged: bool = True,
-    ) -> AttentionInboxState:
-        dashboard_state = self._dashboard.build_state(
-            filters=DashboardFilterState(attention_only=True, include_completed=False),
-            sort=DashboardSort(field="last_seen", descending=True),
-            preview_line_limit=0,
-            alert_limit=_ALERT_LIMIT,
+        filters: AttentionFilterState | None = None,
+        selected_agent_id: str | None = None,
+        preview_line_limit: int = 8,
+    ) -> AttentionState:
+        applied_filters = AttentionFilterState() if filters is None else filters
+        source_state = self._dashboard.build_state(
+            filters=DashboardFilterState(attention_only=True, include_completed=True),
+            selected_agent_id=selected_agent_id,
+            preview_line_limit=preview_line_limit,
+            alert_limit=20,
         )
-        agents_by_id = {agent.agent_id: agent for agent in dashboard_state.agents}
-        all_rows = tuple(
-            self._build_row(alert, agents_by_id.get(alert.agent_id))
-            for alert in dashboard_state.alerts
-            if agents_by_id.get(alert.agent_id) is not None
+        source_items = tuple(self._build_item(agent) for agent in source_state.agents)
+        sync_result = self._inbox.synchronize(
+            tuple(self._signal_for_item(item) for item in source_items)
         )
-        rows = (
-            all_rows
-            if include_acknowledged
-            else tuple(row for row in all_rows if not row.is_acknowledged)
+        items = tuple(
+            replace(item, unread=item.alert_id in sync_result.unread_ids) for item in source_items
         )
-        selected_row = self._select_row(rows, selected_alert_key)
-        return AttentionInboxState(
-            generated_at=dashboard_state.generated_at,
-            health=dashboard_state.health,
-            summary=self._build_summary(rows),
-            rows=rows,
-            selected_alert_key=selected_row.alert_key if selected_row is not None else None,
-            selected_row=selected_row,
-        )
-
-    def acknowledge(self, alert_key: str) -> bool:
-        if alert_key in self._acknowledged:
-            return False
-        self._acknowledged.add(alert_key)
-        self._seen.add(alert_key)
-        return True
-
-    def mark_read(self, alert_key: str) -> bool:
-        if alert_key in self._seen:
-            return False
-        self._seen.add(alert_key)
-        return True
-
-    def _build_row(
-        self,
-        alert: DashboardAlertView,
-        agent: DashboardAgentListItemView | None,
-    ) -> AttentionInboxRowView:
-        if agent is None:
-            msg = "attention rows require a matching dashboard agent"
-            raise ValueError(msg)
-        alert_key = self._alert_key(alert)
-        return AttentionInboxRowView(
-            alert_key=alert_key,
-            agent_id=alert.agent_id,
-            agent_name=alert.agent_name,
-            severity=alert.severity,
-            title=alert.title,
-            message=alert.message,
-            occurred_at=alert.occurred_at,
-            agent_status=agent.status,
-            branch=agent.branch,
-            idle_seconds=agent.idle_seconds,
-            current_activity=agent.current_activity,
-            attention_reason=agent.attention_reason,
-            last_event_kind=agent.last_event_kind,
-            is_acknowledged=alert_key in self._acknowledged,
-            is_unread=alert_key not in self._seen,
-        )
-
-    def _build_summary(
-        self,
-        rows: tuple[AttentionInboxRowView, ...],
-    ) -> AttentionInboxSummaryView:
-        return AttentionInboxSummaryView(
-            total_rows=len(rows),
-            unread_rows=sum(1 for row in rows if row.is_unread),
-            acknowledged_rows=sum(1 for row in rows if row.is_acknowledged),
-            critical_rows=sum(1 for row in rows if row.severity == "error"),
-            warning_rows=sum(1 for row in rows if row.severity == "warning"),
-        )
-
-    def _select_row(
-        self,
-        rows: tuple[AttentionInboxRowView, ...],
-        selected_alert_key: str | None,
-    ) -> AttentionInboxRowView | None:
-        if selected_alert_key is not None:
-            for row in rows:
-                if row.alert_key == selected_alert_key:
-                    return row
-        for row in rows:
-            if not row.is_acknowledged:
-                return row
-        return rows[0] if rows else None
-
-    def _alert_key(self, alert: DashboardAlertView) -> str:
-        return "|".join(
-            (
-                alert.agent_id,
-                alert.severity,
-                alert.occurred_at.isoformat(),
-                alert.title,
-                alert.message,
+        visible_items = self._filter_items(items, applied_filters)
+        selected_item = self._select_item(visible_items, selected_agent_id)
+        selected_agent = None
+        if selected_item is not None:
+            source_item = next(
+                item for item in source_state.agents if item.agent_id == selected_item.agent_id
             )
+            if (
+                source_state.selected_agent is not None
+                and source_state.selected_agent.item.agent_id == selected_item.agent_id
+            ):
+                selected_agent = source_state.selected_agent
+            else:
+                selected_agent = self._dashboard.build_selected_agent_view(
+                    source_item,
+                    preview_line_limit=preview_line_limit,
+                )
+        return AttentionState(
+            generated_at=source_state.generated_at,
+            filters=applied_filters,
+            summary=self._build_summary(items),
+            items=visible_items,
+            selected_agent_id=selected_item.agent_id if selected_item is not None else None,
+            selected_item=(
+                AttentionSelectedItemView(item=selected_item, agent=selected_agent)
+                if selected_item is not None and selected_agent is not None
+                else None
+            ),
+            notifications=sync_result.notifications,
         )
+
+    def observe_dashboard_state(self, state: DashboardState) -> tuple[AttentionNotification, ...]:
+        signals = tuple(
+            AttentionSignal(
+                alert_id=alert.alert_id,
+                severity=alert.severity,
+                title=alert.title,
+                message=alert.message,
+                occurred_at=alert.occurred_at,
+            )
+            for alert in state.alerts
+            if alert.alert_id
+        )
+        return self._inbox.observe(signals)
+
+    def mark_read(self, alert_id: str) -> None:
+        self._inbox.mark_read((alert_id,))
+
+    def mark_all_read(self) -> None:
+        self._inbox.mark_all_read()
+
+    def _build_item(self, agent: DashboardAgentListItemView) -> AttentionItemView:
+        operator_status = agent.operator_status
+        if operator_status is None:
+            operator_status = describe_operator_status(
+                agent_status=agent.status,
+                needs_attention=agent.needs_attention,
+                attention_reason=agent.attention_reason,
+                idle_seconds=agent.idle_seconds,
+                is_potentially_stuck=agent.is_potentially_stuck,
+                task_title=agent.task_title,
+                current_activity=agent.current_activity,
+            )
+        severity = _severity_for_status(operator_status)
+        return AttentionItemView(
+            alert_id=f"{agent.agent_id}:{operator_status.kind.value}",
+            agent_id=agent.agent_id,
+            agent_name=agent.name,
+            severity=severity,
+            operator_status=operator_status,
+            message=operator_status.reason,
+            occurred_at=agent.last_seen_at,
+            branch=agent.branch,
+            worktree_name=agent.worktree_name,
+            task_title=agent.task_title,
+            pane_id=agent.pane_id,
+        )
+
+    def _signal_for_item(self, item: AttentionItemView) -> AttentionSignal:
+        return AttentionSignal(
+            alert_id=item.alert_id,
+            severity=item.severity,
+            title=item.operator_status.headline,
+            message=item.message,
+            occurred_at=item.occurred_at,
+        )
+
+    def _filter_items(
+        self,
+        items: Sequence[AttentionItemView],
+        filters: AttentionFilterState,
+    ) -> tuple[AttentionItemView, ...]:
+        if not filters.unread_only:
+            return tuple(items)
+        return tuple(item for item in items if item.unread)
+
+    def _select_item(
+        self,
+        items: Sequence[AttentionItemView],
+        selected_agent_id: str | None,
+    ) -> AttentionItemView | None:
+        if selected_agent_id is not None:
+            for item in items:
+                if item.agent_id == selected_agent_id:
+                    return item
+        return items[0] if items else None
+
+    def _build_summary(self, items: Sequence[AttentionItemView]) -> AttentionSummaryView:
+        critical_items = sum(1 for item in items if item.severity == "error")
+        unread_items = sum(1 for item in items if item.unread)
+        return AttentionSummaryView(
+            total_items=len(items),
+            unread_items=unread_items,
+            critical_items=critical_items,
+        )
+
+
+def _severity_for_status(operator_status: OperatorStatus) -> AlertSeverity:
+    if operator_status.tone == "error":
+        return "error"
+    if operator_status.tone == "warning":
+        return "warning"
+    return "info"
 
 
 __all__ = [
+    "AttentionController",
     "AttentionDashboardPort",
-    "AttentionInboxController",
-    "AttentionInboxRowView",
-    "AttentionInboxState",
-    "AttentionInboxSummaryView",
+    "AttentionFilterState",
+    "AttentionItemView",
+    "AttentionSelectedItemView",
+    "AttentionState",
+    "AttentionSummaryView",
 ]

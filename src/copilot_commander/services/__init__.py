@@ -3,6 +3,13 @@ from copilot_commander.services.agent_service import (
     AgentRecordResult,
     AgentService,
 )
+from copilot_commander.services.attention_service import (
+    AttentionInboxService,
+    AttentionNotification,
+    AttentionSeverity,
+    AttentionSignal,
+    AttentionSyncResult,
+)
 from copilot_commander.services.costing_service import (
     CostAggregate,
     CostBucket,
@@ -30,6 +37,13 @@ from copilot_commander.services.monitoring_service import (
 from copilot_commander.services.operations_service import (
     OperationAuditEntry,
     OperationAuditService,
+)
+from copilot_commander.services.operator_status_service import (
+    OperatorStatus,
+    OperatorStatusKind,
+    OperatorStatusTone,
+    default_operator_status,
+    describe_operator_status,
 )
 from copilot_commander.services.replay_service import (
     ReplayEntry,
@@ -69,6 +83,11 @@ __all__ = [
     "AgentFactInput",
     "AgentRecordResult",
     "AgentService",
+    "AttentionInboxService",
+    "AttentionNotification",
+    "AttentionSeverity",
+    "AttentionSignal",
+    "AttentionSyncResult",
     "CostAggregate",
     "CostBucket",
     "CostEvidence",
@@ -83,6 +102,9 @@ __all__ = [
     "MonitoringThresholds",
     "OperationAuditEntry",
     "OperationAuditService",
+    "OperatorStatus",
+    "OperatorStatusKind",
+    "OperatorStatusTone",
     "PaneDiscovery",
     "PaneDiscoveryReport",
     "ReplayEntry",
@@ -112,4 +134,6 @@ __all__ = [
     "WorktreeService",
     "classify_pane",
     "compute_status_heuristics",
+    "default_operator_status",
+    "describe_operator_status",
 ]

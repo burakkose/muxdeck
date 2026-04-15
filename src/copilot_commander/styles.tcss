@@ -72,6 +72,9 @@ Screen {
 /* ── screen roots ────────────────────────────────────────────────── */
 
 #dashboard-root,
+#attention-root,
+#operations-root,
+#fleet-root,
 #worktrees-root,
 #replay-root,
 #sessions-root,
@@ -148,6 +151,132 @@ Screen {
 #dashboard-alerts {
     height: auto;
     max-height: 8;
+}
+
+/* ── attention ───────────────────────────────────────────────────── */
+
+#attention-main {
+    height: 1fr;
+}
+
+#attention-list {
+    width: 38%;
+}
+
+#attention-sidebar {
+    width: 62%;
+    height: 1fr;
+    layout: vertical;
+}
+
+#attention-detail {
+    min-height: 9;
+}
+
+#attention-log {
+    height: 1fr;
+    min-height: 8;
+}
+
+#attention-activity {
+    height: auto;
+    min-height: 6;
+}
+
+/* ── operations ─────────────────────────────────────────────────── */
+
+#operations-main {
+    height: 1fr;
+}
+
+#operations-agents {
+    width: 38%;
+}
+
+#operations-sidebar {
+    width: 62%;
+    height: 1fr;
+    layout: vertical;
+}
+
+#operations-top {
+    height: auto;
+    min-height: 12;
+    max-height: 16;
+}
+
+#operations-bottom {
+    height: 1fr;
+    border-top: solid #272c36;
+}
+
+#operations-selection {
+    width: 62%;
+}
+
+#operations-health {
+    width: 38%;
+    min-width: 24;
+}
+
+#operations-preview {
+    width: 68%;
+    height: 1fr;
+}
+
+#operations-sidepanels {
+    width: 32%;
+    height: 1fr;
+    layout: vertical;
+}
+
+#operations-alerts {
+    height: auto;
+    max-height: 8;
+}
+
+#operations-history {
+    height: 1fr;
+}
+
+/* ── fleet ──────────────────────────────────────────────────────── */
+
+#fleet-summary {
+    height: 1;
+}
+
+#fleet-filter-input {
+    border: none;
+    height: 1;
+    padding: 0 0;
+}
+
+#fleet-main {
+    height: 1fr;
+}
+
+#fleet-groups {
+    width: 52%;
+}
+
+#fleet-side {
+    width: 48%;
+    height: 1fr;
+    layout: vertical;
+}
+
+#fleet-resources {
+    height: auto;
+    min-height: 8;
+}
+
+#fleet-history {
+    height: auto;
+    min-height: 10;
+}
+
+#fleet-search {
+    height: 1fr;
 }
 
 /* ── worktrees ───────────────────────────────────────────────────── */

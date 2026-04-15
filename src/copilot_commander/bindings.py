@@ -40,6 +40,9 @@ GLOBAL_BINDINGS: Final[list[BindingSpec]] = [
     _binding("3", "show_replay", "Replay", show=False, priority=True, system=True),
     _binding("4", "show_sessions", "Sessions", show=False, priority=True, system=True),
     _binding("5", "show_setup", "Setup", show=False, priority=True, system=True),
+    _binding("6", "show_attention", "Attention", show=False, priority=True, system=True),
+    _binding("7", "show_operations", "Operations", show=False, priority=True, system=True),
+    _binding("8", "show_fleet", "Fleet", show=False, priority=True, system=True),
     _binding("question_mark", "show_help", "Help", show=False, priority=True, system=True),
     _binding("r", "refresh_screen", "Refresh", show=False, priority=True, system=True),
     _binding("tab", "focus_next", "Next focus", show=False, priority=True, system=True),
@@ -53,6 +56,9 @@ GLOBAL_HINTS = (
     KeyHint("3", "replay"),
     KeyHint("4", "sessions"),
     KeyHint("5", "setup"),
+    KeyHint("6", "attention"),
+    KeyHint("7", "operations"),
+    KeyHint("8", "fleet"),
     KeyHint("?", "help"),
     KeyHint("r", "refresh"),
     KeyHint("q", "quit"),
@@ -71,6 +77,7 @@ DASHBOARD_BINDINGS: Final[list[BindingSpec]] = [
     Binding("w", "open_worktree", "Worktree", show=False),
     Binding("m", "send_message", "Send message", show=False),
     Binding("S", "stop_all", "Stop all", show=False),
+    Binding("A", "open_attention_inbox", "Attention inbox", show=False),
 ]
 
 DASHBOARD_HINTS = (
@@ -85,6 +92,22 @@ DASHBOARD_HINTS = (
     KeyHint("w", "worktree"),
     KeyHint("m", "message"),
     KeyHint("S", "stop all"),
+    KeyHint("A", "inbox"),
+)
+
+ATTENTION_BINDINGS: Final[list[BindingSpec]] = [
+    Binding("j", "cursor_down", "Next item", show=False),
+    Binding("k", "cursor_up", "Prev item", show=False),
+    Binding("u", "toggle_unread", "Unread only", show=False),
+    Binding("enter", "mark_selected_read", "Mark read", show=False),
+    Binding("x", "mark_all_read", "Mark all read", show=False),
+]
+
+ATTENTION_HINTS = (
+    KeyHint("j/k", "move"),
+    KeyHint("u", "unread"),
+    KeyHint("enter", "mark read"),
+    KeyHint("x", "mark all"),
 )
 
 WORKTREE_BINDINGS: Final[list[BindingSpec]] = [
@@ -171,6 +194,7 @@ HELP_BINDINGS: Final[list[BindingSpec]] = [
 HELP_HINTS = (KeyHint("esc", "dashboard"),)
 
 ALL_HINT_GROUPS = {
+    "attention": ATTENTION_HINTS,
     "dashboard": DASHBOARD_HINTS,
     "worktrees": WORKTREE_HINTS,
     "replay": REPLAY_HINTS,
@@ -181,6 +205,8 @@ ALL_HINT_GROUPS = {
 
 __all__ = [
     "ALL_HINT_GROUPS",
+    "ATTENTION_BINDINGS",
+    "ATTENTION_HINTS",
     "DASHBOARD_BINDINGS",
     "DASHBOARD_HINTS",
     "GLOBAL_BINDINGS",

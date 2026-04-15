@@ -1,7 +1,8 @@
 from copilot_commander.widgets.attention import (
-    AttentionInboxDetailPanel,
-    AttentionInboxListPanel,
-    AttentionInboxSummaryPanel,
+    AttentionActivityPanel,
+    AttentionDetailPanel,
+    AttentionListPanel,
+    AttentionSummaryBar,
 )
 from copilot_commander.widgets.common import KeyHintFooter, TabBar
 from copilot_commander.widgets.dashboard import (
@@ -39,13 +40,14 @@ from copilot_commander.widgets.worktrees import (
 )
 
 __all__ = [
-    "AttentionInboxDetailPanel",
-    "AttentionInboxListPanel",
-    "AttentionInboxSummaryPanel",
     "ActivityPanel",
     "AgentDetailPanel",
     "AgentListPanel",
     "AlertPanel",
+    "AttentionActivityPanel",
+    "AttentionDetailPanel",
+    "AttentionListPanel",
+    "AttentionSummaryBar",
     "BulkActionPreviewPanel",
     "ConflictPanel",
     "DoctorDetailPanel",

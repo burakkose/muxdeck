@@ -103,8 +103,11 @@ class OperationsActionPort(Protocol):
 
 
 class OperationResultPort(Protocol):
-    success: bool
-    message: str
+    @property
+    def success(self) -> bool: ...
+
+    @property
+    def message(self) -> str: ...
 
 
 class OperationsController:
@@ -214,9 +217,7 @@ class OperationsController:
         success_count = sum(1 for entry in entries if entry.success)
         failure_count = len(entries) - success_count
         if failure_count:
-            status_message = (
-                f"{preview.label} finished with {success_count}/{len(entries)} success"
-            )
+            status_message = f"{preview.label} finished with {success_count}/{len(entries)} success"
         else:
             status_message = f"{preview.label} completed for {success_count} agent(s)"
         return OperationsExecutionSummary(
@@ -307,9 +308,7 @@ _ACTION_LABELS: dict[OperationsAction, str] = {
     OperationsAction.OPEN_WORKTREE: "Reveal worktree",
 }
 
-_DESTRUCTIVE_ACTIONS = frozenset(
-    {OperationsAction.INTERRUPT, OperationsAction.MARK_COMPLETE}
-)
+_DESTRUCTIVE_ACTIONS = frozenset({OperationsAction.INTERRUPT, OperationsAction.MARK_COMPLETE})
 
 __all__ = [
     "OperationsAction",

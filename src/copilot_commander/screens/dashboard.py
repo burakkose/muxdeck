@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
@@ -19,6 +19,7 @@ from copilot_commander.controllers import (
 )
 from copilot_commander.screens.base import ShellScreen
 from copilot_commander.screens.confirm_dialog import ConfirmScreen
+from copilot_commander.services.attention_service import AttentionNotification
 from copilot_commander.widgets.dashboard import (
     ActivityPanel,
     AgentDetailPanel,
@@ -42,6 +43,12 @@ _SORT_ORDER: tuple[DashboardSortField, ...] = (
     "idle_seconds",
     "started_at",
 )
+
+_NOTIFY_SEVERITY: dict[str, Literal["information", "warning", "error"]] = {
+    "info": "information",
+    "warning": "warning",
+    "error": "error",
+}
 
 
 class DashboardScreen(ShellScreen):
@@ -130,6 +137,9 @@ class DashboardScreen(ShellScreen):
         self.query_one(ActivityPanel).set_agent(self._state.selected_agent)
         self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
+        attention_controller = getattr(self.runtime, "attention", None)
+        if attention_controller is not None:
+            self._emit_notifications(attention_controller.observe_dashboard_state(self._state))
         if sync_report is None:
             self.set_status(f"{len(self._state.agents)} agents · {self._state.health.message}")
             return
@@ -200,6 +210,12 @@ class DashboardScreen(ShellScreen):
             include_completed=not self._filters.include_completed,
         )
         self.refresh_data()
+
+    def action_open_attention_inbox(self) -> None:
+        if getattr(self.runtime, "attention", None) is None:
+            self.set_status("attention inbox unavailable")
+            return
+        self.app.switch_mode("attention")
 
     def action_cycle_sort(self) -> None:
         next_index = (_SORT_ORDER.index(self._sort.field) + 1) % len(_SORT_ORDER)
@@ -344,3 +360,17 @@ class DashboardScreen(ShellScreen):
 
     def _preview_line_limit(self) -> int:
         return min(self.runtime.config.general.log_preview_lines, 24)
+
+    def _emit_notifications(self, notifications: tuple[AttentionNotification, ...]) -> None:
+        if not notifications:
+            return
+        self.app.bell()
+        head = notifications[0]
+        message = head.message
+        if len(notifications) > 1:
+            message = f"{message} (+{len(notifications) - 1} more critical)"
+        self.app.notify(
+            message,
+            title=head.title,
+            severity=_NOTIFY_SEVERITY[head.severity],
+        )
