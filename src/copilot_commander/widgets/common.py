@@ -51,12 +51,15 @@ class KeyHintFooter(Static):
 
     def render(self) -> Text:
         footer = Text()
-        footer.append(f" {self.title.upper()} ", style="bold black on cyan")
-        footer.append(f" {self.status} ", style="white on rgb(20,28,38)")
+        footer.append(f" {self.title.upper()} ", style="bold rgb(19,24,32) on rgb(167,206,255)")
+        footer.append(f" {self.status} ", style="bold rgb(219,226,239) on rgb(28,35,44)")
         for hint in self.hints:
             footer.append(" ")
-            footer.append(f" {hint.key} ", style="bold black on rgb(148,163,184)")
-            footer.append(f" {hint.label}", style="rgb(191,219,254)")
+            footer.append(
+                f" {hint.key} ",
+                style="bold rgb(19,24,32) on rgb(143,188,255)",
+            )
+            footer.append(f" {hint.label}", style="rgb(205,216,232)")
         return footer
 
 

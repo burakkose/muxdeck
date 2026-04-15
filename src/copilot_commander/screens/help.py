@@ -40,8 +40,10 @@ class HelpScreen(ShellScreen):
                         *[f"  {hint.key:<6} {hint.label}" for hint in REPLAY_HINTS],
                         "",
                         "NOTES",
-                        "  - widgets render controller state only",
-                        "  - footer status shows the latest operator intent preview",
+                        "  - discovery scans tmux with list-panes -a across the current server",
+                        "  - copilot panes in other windows should appear on the dashboard",
+                        "  - run this app inside the same tmux server/socket you want to inspect",
+                        "  - use r to rescan, j/k to move, / to filter, and 1/2/3 to switch views",
                         "  - dashboard selection seeds replay context where possible",
                     )
                 ),
