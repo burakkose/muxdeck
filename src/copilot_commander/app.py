@@ -206,7 +206,7 @@ class CommanderApp(App[None]):
                             sort=screen.current_sort,
                             selected_agent_id=screen.current_selected_agent_id,
                             preview_line_limit=min(
-                                self.runtime.config.general.log_preview_lines, 12
+                                self.runtime.config.general.log_preview_lines, 24
                             ),
                         )
             return CommanderApp._SyncResult(
