@@ -32,7 +32,7 @@ from copilot_commander.domain.value_objects import TokenPricing, ensure_non_nega
 from copilot_commander.exceptions import ConfigError, ConfigValidationError
 from copilot_commander.types import PathLike
 
-_TOP_LEVEL_KEYS = frozenset({"general", "paths", "naming", "costing"})
+_TOP_LEVEL_KEYS = frozenset({"general", "paths", "naming", "costing", "tmux"})
 _GENERAL_KEYS = frozenset(
     {
         "discovery_interval_sec",
@@ -54,6 +54,7 @@ _COSTING_KEYS = frozenset(
         "estimation_enabled",
     }
 )
+_TMUX_KEYS = frozenset({"socket_path"})
 
 
 def _resolve_path(value: PathLike, *, base_dir: Path | None = None) -> Path:
@@ -66,6 +67,9 @@ def _resolve_path(value: PathLike, *, base_dir: Path | None = None) -> Path:
 def _parse_optional_decimal(value: object, *, field_name: str) -> Decimal | None:
     if value is None:
         return None
+    if isinstance(value, bool) or not isinstance(value, Decimal | str | int | float):
+        msg = f"{field_name} must be a non-negative number"
+        raise ConfigValidationError(msg)
     return ensure_non_negative_decimal(value, field_name=field_name)
 
 
@@ -274,11 +278,25 @@ class CostingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TmuxConfig:
+    socket_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        if self.socket_path is not None:
+            object.__setattr__(
+                self,
+                "socket_path",
+                self.socket_path.expanduser().resolve(strict=False),
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     paths: PathsConfig
     general: GeneralConfig = field(default_factory=GeneralConfig)
     naming: NamingConfig = field(default_factory=NamingConfig)
     costing: CostingConfig = field(default_factory=CostingConfig)
+    tmux: TmuxConfig = field(default_factory=TmuxConfig)
     config_file: Path = field(default_factory=default_config_path)
 
     @classmethod
@@ -313,10 +331,12 @@ class AppConfig:
         paths_section = _require_table(raw.get("paths"), section="paths")
         naming_section = _require_table(raw.get("naming"), section="naming")
         costing_section = _require_table(raw.get("costing"), section="costing")
+        tmux_section = _require_table(raw.get("tmux"), section="tmux")
         _reject_unknown_keys(general_section, section="general", allowed=_GENERAL_KEYS)
         _reject_unknown_keys(paths_section, section="paths", allowed=_PATH_KEYS)
         _reject_unknown_keys(naming_section, section="naming", allowed=_NAMING_KEYS)
         _reject_unknown_keys(costing_section, section="costing", allowed=_COSTING_KEYS)
+        _reject_unknown_keys(tmux_section, section="tmux", allowed=_TMUX_KEYS)
 
         try:
             general = GeneralConfig(
@@ -403,6 +423,19 @@ class AppConfig:
                     field_name="costing.estimation_enabled",
                 ),
             )
+            tmux = TmuxConfig(
+                socket_path=(
+                    None
+                    if tmux_section.get("socket_path") is None
+                    else _resolve_path(
+                        _require_non_empty_string(
+                            tmux_section.get("socket_path"),
+                            field_name="tmux.socket_path",
+                        ),
+                        base_dir=base_dir,
+                    )
+                ),
+            )
         except (TypeError, ValueError) as exc:
             msg = f"invalid configuration values in {config_file}"
             raise ConfigValidationError(msg) from exc
@@ -412,6 +445,7 @@ class AppConfig:
             paths=paths,
             naming=naming,
             costing=costing,
+            tmux=tmux,
             config_file=config_file.expanduser().resolve(strict=False),
         )
 

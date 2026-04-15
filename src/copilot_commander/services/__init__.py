@@ -45,6 +45,12 @@ from copilot_commander.services.session_service import (
     SessionReplayLookup,
     SessionService,
 )
+from copilot_commander.services.setup_service import (
+    SetupCheck,
+    SetupDoctorReport,
+    SetupDoctorService,
+    TmuxSocketOption,
+)
 from copilot_commander.services.worktree_service import (
     WorktreeAttachResult,
     WorktreeCreateResult,
@@ -85,8 +91,12 @@ __all__ = [
     "SessionReplay",
     "SessionReplayLookup",
     "SessionService",
+    "SetupCheck",
+    "SetupDoctorReport",
+    "SetupDoctorService",
     "StatusHeuristicInput",
     "StatusHeuristicResult",
+    "TmuxSocketOption",
     "WorktreeAttachResult",
     "WorktreeCreateResult",
     "WorktreeNamingPlan",

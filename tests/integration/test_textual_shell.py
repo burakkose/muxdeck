@@ -27,6 +27,7 @@ from copilot_commander.controllers import (
 )
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.models import Session
+from copilot_commander.services import SetupCheck, SetupDoctorReport, TmuxSocketOption
 
 
 class FakeConfig:
@@ -336,6 +337,53 @@ class FakeReplayController:
         )
 
 
+class FakeSetupService:
+    def build_report(self) -> SetupDoctorReport:
+        timestamp = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        return SetupDoctorReport(
+            generated_at=timestamp,
+            selected_socket_path=None,
+            effective_socket_path="/tmp/tmux-1000/default",
+            attached_socket_path="/tmp/tmux-1000/default",
+            configured_socket_path=None,
+            pane_count=4,
+            socket_options=(
+                TmuxSocketOption(
+                    label="Auto / attached server",
+                    socket_path=None,
+                    note="follow the current TMUX attachment",
+                    is_selected=True,
+                    exists=True,
+                ),
+                TmuxSocketOption(
+                    label="/tmp/tmux-1000/default",
+                    socket_path="/tmp/tmux-1000/default",
+                    note="attached, detected",
+                    is_selected=False,
+                    exists=True,
+                ),
+            ),
+            checks=(
+                SetupCheck(
+                    key="attached-server",
+                    status="ok",
+                    title="attached server",
+                    detail="the UI is attached to /tmp/tmux-1000/default",
+                ),
+                SetupCheck(
+                    key="tmux-connection",
+                    status="ok",
+                    title="tmux connection",
+                    detail="connected to a tmux server with 4 visible panes",
+                ),
+            ),
+        )
+
+    def select_socket(self, socket_path: str | None) -> SetupDoctorReport:
+        del socket_path
+        return self.build_report()
+
+
 class FakeRuntime:
     def __init__(self) -> None:
         self.config = FakeConfig()
@@ -343,6 +391,7 @@ class FakeRuntime:
         self.dashboard = FakeDashboardController()
         self.worktrees = FakeWorktreeController()
         self.replay = FakeReplayController()
+        self.setup = FakeSetupService()
         self.agents = FakeAgentController()
         self.synchronizer = None
         self.sync_store = None
@@ -388,3 +437,7 @@ async def test_textual_shell_navigation_and_updates() -> None:
         app.action_show_help()
         await pilot.pause()
         assert "Copilot Commander" in rendered_text(app.screen.query_one("#help-content"))
+
+        app.action_show_setup()
+        await pilot.pause()
+        assert "/tmp/tmux-1000/default" in rendered_text(app.screen.query_one("#setup-summary"))

@@ -11,6 +11,7 @@ from copilot_commander.bindings import (
     HELP_BINDINGS,
     HELP_HINTS,
     REPLAY_HINTS,
+    SETUP_HINTS,
     WORKTREE_HINTS,
     KeyHint,
 )
@@ -40,12 +41,13 @@ class HelpScreen(ShellScreen):
             content.append_text(_render_hints("Dashboard", DASHBOARD_HINTS))
             content.append_text(_render_hints("Worktrees", WORKTREE_HINTS))
             content.append_text(_render_hints("Replay", REPLAY_HINTS))
+            content.append_text(_render_hints("Setup", SETUP_HINTS))
             content.append("\n Notes\n", style=f"bold {BLUE}")
             for note in (
                 "Discovery scans tmux with list-panes -a across the current server",
                 "Copilot panes in other windows appear on the dashboard",
-                "Run this app inside the same tmux server you want to inspect",
-                "Use r to rescan, j/k to move, / to filter, 1/2/3 to switch",
+                "Use the Setup screen to inspect tmux socket health and switch servers",
+                "Use r to rescan, j/k to move, / to filter, 1/2/3/4/5 to switch",
             ):
                 content.append(f"  • {note}\n", style=FG4)
             yield Static(content, id="help-content")

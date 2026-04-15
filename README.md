@@ -20,7 +20,7 @@ source .venv/bin/activate
 python -m copilot_commander
 ```
 
-Run the operator console from a tmux window on the same tmux server you want to inspect.
+Run the operator console from a tmux window when possible. If your panes live on another tmux socket, use the Setup screen to select that server.
 
 ## Dashboard usage
 
@@ -30,6 +30,8 @@ Run the operator console from a tmux window on the same tmux server you want to 
 - `1` switches to the dashboard
 - `2` switches to worktrees
 - `3` switches to replay
+- `4` switches to sessions
+- `5` switches to setup
 - `?` opens the in-app help screen
 
 ## Discovery model
@@ -37,7 +39,7 @@ Run the operator console from a tmux window on the same tmux server you want to 
 - Discovery uses `tmux list-panes -a`, so it scans panes across **all windows** on the current tmux server, not just the current window.
 - A pane is treated as a probable Copilot agent when its current command looks like Copilot or its recent pane output contains Copilot markers.
 - For a tmux setup with **one session and five windows**, Copilot panes in any of those windows should appear on the dashboard after the next refresh.
-- If the app is attached to a different tmux socket/server than the one holding your panes, it will not see them.
+- If the app is attached to a different tmux socket/server than the one holding your panes, open `5 · Setup` and switch to the matching socket.
 
 ## Quality gates
 
