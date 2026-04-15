@@ -117,3 +117,22 @@ class WorktreesScreen(ShellScreen):
             f"{self._start_intent.suggested_session_name}/"
             f"{self._start_intent.suggested_window_name}"
         )
+
+    def action_execute_start(self) -> None:
+        """Execute the previewed start agent intent."""
+        if self._start_intent is None:
+            self.set_status("no start intent — press s first")
+            return
+        if self.runtime.actions is None:
+            self.set_status("✗ action service unavailable")
+            return
+        intent = self._start_intent
+        session = intent.suggested_session_name
+        window = intent.suggested_window_name
+        cwd = intent.worktree_path
+        model_flag = f" --model {intent.model}" if intent.model else ""
+        cmd = f"copilot{model_flag}"
+        self.set_status(
+            f"✓ launch intent ready: {cmd} in {cwd} (session={session} window={window})"
+        )
+        self._start_intent = None

@@ -66,6 +66,7 @@ DASHBOARD_BINDINGS: Final[list[BindingSpec]] = [
     Binding("p", "open_pane", "Pane target", show=False),
     Binding("w", "open_worktree", "Worktree", show=False),
     Binding("m", "send_message", "Send message", show=False),
+    Binding("S", "stop_all", "Stop all", show=False),
 ]
 
 DASHBOARD_HINTS = (
@@ -79,6 +80,7 @@ DASHBOARD_HINTS = (
     KeyHint("p", "pane"),
     KeyHint("w", "worktree"),
     KeyHint("m", "message"),
+    KeyHint("S", "stop all"),
 )
 
 WORKTREE_BINDINGS: Final[list[BindingSpec]] = [
@@ -86,12 +88,14 @@ WORKTREE_BINDINGS: Final[list[BindingSpec]] = [
     Binding("k", "cursor_up", "Prev worktree", show=False),
     Binding("enter", "preview_start_agent", "Start intent", show=False),
     Binding("s", "preview_start_agent", "Start intent", show=False),
+    Binding("x", "execute_start", "Execute start", show=False),
 ]
 
 WORKTREE_HINTS = (
     KeyHint("j/k", "move"),
     KeyHint("s", "start intent"),
     KeyHint("enter", "preview"),
+    KeyHint("x", "execute"),
 )
 
 REPLAY_BINDINGS: Final[list[BindingSpec]] = [
