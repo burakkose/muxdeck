@@ -27,6 +27,10 @@ from copilot_commander.services.monitoring_service import (
     StatusHeuristicResult,
     compute_status_heuristics,
 )
+from copilot_commander.services.operations_service import (
+    OperationAuditEntry,
+    OperationAuditService,
+)
 from copilot_commander.services.replay_service import (
     ReplayEntry,
     ReplayJumpMarker,
@@ -77,6 +81,8 @@ __all__ = [
     "MonitoringResult",
     "MonitoringService",
     "MonitoringThresholds",
+    "OperationAuditEntry",
+    "OperationAuditService",
     "PaneDiscovery",
     "PaneDiscoveryReport",
     "ReplayEntry",
