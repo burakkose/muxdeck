@@ -3,19 +3,22 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from decimal import Decimal
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.models import Agent
 from copilot_commander.domain.value_objects import ensure_aware_datetime, utc_now
-from copilot_commander.services.agent_service import AgentFactInput
+from copilot_commander.services.agent_service import AgentFactInput, PaneClassification
 from copilot_commander.types import Clock
 
 
 @runtime_checkable
 class MonitoringDiscovery(Protocol):
     @property
-    def classification(self) -> str:
+    def classification(
+        self,
+    ) -> Literal["managed_agent", "unmanaged_probable_agent", "non_agent_pane"]:
         """Return the discovery classification."""
 
     @property
@@ -58,7 +61,7 @@ class MonitoringUsage(Protocol):
     input_tokens: int | None
     output_tokens: int | None
     total_tokens: int | None
-    cost: object | None
+    cost: Decimal | None
     currency: str | None
 
 
@@ -228,7 +231,7 @@ class MonitoringService:
         snapshot = discovery.snapshot
         session_evidence = discovery.session_evidence
         latest_usage = session_evidence.latest_usage if session_evidence is not None else None
-        estimated_cost = None
+        estimated_cost: Decimal | None = None
         if latest_usage is not None and latest_usage.currency in {None, "USD"}:
             estimated_cost = latest_usage.cost
         current_path = snapshot.pane_current_path
@@ -239,8 +242,9 @@ class MonitoringService:
         copilot_session_id = session_evidence.copilot_session_id if session_evidence else None
         if copilot_session_id is None and existing_agent is not None:
             copilot_session_id = existing_agent.copilot_session_id
+        classification = cast(PaneClassification, discovery.classification)
         return AgentFactInput(
-            classification=discovery.classification,
+            classification=classification,
             agent_id=existing_agent.id if existing_agent is not None else None,
             tmux_session_name=snapshot.tmux_session_name,
             tmux_window_id=snapshot.tmux_window_id,

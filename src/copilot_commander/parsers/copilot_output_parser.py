@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from decimal import Decimal
-import re
 from typing import Literal
 
 from copilot_commander.domain.value_objects import ensure_confidence
-
 
 BoundaryKind = Literal["prompt_start", "prompt_end", "response_start", "response_end"]
 BlockingKind = Literal[

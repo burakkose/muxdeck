@@ -91,7 +91,9 @@ class DomainModelTests(unittest.TestCase):
         self.assertEqual(agent.started_at.tzinfo, UTC)
         self.assertEqual(agent.last_seen_at.tzinfo, UTC)
 
-    def test_agent_rejects_inconsistent_token_totals_and_attention_reason_without_flag(self) -> None:
+    def test_agent_rejects_inconsistent_token_totals_and_attention_reason_without_flag(
+        self,
+    ) -> None:
         now = datetime(2025, 1, 1, tzinfo=UTC)
         with self.assertRaises(DomainValidationError):
             Agent(
@@ -143,7 +145,15 @@ class DomainModelTests(unittest.TestCase):
         )
         self.assertEqual(
             tuple(field.name for field in fields(Session)),
-            ("id", "agent_id", "copilot_session_id", "task_title", "created_at", "ended_at", "exit_reason"),
+            (
+                "id",
+                "agent_id",
+                "copilot_session_id",
+                "task_title",
+                "created_at",
+                "ended_at",
+                "exit_reason",
+            ),
         )
 
         created_at = datetime(2025, 1, 1, tzinfo=UTC)

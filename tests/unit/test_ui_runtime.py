@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 
-from copilot_commander.app import CommanderApp
+from copilot_commander.app import CommanderApp, CommanderRuntime
 from copilot_commander.domain.models import Session
 
 
@@ -41,7 +42,7 @@ class FakeRuntime:
 
 
 def test_resolve_replay_session_prefers_selected_agent() -> None:
-    app = CommanderApp(FakeRuntime())
+    app = CommanderApp(cast(CommanderRuntime, FakeRuntime()))
     app.selected_agent_id = "agent-2"
     app.selected_session_id = "session-1"
 
@@ -49,6 +50,6 @@ def test_resolve_replay_session_prefers_selected_agent() -> None:
 
 
 def test_resolve_replay_session_keeps_existing_session() -> None:
-    app = CommanderApp(FakeRuntime())
+    app = CommanderApp(cast(CommanderRuntime, FakeRuntime()))
 
     assert app.resolve_replay_session_id("session-1") == "session-1"

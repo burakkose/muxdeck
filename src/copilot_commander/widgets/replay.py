@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import cast
 
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -48,7 +47,7 @@ class ReplayMarkerListPanel(Vertical):
         if not self._marker_ordinals:
             return
         list_view = self.query_one(ListView)
-        current = 0 if list_view.index is None else cast(int, list_view.index)
+        current = list_view.index if list_view.index is not None else 0
         list_view.index = max(0, min(len(self._marker_ordinals) - 1, current + delta))
         list_view.focus()
         self._post_selection(list_view.index)
@@ -57,7 +56,8 @@ class ReplayMarkerListPanel(Vertical):
         self.query_one(ListView).focus()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        self._post_selection(event.index)
+        del event
+        self._post_selection(self.query_one(ListView).index)
 
     def _post_selection(self, index: int | None) -> None:
         if index is None or index >= len(self._marker_ordinals):
@@ -101,7 +101,7 @@ class ReplayTranscriptPanel(Vertical):
         if not self._ordinals:
             return
         list_view = self.query_one(ListView)
-        current = 0 if list_view.index is None else cast(int, list_view.index)
+        current = list_view.index if list_view.index is not None else 0
         list_view.index = max(0, min(len(self._ordinals) - 1, current + delta))
         list_view.focus()
         self._post_selection(list_view.index)

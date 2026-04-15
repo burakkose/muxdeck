@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import sys
 import unittest
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -15,8 +17,11 @@ if str(SRC_ROOT) not in sys.path:
 
 from copilot_commander.adapters.copilot_adapter import CopilotAdapter
 from copilot_commander.domain.enums import AgentStatus
+from copilot_commander.domain.value_objects import CommandResult
+from copilot_commander.services.agent_service import AgentFactInput
 from copilot_commander.services.discovery_service import DiscoveryPaneSnapshot, PaneDiscovery
 from copilot_commander.services.monitoring_service import (
+    MonitoringDiscovery,
     MonitoringService,
     MonitoringThresholds,
     StatusHeuristicInput,
@@ -25,17 +30,26 @@ from copilot_commander.services.monitoring_service import (
 
 
 class DummyRunner:
-    def run(self, command, /, *, cwd=None, env=None, timeout_sec=None):
-        raise AssertionError(f"unexpected runner use: {command!r}")
+    def run(
+        self,
+        command: Sequence[str],
+        /,
+        *,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout_sec: float | None = None,
+    ) -> CommandResult:
+        del cwd, env, timeout_sec
+        raise AssertionError(f"unexpected runner use: {tuple(command)!r}")
 
 
 @dataclass(slots=True)
 class FakeRecorder:
-    recorded: list[object]
+    recorded: list[AgentFactInput]
 
-    def persist_agent_facts(self, facts: object, /) -> object:
+    def persist_agent_facts(self, facts: AgentFactInput, /) -> AgentFactInput:
         self.recorded.append(facts)
-        return object()
+        return facts
 
 
 class MonitoringServiceTests(unittest.TestCase):
@@ -67,7 +81,9 @@ class MonitoringServiceTests(unittest.TestCase):
             )
         )
         dead = compute_status_heuristics(
-            StatusHeuristicInput(started_at=now - timedelta(minutes=1), observed_at=now, pane_dead=True)
+            StatusHeuristicInput(
+                started_at=now - timedelta(minutes=1), observed_at=now, pane_dead=True
+            )
         )
         idle = compute_status_heuristics(
             StatusHeuristicInput(
@@ -75,7 +91,9 @@ class MonitoringServiceTests(unittest.TestCase):
                 observed_at=now,
                 previous_last_activity_at=now - timedelta(minutes=20),
             ),
-            thresholds=MonitoringThresholds(idle_after_seconds=60, attention_idle_after_seconds=300),
+            thresholds=MonitoringThresholds(
+                idle_after_seconds=60, attention_idle_after_seconds=300
+            ),
         )
         running = compute_status_heuristics(
             StatusHeuristicInput(
@@ -124,7 +142,7 @@ class MonitoringServiceTests(unittest.TestCase):
             session_evidence=evidence,
         )
 
-        report = service.monitor_discoveries((discovery,))
+        report = service.monitor_discoveries(cast("Sequence[MonitoringDiscovery]", (discovery,)))
 
         assert len(report.results) == 1
         assert len(recorder.recorded) == 1

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final
 
 from textual.binding import Binding
+
+type BindingSpec = Binding | tuple[str, str] | tuple[str, str, str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,16 +14,36 @@ class KeyHint:
     label: str
 
 
-GLOBAL_BINDINGS = (
-    Binding("1", "show_dashboard", "Dashboard", show=False, priority=True, system=True),
-    Binding("2", "show_worktrees", "Worktrees", show=False, priority=True, system=True),
-    Binding("3", "show_replay", "Replay", show=False, priority=True, system=True),
-    Binding("question_mark", "show_help", "Help", show=False, priority=True, system=True),
-    Binding("r", "refresh_screen", "Refresh", show=False, priority=True, system=True),
-    Binding("tab", "focus_next", "Next focus", show=False, priority=True, system=True),
-    Binding("shift+tab", "focus_previous", "Prev focus", show=False, priority=True, system=True),
-    Binding("q", "quit", "Quit", show=False, priority=True, system=True),
-)
+def _binding(
+    key: str,
+    action: str,
+    description: str,
+    /,
+    *,
+    show: bool = True,
+    priority: bool = False,
+    system: bool = False,
+) -> Binding:
+    del system
+    return Binding(
+        key,
+        action,
+        description,
+        show=show,
+        priority=priority,
+    )
+
+
+GLOBAL_BINDINGS: Final[list[BindingSpec]] = [
+    _binding("1", "show_dashboard", "Dashboard", show=False, priority=True, system=True),
+    _binding("2", "show_worktrees", "Worktrees", show=False, priority=True, system=True),
+    _binding("3", "show_replay", "Replay", show=False, priority=True, system=True),
+    _binding("question_mark", "show_help", "Help", show=False, priority=True, system=True),
+    _binding("r", "refresh_screen", "Refresh", show=False, priority=True, system=True),
+    _binding("tab", "focus_next", "Next focus", show=False, priority=True, system=True),
+    _binding("shift+tab", "focus_previous", "Prev focus", show=False, priority=True, system=True),
+    _binding("q", "quit", "Quit", show=False, priority=True, system=True),
+]
 
 GLOBAL_HINTS = (
     KeyHint("1", "dashboard"),
@@ -31,7 +54,7 @@ GLOBAL_HINTS = (
     KeyHint("q", "quit"),
 )
 
-DASHBOARD_BINDINGS = (
+DASHBOARD_BINDINGS: Final[list[BindingSpec]] = [
     Binding("j", "cursor_down", "Next agent", show=False),
     Binding("k", "cursor_up", "Prev agent", show=False),
     Binding("slash", "focus_filter", "Filter", show=False),
@@ -42,7 +65,7 @@ DASHBOARD_BINDINGS = (
     Binding("i", "interrupt_agent", "Interrupt", show=False),
     Binding("p", "open_pane", "Pane target", show=False),
     Binding("w", "open_worktree", "Worktree", show=False),
-)
+]
 
 DASHBOARD_HINTS = (
     KeyHint("j/k", "move"),
@@ -56,12 +79,12 @@ DASHBOARD_HINTS = (
     KeyHint("w", "worktree"),
 )
 
-WORKTREE_BINDINGS = (
+WORKTREE_BINDINGS: Final[list[BindingSpec]] = [
     Binding("j", "cursor_down", "Next worktree", show=False),
     Binding("k", "cursor_up", "Prev worktree", show=False),
     Binding("enter", "preview_start_agent", "Start intent", show=False),
     Binding("s", "preview_start_agent", "Start intent", show=False),
-)
+]
 
 WORKTREE_HINTS = (
     KeyHint("j/k", "move"),
@@ -69,14 +92,14 @@ WORKTREE_HINTS = (
     KeyHint("enter", "preview"),
 )
 
-REPLAY_BINDINGS = (
+REPLAY_BINDINGS: Final[list[BindingSpec]] = [
     Binding("j", "cursor_down", "Next entry", show=False),
     Binding("k", "cursor_up", "Prev entry", show=False),
     Binding("m", "focus_markers", "Markers", show=False),
     Binding("t", "focus_transcript", "Transcript", show=False),
     Binding("e", "cycle_export_format", "Export", show=False),
     Binding("g", "load_latest", "Latest session", show=False),
-)
+]
 
 REPLAY_HINTS = (
     KeyHint("j/k", "move"),
@@ -86,13 +109,11 @@ REPLAY_HINTS = (
     KeyHint("g", "latest"),
 )
 
-HELP_BINDINGS = (
-    Binding("escape", "show_dashboard", "Dashboard", show=False),
-)
+HELP_BINDINGS: Final[list[BindingSpec]] = [
+    Binding("escape", "show_dashboard", "Dashboard", show=False)
+]
 
-HELP_HINTS = (
-    KeyHint("esc", "dashboard"),
-)
+HELP_HINTS = (KeyHint("esc", "dashboard"),)
 
 ALL_HINT_GROUPS = {
     "dashboard": DASHBOARD_HINTS,

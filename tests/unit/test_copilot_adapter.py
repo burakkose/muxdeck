@@ -190,7 +190,6 @@ class CopilotAdapterTests(unittest.TestCase):
             adapter.launch_in_pane(parameters)
 
 
-
 def _result(
     command: tuple[str, ...],
     *,

@@ -12,6 +12,7 @@ from copilot_commander.controllers import (
     AgentIntentView,
     DashboardFilterState,
     DashboardSort,
+    DashboardSortField,
     DashboardState,
 )
 from copilot_commander.screens.base import ShellScreen
@@ -29,7 +30,14 @@ if TYPE_CHECKING:
     from copilot_commander.app import CommanderApp, CommanderRuntime
 
 
-_SORT_ORDER = ("last_seen", "name", "status", "cost", "idle_seconds", "started_at")
+_SORT_ORDER: tuple[DashboardSortField, ...] = (
+    "last_seen",
+    "name",
+    "status",
+    "cost",
+    "idle_seconds",
+    "started_at",
+)
 
 
 class DashboardScreen(ShellScreen):
@@ -99,9 +107,7 @@ class DashboardScreen(ShellScreen):
         self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
         self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
-        self.set_status(
-            f"{len(self._state.agents)} visible agents | {self._state.health.message}"
-        )
+        self.set_status(f"{len(self._state.agents)} visible agents | {self._state.health.message}")
 
     @property
     def commander_app(self) -> CommanderApp:

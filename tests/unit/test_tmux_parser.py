@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from typing import cast
 
 from copilot_commander.parsers.tmux_parser import parse_tmux_list_panes_output
 
@@ -25,17 +26,17 @@ class TmuxParserTests(unittest.TestCase):
 
         result = parse_tmux_list_panes_output(output)
 
-        self.assertEqual(len(result.panes), 2)
-        self.assertEqual(result.ignored_lines, ("noise without pane metadata",))
+        assert len(result.panes) == 2
+        assert result.ignored_lines == ("noise without pane metadata",)
         first, second = result.panes
-        self.assertEqual(first.session_name, "muxdeck")
-        self.assertEqual(first.window_index, 2)
-        self.assertTrue(first.window_active)
-        self.assertEqual(first.pane_pid, 4242)
-        self.assertEqual(first.pane_current_path, "/repo/worktrees/task")
-        self.assertEqual(first.pane_current_command, "python")
-        self.assertEqual(second.pane_current_path, "/repo")
-        self.assertIsNone(second.pane_current_command)
+        assert first.session_name == "muxdeck"
+        assert first.window_index == 2
+        assert first.window_active
+        assert first.pane_pid == 4242
+        assert first.pane_current_path == "/repo/worktrees/task"
+        assert first.pane_current_command == "python"
+        assert second.pane_current_path == "/repo"
+        assert second.pane_current_command is None
 
     def test_parse_tmux_list_panes_output_supports_pipe_separated_aliases(self) -> None:
         output = (
@@ -45,21 +46,21 @@ class TmuxParserTests(unittest.TestCase):
 
         result = parse_tmux_list_panes_output(output)
 
-        self.assertEqual(len(result.panes), 1)
+        assert len(result.panes) == 1
         pane = result.panes[0]
-        self.assertEqual(pane.session_name, "ops")
-        self.assertEqual(pane.window_name, "logs")
-        self.assertEqual(pane.pane_tty, "/dev/pts/9")
-        self.assertTrue(pane.pane_active)
-        self.assertEqual(pane.raw_fields["session_name"], "ops")
+        assert pane.session_name == "ops"
+        assert pane.window_name == "logs"
+        assert pane.pane_tty == "/dev/pts/9"
+        assert pane.pane_active
+        assert cast("dict[str, str]", pane.raw_fields)["session_name"] == "ops"
 
     def test_parse_tmux_list_panes_output_ignores_blank_and_unparseable_lines(self) -> None:
         output = "\n\npane_id=%1\twindow_id=@1\nmalformed-token"
 
         result = parse_tmux_list_panes_output(output)
 
-        self.assertEqual(len(result.panes), 1)
-        self.assertEqual(result.ignored_lines, ("malformed-token",))
+        assert len(result.panes) == 1
+        assert result.ignored_lines == ("malformed-token",)
 
 
 if __name__ == "__main__":

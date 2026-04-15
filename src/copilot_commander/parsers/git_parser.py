@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
-
+from dataclasses import dataclass
 
 _AHEAD_BEHIND_TAB_PATTERN = re.compile(r"^\s*(?P<ahead>\d+)\s+(?P<behind>\d+)\s*$")
 _AHEAD_PATTERN = re.compile(r"\bahead\s+(?P<count>\d+)\b", re.IGNORECASE)
@@ -233,10 +232,7 @@ def parse_git_status_porcelain(output: str) -> GitStatusSummary:
             continue
         original_path: str | None = None
         path = payload
-        if status[0] in {"R", "C"}:
-            renamed_paths = _split_git_rename_payload(payload)
-        else:
-            renamed_paths = None
+        renamed_paths = _split_git_rename_payload(payload) if status[0] in {"R", "C"} else None
         if renamed_paths is not None:
             original_raw, renamed_raw = renamed_paths
             original_path = _decode_git_path(original_raw)

@@ -18,7 +18,9 @@ from copilot_commander.services.session_service import SessionContextPatch, Sess
 
 class SessionServiceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.runtime_dir = Path(__file__).resolve().parent / "_runtime_session_service" / self._testMethodName
+        self.runtime_dir = (
+            Path(__file__).resolve().parent / "_runtime_session_service" / self._testMethodName
+        )
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.addCleanup(self._cleanup_runtime_dir)
         self.repo_root = self.runtime_dir / "repo"
@@ -30,7 +32,9 @@ class SessionServiceTests(unittest.TestCase):
                 state_dir=self.runtime_dir / "state",
                 workspace_root=self.runtime_dir / "worktrees",
                 database_path=self.runtime_dir / "state" / DEFAULT_DATABASE_FILE_NAME,
-                fallback_database_path=self.runtime_dir / "legacy-state" / DEFAULT_DATABASE_FILE_NAME,
+                fallback_database_path=(
+                    self.runtime_dir / "legacy-state" / DEFAULT_DATABASE_FILE_NAME
+                ),
             ),
             config_file=self.runtime_dir / "config.toml",
         )
@@ -103,7 +107,9 @@ class SessionServiceTests(unittest.TestCase):
         self.assertEqual(updated.context.tmux_pane_id, "%9")
         self.assertEqual(updated.context.copilot_session_id, "copilot-999")
         self.assertEqual(finished.session.exit_reason, "completed")
-        event_kinds = [event.kind for event in self.store.list_events_for_session(bundle.session.id)]
+        event_kinds = [
+            event.kind for event in self.store.list_events_for_session(bundle.session.id)
+        ]
         self.assertEqual(
             event_kinds,
             ["session.created", "custom.note", "session.context.updated", "session.ended"],
@@ -124,6 +130,8 @@ class SessionServiceTests(unittest.TestCase):
         )
         by_pane = self.service.lookup_for_replay(tmux_pane_id="%1")
         by_copilot = self.service.lookup_for_replay(copilot_session_id="copilot-123")
+        assert by_pane is not None
+        assert by_copilot is not None
 
         self.assertEqual(first[0].sequence_no, 0)
         self.assertEqual(second[0].sequence_no, 1)

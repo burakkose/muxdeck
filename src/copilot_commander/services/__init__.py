@@ -8,8 +8,8 @@ from copilot_commander.services.costing_service import (
     CostBucket,
     CostEvidence,
     CostFact,
-    CostRecordResult,
     CostingService,
+    CostRecordResult,
 )
 from copilot_commander.services.discovery_service import (
     DiscoveryPaneSnapshot,

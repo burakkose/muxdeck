@@ -14,6 +14,7 @@ from copilot_commander.controllers.dashboard_controller import (
     DashboardMetricView,
     DashboardSelectedAgentView,
     DashboardSort,
+    DashboardSortField,
     DashboardState,
 )
 from copilot_commander.controllers.replay_controller import (
@@ -46,6 +47,7 @@ __all__ = [
     "DashboardMetricView",
     "DashboardSelectedAgentView",
     "DashboardSort",
+    "DashboardSortField",
     "DashboardState",
     "ReplayController",
     "ReplayExportIntent",

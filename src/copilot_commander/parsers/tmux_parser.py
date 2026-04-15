@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
-
 _KEY_ALIASES: Final[dict[str, str]] = {
     "cwd": "pane_current_path",
     "current_command": "pane_current_command",

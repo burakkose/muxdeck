@@ -78,33 +78,41 @@ class ProcessAdapter:
         started_at = self._clock()
         command_text = _render_command(normalized_command)
         try:
-            completed = subprocess.run(
+            with subprocess.Popen(
                 normalized_command,
-                capture_output=True,
-                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 cwd=None if cwd is None else str(cwd),
                 env=_build_environment(env),
                 text=True,
-                timeout=effective_timeout,
-            )
+            ) as process:
+                try:
+                    stdout, stderr = process.communicate(timeout=effective_timeout)
+                except subprocess.TimeoutExpired as exc:
+                    process.kill()
+                    timeout_stdout, timeout_stderr = process.communicate()
+                    stdout = (
+                        exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode()
+                    ) or timeout_stdout
+                    stderr = (
+                        exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode()
+                    ) or timeout_stderr
+                    timeout_message = f"timed out after {effective_timeout:.3f}s"
+                    raise CommandError(
+                        command_text,
+                        stderr=timeout_message if not stderr else f"{timeout_message}; {stderr}",
+                        stdout=stdout,
+                    ) from exc
+                exit_code = process.returncode
         except (FileNotFoundError, PermissionError) as exc:
             raise CommandError(command_text, stderr=str(exc)) from exc
-        except subprocess.TimeoutExpired as exc:
-            stdout = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode()
-            stderr = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr or b"").decode()
-            timeout_message = f"timed out after {effective_timeout:.3f}s"
-            raise CommandError(
-                command_text,
-                stderr=timeout_message if not stderr else f"{timeout_message}; {stderr}",
-                stdout=stdout,
-            ) from exc
         finished_at = self._clock()
         return CommandResult(
             command=normalized_command,
-            exit_code=completed.returncode,
+            exit_code=exit_code,
             started_at=started_at,
             finished_at=finished_at,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            stdout=stdout,
+            stderr=stderr,
             cwd=cwd,
         )

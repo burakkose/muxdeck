@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import unittest
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,29 +18,57 @@ from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.adapters.tmux_adapter import TmuxPaneMetadata
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.models import Agent, Session
+from copilot_commander.domain.value_objects import CommandResult
 from copilot_commander.services.discovery_service import DiscoveryService
 
 
 class DummyRunner:
-    def run(self, command, /, *, cwd=None, env=None, timeout_sec=None):
-        raise AssertionError(f"unexpected runner use: {command!r}")
+    def run(
+        self,
+        command: Sequence[str],
+        /,
+        *,
+        cwd: Path | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout_sec: float | None = None,
+    ) -> CommandResult:
+        del cwd, env, timeout_sec
+        raise AssertionError(f"unexpected runner use: {tuple(command)!r}")
 
 
 class FakeTmuxGateway:
-    def __init__(self, panes, captures) -> None:
+    def __init__(
+        self,
+        panes: tuple[TmuxPaneMetadata, ...],
+        captures: dict[str, str],
+    ) -> None:
         self._panes = panes
         self._captures = captures
 
-    def list_panes(self):
+    def list_panes(self) -> tuple[TmuxPaneMetadata, ...]:
         return self._panes
 
-    def capture_pane(self, target_pane: str, /, *, start_line=None, end_line=None, join_wrapped_lines=False) -> str:
+    def capture_pane(
+        self,
+        target_pane: str,
+        /,
+        *,
+        start_line: str | int | None = None,
+        end_line: str | int | None = None,
+        join_wrapped_lines: bool = False,
+    ) -> str:
         del start_line, end_line, join_wrapped_lines
         return self._captures[target_pane]
 
 
 class InMemoryDiscoveryStore:
-    def __init__(self, *, agent: Agent | None = None, session: Session | None = None, context: SessionContextRecord | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        agent: Agent | None = None,
+        session: Session | None = None,
+        context: SessionContextRecord | None = None,
+    ) -> None:
         self.agent = agent
         self.session = session
         self.context = context
@@ -59,7 +88,9 @@ class InMemoryDiscoveryStore:
             return self.session
         return None
 
-    def get_session_context_by_tmux_pane_id(self, tmux_pane_id: str, /) -> SessionContextRecord | None:
+    def get_session_context_by_tmux_pane_id(
+        self, tmux_pane_id: str, /
+    ) -> SessionContextRecord | None:
         if self.context is not None and self.context.tmux_pane_id == tmux_pane_id:
             return self.context
         return None
@@ -159,7 +190,9 @@ class DiscoveryServiceTests(unittest.TestCase):
             tmux,
             self.copilot,
             InMemoryDiscoveryStore(
-                context=SessionContextRecord(session_id="session-x", tmux_pane_id="%100", updated_at=self.now)
+                context=SessionContextRecord(
+                    session_id="session-x", tmux_pane_id="%100", updated_at=self.now
+                )
             ),
             clock=lambda: self.now,
         )
