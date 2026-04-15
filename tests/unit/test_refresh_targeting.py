@@ -209,6 +209,7 @@ def _build_runtime(
                 "agents": _FakeAgentController(),
                 "synchronizer": s,
                 "sync_store": None,
+                "actions": None,
             },
         )(),
     )

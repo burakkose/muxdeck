@@ -40,6 +40,7 @@ from copilot_commander.services import (
     SessionService,
     WorktreeService,
 )
+from copilot_commander.services.action_service import TmuxActionService
 
 _log = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ class CommanderRuntime:
     worktrees: WorktreeController
     replay: ReplayController
     agents: AgentController
+    actions: TmuxActionService | None = None
     synchronizer: RuntimeSynchronizer | None = None
     sync_store: SQLiteStore | None = None
 
@@ -197,6 +199,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     process_adapter = ProcessAdapter()
     git_adapter = GitAdapter(process_adapter)
     tmux_adapter = TmuxAdapter(process_adapter)
+    action_service = TmuxActionService(tmux=tmux_adapter)
     copilot_adapter = CopilotAdapter(process_adapter)
     sessions = SessionService(store=store)
     replay_service = ReplayService(store=store, sessions=sessions)
@@ -244,6 +247,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         worktrees=WorktreeController(worktree_service, store),
         replay=ReplayController(replay_service),
         agents=AgentController(store, sessions),
+        actions=action_service,
         synchronizer=RuntimeSynchronizer(
             discovery,
             monitoring,
