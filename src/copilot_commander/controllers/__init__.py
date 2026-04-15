@@ -24,6 +24,12 @@ from copilot_commander.controllers.replay_controller import (
     ReplayStateView,
     ReplayTranscriptEntryView,
 )
+from copilot_commander.controllers.sessions_controller import (
+    SessionDetailView,
+    SessionListItemView,
+    SessionsController,
+    SessionsState,
+)
 from copilot_commander.controllers.worktree_controller import (
     WorktreeActionView,
     WorktreeConflictView,
@@ -54,6 +60,10 @@ __all__ = [
     "ReplayJumpMarkerView",
     "ReplayStateView",
     "ReplayTranscriptEntryView",
+    "SessionDetailView",
+    "SessionListItemView",
+    "SessionsController",
+    "SessionsState",
     "WorktreeActionView",
     "WorktreeConflictView",
     "WorktreeController",

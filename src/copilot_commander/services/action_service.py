@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from copilot_commander.adapters.tmux_adapter import TmuxPaneMetadata
     from copilot_commander.controllers.agent_controller import AgentIntentView
     from copilot_commander.domain.value_objects import CommandResult
 
@@ -38,6 +40,17 @@ class TmuxOperations(Protocol):
     ) -> str: ...
 
     def pane_exists(self, target_pane: str, /) -> bool: ...
+
+    def new_window(
+        self,
+        target_session: str | None = None,
+        /,
+        *,
+        window_name: str | None = None,
+        start_directory: Path | None = None,
+        shell_command: Sequence[str] | None = None,
+        detached: bool = False,
+    ) -> TmuxPaneMetadata: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +177,38 @@ class TmuxActionService:
             message=f"unknown intent kind: {kind}",
             pane_id=intent.agent.pane_target,
         )
+
+    def resume_session(
+        self,
+        session_id: str,
+        *,
+        cwd: Path | None = None,
+        window_name: str | None = None,
+    ) -> ActionResult:
+        """Resume a Copilot CLI session in a new tmux window.
+
+        Creates a detached window and runs ``copilot --resume=<session_id>``
+        so the session appears alongside existing panes.
+        """
+        cmd = f"copilot --resume={session_id}"
+        name = window_name or f"copilot-{session_id[:8]}"
+        try:
+            meta = self._tmux.new_window(
+                window_name=name,
+                start_directory=cwd,
+                detached=True,
+            )
+            self._tmux.send_keys(meta.pane_id, [cmd], literal=True, append_enter=True)
+            return ActionResult(
+                success=True,
+                message=f"resumed session {session_id[:8]}… in {meta.pane_id}",
+                pane_id=meta.pane_id,
+            )
+        except Exception as exc:
+            return ActionResult(
+                success=False,
+                message=f"failed to resume: {exc}",
+            )
 
     def stop_all_agents(
         self,

@@ -69,7 +69,8 @@ Screen {
 
 #dashboard-root,
 #worktrees-root,
-#replay-root {
+#replay-root,
+#sessions-root {
     height: 1fr;
     layout: vertical;
 }
@@ -224,4 +225,23 @@ ListItem {
 
 ListView > ListItem.--highlight {
     background: #504945;
+}
+
+/* ── sessions ────────────────────────────────────────────────────── */
+
+#sessions-summary {
+    height: 1;
+    margin-bottom: 0;
+}
+
+#sessions-main {
+    height: 1fr;
+}
+
+#sessions-list {
+    width: 2fr;
+}
+
+#sessions-detail {
+    width: 1fr;
 }

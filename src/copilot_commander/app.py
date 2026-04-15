@@ -15,6 +15,7 @@ from copilot_commander.adapters import (
     SQLiteStore,
     TmuxAdapter,
 )
+from copilot_commander.adapters.copilot_session_store import CopilotSessionStore
 from copilot_commander.bindings import GLOBAL_BINDINGS
 from copilot_commander.config import AppConfig, load_config
 from copilot_commander.controllers import (
@@ -23,12 +24,14 @@ from copilot_commander.controllers import (
     ReplayController,
     WorktreeController,
 )
+from copilot_commander.controllers.sessions_controller import SessionsController
 from copilot_commander.screens import (
     DashboardScreen,
     HelpScreen,
     ReplayScreen,
     WorktreesScreen,
 )
+from copilot_commander.screens.sessions import SessionsScreen
 from copilot_commander.services import (
     AgentService,
     DiscoveryService,
@@ -58,6 +61,7 @@ class CommanderRuntime:
     actions: TmuxActionService | None = None
     synchronizer: RuntimeSynchronizer | None = None
     sync_store: SQLiteStore | None = None
+    sessions_ctrl: SessionsController | None = None
 
 
 class CommanderApp(App[None]):
@@ -81,6 +85,7 @@ class CommanderApp(App[None]):
         self.add_mode("dashboard", lambda: DashboardScreen(self.runtime))
         self.add_mode("worktrees", lambda: WorktreesScreen(self.runtime))
         self.add_mode("replay", lambda: ReplayScreen(self.runtime))
+        self.add_mode("sessions", lambda: SessionsScreen(self.runtime))
         self.add_mode("help", lambda: HelpScreen(self.runtime))
         self.switch_mode("dashboard")
         interval_sec = max(2, self.runtime.config.general.discovery_interval_sec)
@@ -95,6 +100,9 @@ class CommanderApp(App[None]):
 
     def action_show_replay(self) -> None:
         self.switch_mode("replay")
+
+    def action_show_sessions(self) -> None:
+        self.switch_mode("sessions")
 
     def action_show_help(self) -> None:
         self.switch_mode("help")
@@ -240,6 +248,8 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         agents=store,
         session_contexts=store,
     )
+    copilot_session_store = CopilotSessionStore()
+    sessions_ctrl = SessionsController(copilot_session_store)
     return CommanderRuntime(
         config=resolved_config,
         store=store,
@@ -256,6 +266,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
             dead_grace_period_sec=resolved_config.general.dead_grace_period_sec,
         ),
         sync_store=sync_store,
+        sessions_ctrl=sessions_ctrl,
     )
 
 

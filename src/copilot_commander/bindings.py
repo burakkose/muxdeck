@@ -38,6 +38,7 @@ GLOBAL_BINDINGS: Final[list[BindingSpec]] = [
     _binding("1", "show_dashboard", "Dashboard", show=False, priority=True, system=True),
     _binding("2", "show_worktrees", "Worktrees", show=False, priority=True, system=True),
     _binding("3", "show_replay", "Replay", show=False, priority=True, system=True),
+    _binding("4", "show_sessions", "Sessions", show=False, priority=True, system=True),
     _binding("question_mark", "show_help", "Help", show=False, priority=True, system=True),
     _binding("r", "refresh_screen", "Refresh", show=False, priority=True, system=True),
     _binding("tab", "focus_next", "Next focus", show=False, priority=True, system=True),
@@ -49,6 +50,7 @@ GLOBAL_HINTS = (
     KeyHint("1", "dashboard"),
     KeyHint("2", "worktrees"),
     KeyHint("3", "replay"),
+    KeyHint("4", "sessions"),
     KeyHint("?", "help"),
     KeyHint("r", "refresh"),
     KeyHint("q", "quit"),
@@ -115,6 +117,23 @@ REPLAY_HINTS = (
     KeyHint("g", "latest"),
 )
 
+SESSIONS_BINDINGS: Final[list[BindingSpec]] = [
+    Binding("j", "cursor_down", "Next session", show=False),
+    Binding("k", "cursor_up", "Prev session", show=False),
+    Binding("r", "resume_session", "Resume", show=False),
+    Binding("x", "toggle_completed", "Toggle completed", show=False),
+    Binding("y", "copy_session_id", "Copy ID", show=False),
+    Binding("p", "focus_pane", "Focus pane", show=False),
+]
+
+SESSIONS_HINTS = (
+    KeyHint("j/k", "move"),
+    KeyHint("r", "resume"),
+    KeyHint("x", "completed"),
+    KeyHint("y", "copy ID"),
+    KeyHint("p", "focus pane"),
+)
+
 HELP_BINDINGS: Final[list[BindingSpec]] = [
     Binding("escape", "show_dashboard", "Dashboard", show=False)
 ]
@@ -125,6 +144,7 @@ ALL_HINT_GROUPS = {
     "dashboard": DASHBOARD_HINTS,
     "worktrees": WORKTREE_HINTS,
     "replay": REPLAY_HINTS,
+    "sessions": SESSIONS_HINTS,
     "help": HELP_HINTS,
 }
 
@@ -138,6 +158,8 @@ __all__ = [
     "HELP_HINTS",
     "REPLAY_BINDINGS",
     "REPLAY_HINTS",
+    "SESSIONS_BINDINGS",
+    "SESSIONS_HINTS",
     "WORKTREE_BINDINGS",
     "WORKTREE_HINTS",
     "KeyHint",
