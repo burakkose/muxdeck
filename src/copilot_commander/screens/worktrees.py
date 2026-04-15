@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Static
 
 from copilot_commander.bindings import WORKTREE_BINDINGS, WORKTREE_HINTS
 from copilot_commander.controllers import (
@@ -37,8 +36,7 @@ class WorktreesScreen(ShellScreen):
         self._start_intent: WorktreeStartAgentIntent | None = None
 
     def compose_body(self) -> ComposeResult:
-        with Vertical(id="worktrees-root"):
-            yield Static(id="worktrees-summary", classes="muted")
+        with Vertical(id="worktrees-root"):  # noqa: SIM117
             with Horizontal(id="worktrees-main"):
                 yield WorktreeListPanel(widget_id="worktrees-list", classes="panel")
                 with Vertical(id="worktrees-sidebar"):
@@ -65,9 +63,6 @@ class WorktreesScreen(ShellScreen):
         if self._selected_worktree_id is not None:
             self._detail = self.runtime.worktrees.get_worktree_detail(self._selected_worktree_id)
             self.commander_app.remember_worktree_selection(self._selected_worktree_id)
-        self.query_one("#worktrees-summary", Static).update(
-            f"WORKTREES {len(self._worktrees)} | selected {self._selected_worktree_id or '-'}"
-        )
         self.query_one(WorktreeListPanel).set_worktrees(
             self._worktrees,
             selected_worktree_id=self._selected_worktree_id,

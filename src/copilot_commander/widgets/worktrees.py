@@ -51,13 +51,15 @@ class WorktreeListPanel(Vertical):
                 line.append("★ ", style=f"bold {GREEN}")
             else:
                 line.append("  ")
-            line.append(f"{worktree.branch:<18.18}", style=f"bold {FG}")
+            branch_display = worktree.branch[:16] if len(worktree.branch) > 16 else worktree.branch
+            line.append(f"{branch_display:<16}", style=f"bold {FG}")
             dirty_style = f"bold {ORANGE}" if worktree.is_dirty else FG4
-            line.append(f" {'DIRTY' if worktree.is_dirty else 'clean':<5}", style=dirty_style)
-            line.append(f" ctx:{worktree.context_count}", style=FG4)
-            agent = worktree.assigned_agent_name or "—"
-            agent_style = f"bold {BLUE}" if worktree.assigned_agent_name else FG4
-            line.append(f" {agent}", style=agent_style)
+            dirty_label = "D" if worktree.is_dirty else "·"
+            line.append(f" {dirty_label}", style=dirty_style)
+            agent = worktree.assigned_agent_name or ""
+            if agent:
+                agent = agent[:8]
+                line.append(f" {agent}", style=f"bold {BLUE}")
             list_view.append(ListItem(Static(line)))
             self._worktree_ids.append(worktree.worktree_id)
             if worktree.worktree_id == selected_worktree_id:
@@ -118,7 +120,7 @@ class WorktreeDetailPanel(Static):
             ("panes", ", ".join(detail.pane_targets) if detail.pane_targets else "-", FG1),
         ):
             line = Text()
-            line.append(f"{label:<9}", style=FG4)
+            line.append(f"{label:<7} ", style=FG4)
             line.append(str(value), style=style)
             lines.append(line)
         result = Text()
@@ -135,11 +137,10 @@ class ConflictPanel(Static):
 
     def set_conflicts(self, conflicts: Sequence[WorktreeConflictView]) -> None:
         if not conflicts:
-            self.update(Text("No conflicts", style=FG4))
+            self.update(Text("—", style=FG4))
             return
         lines = [
-            f"{conflict.code:<12.12} {conflict.path} :: {conflict.message}"
-            for conflict in conflicts
+            f"{conflict.code:<8} {conflict.path} :: {conflict.message}" for conflict in conflicts
         ]
         self.update(join_lines(lines))
 
@@ -150,7 +151,7 @@ class StartIntentPanel(Static):
 
     def set_intent(self, intent: WorktreeStartAgentIntent | None) -> None:
         if intent is None:
-            self.update(Text("Press s to preview start-agent intent", style=FG4))
+            self.update(Text("press s to preview", style=FG4))
             return
         lines: list[Text] = []
         for label, value in (
