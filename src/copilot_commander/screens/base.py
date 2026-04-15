@@ -6,10 +6,9 @@ from typing import TYPE_CHECKING
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import Header, Static
 
 from copilot_commander.bindings import GLOBAL_HINTS, KeyHint
-from copilot_commander.widgets.common import KeyHintFooter
+from copilot_commander.widgets.common import KeyHintFooter, TabBar
 
 if TYPE_CHECKING:
     from copilot_commander.app import CommanderRuntime
@@ -25,19 +24,21 @@ class ShellScreen(Screen[None]):
         self._status = "ready"
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True, id="shell-header")
+        yield TabBar(
+            active=self.SCREEN_TITLE.lower(),
+            widget_id="shell-tab-bar",
+        )
         with Vertical(id="shell-frame"):
-            yield Static(self.SCREEN_TITLE, id="screen-title")
-            with Vertical(id="screen-body"):
-                yield from self.compose_body()
+            yield from self.compose_body()
         yield KeyHintFooter(
-            title=self.SCREEN_TITLE,
             hints=self.footer_hints(),
             status=self._status,
             widget_id="shell-footer",
         )
 
     def compose_body(self) -> ComposeResult:
+        from textual.widgets import Static
+
         yield Static()
 
     def footer_hints(self) -> tuple[KeyHint, ...]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.message import Message
@@ -12,7 +13,7 @@ from copilot_commander.controllers import (
     ReplayStateView,
     ReplayTranscriptEntryView,
 )
-from copilot_commander.widgets.common import join_lines
+from copilot_commander.theme import BLUE, FG, FG1, FG4, YELLOW
 
 
 class ReplayMarkerListPanel(Vertical):
@@ -21,9 +22,12 @@ class ReplayMarkerListPanel(Vertical):
             super().__init__()
             self.marker_ordinal = marker_ordinal
 
-    def __init__(self, *, widget_id: str | None = None) -> None:
-        super().__init__(id=widget_id)
+    def __init__(self, *, widget_id: str | None = None, classes: str | None = None) -> None:
+        super().__init__(id=widget_id, classes=classes)
         self._marker_ordinals: list[int] = []
+
+    def on_mount(self) -> None:
+        self.border_title = "Markers"
 
     def compose(self) -> ComposeResult:
         yield ListView(id="replay-marker-list")
@@ -32,9 +36,13 @@ class ReplayMarkerListPanel(Vertical):
         list_view = self.query_one(ListView)
         list_view.clear()
         self._marker_ordinals = []
+        self.border_title = f"Markers ({len(markers)})"
         for index, marker in enumerate(markers):
-            row = f"{marker.timestamp[11:19]} {marker.kind:<6.6} {marker.label}"
-            list_view.append(ListItem(Static(row, markup=False)))
+            line = Text()
+            line.append(f"{marker.timestamp[11:19]} ", style=FG4)
+            line.append(f"{marker.kind:<6.6} ", style=f"bold {YELLOW}")
+            line.append(marker.label, style=FG1)
+            list_view.append(ListItem(Static(line)))
             self._marker_ordinals.append(index)
         if self._marker_ordinals:
             list_view.index = (
@@ -71,9 +79,12 @@ class ReplayTranscriptPanel(Vertical):
             super().__init__()
             self.transcript_index = transcript_index
 
-    def __init__(self, *, widget_id: str | None = None) -> None:
-        super().__init__(id=widget_id)
+    def __init__(self, *, widget_id: str | None = None, classes: str | None = None) -> None:
+        super().__init__(id=widget_id, classes=classes)
         self._ordinals: list[int] = []
+
+    def on_mount(self) -> None:
+        self.border_title = "Transcript"
 
     def compose(self) -> ComposeResult:
         yield ListView(id="replay-transcript-list")
@@ -82,15 +93,20 @@ class ReplayTranscriptPanel(Vertical):
         list_view = self.query_one(ListView)
         list_view.clear()
         self._ordinals = []
+        self.border_title = f"Transcript ({len(transcript)})"
         selected_index = 0
         for index, entry in enumerate(transcript):
-            marker = ">" if entry.is_selected else " "
+            line = Text()
+            if entry.is_selected:
+                line.append("▸ ", style=f"bold {BLUE}")
+            else:
+                line.append("  ")
+            line.append(f"{entry.timestamp[11:19]} ", style=FG4)
+            line.append(f"{entry.kind:<8.8} ", style=f"bold {YELLOW}")
+            line.append(f"{entry.label:<16.16} ", style=FG1)
             preview = entry.lines[0] if entry.lines else ""
-            row = (
-                f"{marker} {entry.timestamp[11:19]} {entry.kind:<8.8} "
-                f"{entry.label:<18.18} {preview}"
-            )
-            list_view.append(ListItem(Static(row, markup=False)))
+            line.append(preview, style=FG4)
+            list_view.append(ListItem(Static(line)))
             self._ordinals.append(entry.ordinal)
             if entry.is_selected:
                 selected_index = index
@@ -122,36 +138,42 @@ class ReplayTranscriptPanel(Vertical):
 class ReplaySummaryPanel(Static):
     def set_state(self, state: ReplayStateView | None) -> None:
         if state is None:
-            self.update("No replayable sessions found.")
+            self.update(Text("No replayable sessions", style=FG4))
             return
-        self.update(
-            " | ".join(
-                (
-                    f"session {state.session_id}",
-                    f"agent {state.agent_id}",
-                    f"task {state.task_title or '-'}",
-                    f"entries {len(state.transcript)}",
-                    f"markers {len(state.jump_markers)}",
-                )
-            ).upper()
-        )
+        line = Text()
+        for label, value in (
+            ("session", state.session_id),
+            ("agent", state.agent_id),
+            ("task", state.task_title or "-"),
+            ("entries", str(len(state.transcript))),
+            ("markers", str(len(state.jump_markers))),
+        ):
+            if line.plain:
+                line.append(" │ ", style=FG4)
+            line.append(f"{label} ", style=FG4)
+            line.append(str(value), style=FG1)
+        self.update(line)
 
 
 class ReplayDetailPanel(Static):
+    def on_mount(self) -> None:
+        self.border_title = "Entry Detail"
+
     def set_entry(self, entry: ReplayTranscriptEntryView | None) -> None:
         if entry is None:
-            self.update("No replay entry selected.")
+            self.update(Text("No entry selected", style=FG4))
             return
-        lines = (
-            f"ORDINAL     {entry.ordinal}",
-            f"KIND        {entry.kind}",
-            f"TIMESTAMP   {entry.timestamp}",
-            f"LABEL       {entry.label}",
-            f"SEVERITY    {entry.severity or '-'}",
-            "",
-            *entry.lines,
-        )
-        self.update(join_lines(lines))
+        header = Text()
+        header.append(f"#{entry.ordinal} ", style=f"bold {BLUE}")
+        header.append(f"{entry.kind} ", style=f"bold {YELLOW}")
+        header.append(entry.timestamp, style=FG4)
+        if entry.severity:
+            header.append(f" [{entry.severity}]", style=FG4)
+        header.append(f"\n{entry.label}", style=FG1)
+        if entry.lines:
+            header.append("\n")
+            header.append("\n".join(entry.lines), style=FG)
+        self.update(header)
 
 
 __all__ = [
