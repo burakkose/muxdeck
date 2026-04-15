@@ -315,11 +315,19 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
 
 
 def run_app(config_path: str | Path | None = None) -> int:
+    # Configure logging so perf instrumentation output is visible
+    # when COMMANDER_LOG=1 or when Textual's console logging is active.
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
     config = load_config(config_path)
     runtime = build_runtime(config)
     try:
         CommanderApp(runtime).run()
     finally:
+        perf_log_summary(reset=True)
         runtime.store.close()
         if runtime.sync_store is not None:
             runtime.sync_store.close()
