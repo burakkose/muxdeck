@@ -178,6 +178,10 @@ class TmuxActionService:
             pane_id=intent.agent.pane_target,
         )
 
+    def execute_intents(self, intents: Sequence[AgentIntentView]) -> tuple[ActionResult, ...]:
+        """Execute multiple intents in order for bulk operations."""
+        return tuple(self.execute_intent(intent) for intent in intents)
+
     def resume_session(
         self,
         session_id: str,

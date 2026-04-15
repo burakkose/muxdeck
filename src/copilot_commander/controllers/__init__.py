@@ -24,6 +24,16 @@ from copilot_commander.controllers.dashboard_controller import (
     DashboardSortField,
     DashboardState,
 )
+from copilot_commander.controllers.operations_controller import (
+    OperationsAction,
+    OperationsActionPort,
+    OperationsActionPreview,
+    OperationsAgentPort,
+    OperationsController,
+    OperationsDashboardPort,
+    OperationsExecutionSummary,
+    OperationsState,
+)
 from copilot_commander.controllers.replay_controller import (
     ReplayController,
     ReplayExportIntent,
@@ -68,6 +78,14 @@ __all__ = [
     "DashboardSort",
     "DashboardSortField",
     "DashboardState",
+    "OperationsAction",
+    "OperationsActionPort",
+    "OperationsActionPreview",
+    "OperationsAgentPort",
+    "OperationsController",
+    "OperationsDashboardPort",
+    "OperationsExecutionSummary",
+    "OperationsState",
     "ReplayController",
     "ReplayExportIntent",
     "ReplayJumpMarkerView",
