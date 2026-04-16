@@ -35,6 +35,7 @@ class WorktreesScreen(ShellScreen):
         self._selected_worktree_id: str | None = None
         self._detail: WorktreeDetailView | None = None
         self._start_intent: WorktreeStartAgentIntent | None = None
+        self._detail_timer: object | None = None
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="worktrees-root"):  # noqa: SIM117
@@ -67,6 +68,7 @@ class WorktreesScreen(ShellScreen):
         self.query_one(WorktreeListPanel).set_worktrees(
             self._worktrees,
             selected_worktree_id=self._selected_worktree_id,
+            notify=False,
         )
         self.query_one(WorktreeDetailPanel).set_detail(self._detail)
         self.query_one(ConflictPanel).set_conflicts(
@@ -91,7 +93,23 @@ class WorktreesScreen(ShellScreen):
             return
         self._selected_worktree_id = message.worktree_id
         self._start_intent = None
-        self.refresh_data()
+        # Debounce: cancel pending detail load so rapid j/k doesn't
+        # stack blocking calls while the user holds arrow keys.
+        if self._detail_timer is not None:
+            self._detail_timer.stop()  # type: ignore[union-attr]
+        self._detail_timer = self.set_timer(0.05, self._update_selected_detail)
+
+    def _update_selected_detail(self) -> None:
+        """Update only the detail/conflict/intent panels for the current selection."""
+        self._detail = None
+        if self._selected_worktree_id is not None:
+            self._detail = self.runtime.worktrees.get_worktree_detail(self._selected_worktree_id)
+            self.commander_app.remember_worktree_selection(self._selected_worktree_id)
+        self.query_one(WorktreeDetailPanel).set_detail(self._detail)
+        self.query_one(ConflictPanel).set_conflicts(
+            () if self._detail is None else self._detail.conflicts
+        )
+        self.query_one(StartIntentPanel).set_intent(self._start_intent)
 
     def action_cursor_down(self) -> None:
         self.query_one(WorktreeListPanel).move_cursor(1)
