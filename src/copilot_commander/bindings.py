@@ -164,7 +164,7 @@ SESSIONS_BINDINGS: Final[list[BindingSpec]] = [
     Binding("k", "cursor_up", "Prev session", show=False),
     Binding("slash", "focus_filter", "Filter", show=False),
     Binding("escape", "escape_filter", "Back to list", show=False, priority=True),
-    Binding("r", "resume_session", "Resume", show=False),
+    Binding("R", "resume_session", "Resume", show=False),
     Binding("x", "toggle_completed", "Toggle completed", show=False),
     Binding("y", "copy_session_id", "Copy ID", show=False),
     Binding("p", "focus_pane", "Focus pane", show=False),
@@ -173,7 +173,7 @@ SESSIONS_BINDINGS: Final[list[BindingSpec]] = [
 SESSIONS_HINTS = (
     KeyHint("j/k", "move"),
     KeyHint("/", "filter"),
-    KeyHint("r", "resume"),
+    KeyHint("R", "resume"),
     KeyHint("x", "completed"),
     KeyHint("y", "copy ID"),
     KeyHint("p", "focus pane"),

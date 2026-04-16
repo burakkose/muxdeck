@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Input, ListView
+from textual.worker import Worker, WorkerState
 
 from copilot_commander.bindings import REPLAY_BINDINGS, REPLAY_HINTS
 from copilot_commander.controllers import ReplayStateView, ReplayTranscriptEntryView
@@ -88,7 +89,6 @@ class ReplayScreen(ShellScreen):
         # stays responsive.  A version token prevents stale results from
         # overwriting newer ones when the user types faster than the worker.
         self._load_version += 1
-        version = self._load_version
         session_id = resolved_session_id
         selected_index = self._selected_index
         filter_text = self._filter_text
@@ -104,26 +104,34 @@ class ReplayScreen(ShellScreen):
                 follow_latest=follow_latest,
             )
 
-        def _on_loaded(state: ReplayStateView) -> None:
-            if version != self._load_version:
-                return  # stale result — a newer request superseded this one
-            self._state = state
-            self._selected_index = state.selected_index
-            self.commander_app.remember_session_selection(session_id)
-            self._refresh_panels()
-            status = (
-                f"session {session_id} | "
-                f"{len(state.transcript)}/{state.total_entries} entries | "
-                f"{presentation} | follow {'on' if follow_latest else 'off'} | "
-                f"export {self._export_format}"
-            )
-            if not state.transcript and filter_text.strip():
-                status = f"no replay matches for {filter_text.strip()}"
-            self.set_status(status)
+        self.run_worker(_load, thread=True, exclusive=True, name="replay_load")
 
-        self.run_worker(_load, thread=True, exclusive=True).on_complete = lambda w: (
-            _on_loaded(w.result) if not w.is_cancelled and w.result is not None else None
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        if event.worker.name != "replay_load":
+            return
+        if event.state == WorkerState.ERROR:
+            self._state = None
+            self._refresh_panels()
+            self.set_status("replay load failed — no session data available")
+            return
+        if event.state != WorkerState.SUCCESS:
+            return
+        state: ReplayStateView = event.worker.result
+        self._state = state
+        self._selected_index = state.selected_index
+        session_id = self._session_id
+        if session_id is not None:
+            self.commander_app.remember_session_selection(session_id)
+        self._refresh_panels()
+        status = (
+            f"session {session_id} | "
+            f"{len(state.transcript)}/{state.total_entries} entries | "
+            f"{self._presentation} | follow {'on' if self._follow_latest else 'off'} | "
+            f"export {self._export_format}"
         )
+        if not state.transcript and self._filter_text.strip():
+            status = f"no replay matches for {self._filter_text.strip()}"
+        self.set_status(status)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "replay-filter-input":
