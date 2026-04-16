@@ -27,6 +27,7 @@ class ShellScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         yield TabBar(
             active=self.SCREEN_TITLE.lower(),
+            badges=getattr(self.app, "tab_badges", None),
             widget_id="shell-tab-bar",
         )
         with Vertical(id="shell-frame"):

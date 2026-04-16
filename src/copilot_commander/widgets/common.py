@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Final
 
@@ -91,18 +91,32 @@ _TAB_ITEMS: Final[tuple[tuple[str, str], ...]] = (
     ("3", "replay"),
     ("4", "sessions"),
     ("5", "setup"),
+    ("6", "attention"),
     ("?", "help"),
 )
+
+_BADGE_GLYPH: Final[str] = "⬤"
 
 
 class TabBar(Static):
     """Single-line tab bar — modern minimal branding."""
 
     active_tab = reactive("dashboard")
+    badges: reactive[Mapping[str, int]] = reactive[Mapping[str, int]]({})
 
-    def __init__(self, *, active: str = "dashboard", widget_id: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        active: str = "dashboard",
+        badges: Mapping[str, int] | None = None,
+        widget_id: str | None = None,
+    ) -> None:
         super().__init__(id=widget_id)
         self.active_tab = active
+        self.badges = dict(badges) if badges else {}
+
+    def set_badges(self, badges: Mapping[str, int]) -> None:
+        self.badges = dict(badges)
 
     def render(self) -> Text:
         bar = Text()
@@ -111,10 +125,13 @@ class TabBar(Static):
         bar.append("│ ", style=FG4)
         for key, label in _TAB_ITEMS:
             is_active = label.lower() == self.active_tab.lower()
+            badge_count = int(self.badges.get(label, 0))
             if is_active:
                 bar.append(f" {label} ", style=f"bold {FG} on {BLUE_DIM}")
             else:
                 bar.append(f" {key}·{label} ", style=FG4)
+            if badge_count > 0:
+                bar.append(f"{_BADGE_GLYPH}{badge_count} ", style=f"bold {RED}")
         return bar
 
 

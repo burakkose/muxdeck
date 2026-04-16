@@ -5,6 +5,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from textual.app import App
 from textual.driver import Driver
@@ -23,6 +24,7 @@ from copilot_commander.adapters.copilot_session_store import (
     CopilotSessionStore,
     SessionStoreRoot,
 )
+from copilot_commander.adapters.os_notifier import OsNotifier, detect_os_notifier
 from copilot_commander.adapters.pane_stream import PaneStreamAdapter
 from copilot_commander.adapters.subagent_reader import SubAgentReader
 from copilot_commander.adapters.windows_host import WindowsHostInfo, detect_windows_host
@@ -32,6 +34,7 @@ from copilot_commander.controllers import (
     AgentController,
     AttentionController,
     DashboardController,
+    DashboardFilterState,
     DashboardState,
     FleetController,
     OperationsController,
@@ -67,6 +70,8 @@ from copilot_commander.services import (
     WorktreeService,
 )
 from copilot_commander.services.action_service import TmuxActionService
+from copilot_commander.services.attention_service import AttentionNotification
+from copilot_commander.widgets.common import TabBar
 
 _log = logging.getLogger(__name__)
 
@@ -74,6 +79,22 @@ _SYNC_GROUP = "sync"
 _PERF_LOG_INTERVAL = 10  # log perf summary every N sync cycles
 _sync_cycle_count = 0
 _FALSEY_ENV_VALUES = frozenset({"", "0", "false", "no", "off"})
+
+
+_URGENCY_BY_SEVERITY: dict[str, str] = {
+    "error": "critical",
+    "warning": "normal",
+    "info": "low",
+}
+
+
+def _urgency_for(notification: AttentionNotification) -> Literal["low", "normal", "critical"]:
+    urgency = _URGENCY_BY_SEVERITY.get(notification.severity, "normal")
+    if urgency == "critical":
+        return "critical"
+    if urgency == "low":
+        return "low"
+    return "normal"
 
 
 def _command_logging_enabled() -> bool:
@@ -103,6 +124,7 @@ class CommanderRuntime:
     operations: OperationsController | None = None
     fleet: FleetController | None = None
     pane_stream: PaneStreamAdapter | None = None
+    notifier: OsNotifier | None = None
 
 
 def _get_tmux_safe_driver() -> type[Driver] | None:
@@ -148,6 +170,23 @@ class CommanderApp(App[None]):
         self._sync_in_progress: bool = False
         self._refresh_pending: bool = False
         self._manual_refresh: bool = False
+        self.tab_badges: dict[str, int] = {}
+
+    def set_tab_badge(self, name: str, count: int) -> None:
+        """Update the badge count for a tab and refresh any mounted TabBar."""
+        safe_count = max(0, int(count))
+        if self.tab_badges.get(name, 0) == safe_count:
+            return
+        if safe_count == 0:
+            self.tab_badges.pop(name, None)
+        else:
+            self.tab_badges[name] = safe_count
+        try:
+            screen = self.screen
+        except Exception:
+            return
+        for tab_bar in screen.query(TabBar):
+            tab_bar.set_badges(self.tab_badges)
 
     def on_mount(self) -> None:
         attention = getattr(self.runtime, "attention", None)
@@ -272,6 +311,7 @@ class CommanderApp(App[None]):
     class _SyncResult:
         report: RuntimeSyncReport
         dashboard_state: DashboardState | None = None
+        attention_dashboard_state: DashboardState | None = None
 
     def _run_sync(self) -> _SyncResult | None:
         synchronizer = self.runtime.synchronizer
@@ -285,11 +325,6 @@ class CommanderApp(App[None]):
             dashboard_state = None
             sync_dashboard = self.runtime.sync_dashboard
             if sync_dashboard is not None:
-                # The sync worker can fire before the first screen is
-                # pushed (or during transitions when the stack is
-                # momentarily empty). Accessing ``self.screen`` raises
-                # ScreenStackError in that case — skip the dashboard
-                # build rather than crashing the worker.
                 try:
                     screen = self.screen
                 except Exception:
@@ -304,9 +339,21 @@ class CommanderApp(App[None]):
                                 self.runtime.config.general.log_preview_lines, 24
                             ),
                         )
+            # Build an attention-filtered snapshot regardless of the active
+            # screen so OS notifications fire from any tab. Read-only
+            # against ``sync_store`` and safe to run in the worker.
+            attention_state = None
+            if sync_dashboard is not None and self.runtime.attention is not None:
+                with timed("sync.build_attention"):
+                    attention_state = sync_dashboard.build_state(
+                        filters=DashboardFilterState(attention_only=True, include_completed=True),
+                        alert_limit=20,
+                        preview_line_limit=1,
+                    )
             return CommanderApp._SyncResult(
                 report=report,
                 dashboard_state=dashboard_state,
+                attention_dashboard_state=attention_state,
             )
         except Exception:
             _log.exception("sync worker error")
@@ -324,6 +371,7 @@ class CommanderApp(App[None]):
                 self.last_sync_report = result.report
                 if result.dashboard_state is not None:
                     self.last_dashboard_state = result.dashboard_state
+                self._dispatch_attention_notifications(result.attention_dashboard_state)
             elif event.state == WorkerState.ERROR:
                 _log.warning("sync worker failed: %s", event.worker.error)
             with timed("ui.refresh_widgets"):
@@ -336,6 +384,21 @@ class CommanderApp(App[None]):
             if self._refresh_pending:
                 self._refresh_pending = False
                 self._refresh_current_screen()
+
+    def _dispatch_attention_notifications(self, attention_state: DashboardState | None) -> None:
+        attention = self.runtime.attention
+        if attention is None or attention_state is None:
+            return
+        notifications = attention.observe_dashboard_state(attention_state)
+        notifier = self.runtime.notifier
+        if notifier is not None:
+            for notification in notifications:
+                notifier.notify(
+                    notification.title,
+                    notification.message,
+                    _urgency_for(notification),
+                )
+        self.set_tab_badge("attention", attention.unread_count)
 
     def _refresh_screen_widgets(self, *, force: bool = False) -> None:
         screen = self.screen
@@ -481,6 +544,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         operations=operations,
         fleet=fleet,
         pane_stream=pane_stream_adapter,
+        notifier=detect_os_notifier(),
     )
 
 
