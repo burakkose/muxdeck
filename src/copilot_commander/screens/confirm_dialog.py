@@ -63,6 +63,9 @@ class ConfirmScreen(ModalScreen[bool]):
         ("escape", "cancel", "Cancel"),
         ("y", "confirm", "Yes"),
         ("n", "cancel", "No"),
+        ("left,h", "focus_no", "←No"),
+        ("right,l", "focus_yes", "→Yes"),
+        ("enter", "press_focused", "Select"),
     ]
 
     def __init__(self, message: str, title: str = "Confirm", **kwargs: object) -> None:
@@ -78,6 +81,9 @@ class ConfirmScreen(ModalScreen[bool]):
                 yield Button("No", id="btn-no", variant="default")
                 yield Button("Yes", id="btn-yes", variant="error")
 
+    def on_mount(self) -> None:
+        self.query_one("#btn-no", Button).focus()
+
     @on(Button.Pressed, "#btn-yes")
     def _on_yes(self) -> None:
         self.dismiss(True)
@@ -91,3 +97,14 @@ class ConfirmScreen(ModalScreen[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+    def action_focus_no(self) -> None:
+        self.query_one("#btn-no", Button).focus()
+
+    def action_focus_yes(self) -> None:
+        self.query_one("#btn-yes", Button).focus()
+
+    def action_press_focused(self) -> None:
+        focused = self.focused
+        if isinstance(focused, Button):
+            focused.press()
