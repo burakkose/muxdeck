@@ -514,3 +514,165 @@ class TestTaskToolEnrichment:
         assert snap.mode == "background"
         assert snap.result_content is not None
         assert "background" in snap.result_content.lower()
+
+
+class TestReadAgentInteractions:
+    """Background sub-agents stream their output back to the parent via
+    ``read_agent`` tool calls keyed by the task's ``name`` argument.
+    The reader must correlate those calls back to the launching
+    sub-agent so the detail view has something to render."""
+
+    def test_read_agent_calls_are_attached_to_matching_background_subagent(
+        self, tmp_path: Path
+    ) -> None:
+        session_dir = tmp_path / "sess-ra"
+        events = [
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:00:00Z",'
+                '"data":{"toolName":"task","toolCallId":"tc-task",'
+                '"arguments":{"name":"risk-reviewer","agent_type":"general-purpose",'
+                '"mode":"background","prompt":"assess risks"}}}'
+            ),
+            _started_event(tool_call_id="tc-task", timestamp="2026-01-01T00:00:01Z"),
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:01:00Z",'
+                '"data":{"toolName":"read_agent","toolCallId":"tc-read-1",'
+                '"arguments":{"agent_id":"risk-reviewer","wait":true,"timeout":15}}}'
+            ),
+            (
+                '{"type":"tool.execution_complete","timestamp":"2026-01-01T00:01:05Z",'
+                '"data":{"toolCallId":"tc-read-1","success":true,'
+                '"result":{"content":"progress so far","detailedContent":"long details"}}}'
+            ),
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:02:00Z",'
+                '"data":{"toolName":"read_agent","toolCallId":"tc-read-2",'
+                '"arguments":{"agent_id":"risk-reviewer","wait":false}}}'
+            ),
+            (
+                '{"type":"tool.execution_complete","timestamp":"2026-01-01T00:02:01Z",'
+                '"data":{"toolCallId":"tc-read-2","success":true,'
+                '"result":{"content":"final answer"}}}'
+            ),
+            # An unrelated read_agent for a different agent must not leak in.
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:03:00Z",'
+                '"data":{"toolName":"read_agent","toolCallId":"tc-read-other",'
+                '"arguments":{"agent_id":"some-other-agent"}}}'
+            ),
+            (
+                '{"type":"tool.execution_complete","timestamp":"2026-01-01T00:03:01Z",'
+                '"data":{"toolCallId":"tc-read-other","success":true,'
+                '"result":{"content":"elsewhere"}}}'
+            ),
+        ]
+        _write_events(session_dir, events)
+        reader = SubAgentReader(store=_FakeStore(session_state_dir=tmp_path))  # type: ignore[arg-type]
+
+        tree = reader.read("sess-ra")
+
+        assert tree is not None
+        snap = tree.running[0]
+        assert snap.task_name == "risk-reviewer"
+        # Interactions appear in observation order.
+        assert len(snap.read_interactions) == 2
+        first, second = snap.read_interactions
+        assert 'agent_id="risk-reviewer"' in first.arguments_summary
+        assert "wait=true" in first.arguments_summary
+        assert "timeout=15" in first.arguments_summary
+        # Detailed content wins over short content.
+        assert first.result_content == "long details"
+        assert "wait=false" in second.arguments_summary
+        assert second.result_content == "final answer"
+
+    def test_background_subagent_with_no_read_agent_calls_still_captures_metrics(
+        self, tmp_path: Path
+    ) -> None:
+        session_dir = tmp_path / "sess-metrics"
+        events = [
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:00:00Z",'
+                '"data":{"toolName":"task","toolCallId":"tc-m",'
+                '"arguments":{"name":"worker","agent_type":"general-purpose",'
+                '"mode":"background","prompt":"work"}}}'
+            ),
+            _started_event(tool_call_id="tc-m", timestamp="2026-01-01T00:00:01Z"),
+            (
+                '{"type":"subagent.completed","timestamp":"2026-01-01T00:02:05Z",'
+                '"data":{"toolCallId":"tc-m","agentName":"general-purpose",'
+                '"agentDisplayName":"General Purpose Agent",'
+                '"model":"claude-sonnet-4.5","totalTokens":133463,'
+                '"totalToolCalls":18,"durationMs":124335}}'
+            ),
+        ]
+        _write_events(session_dir, events)
+        reader = SubAgentReader(store=_FakeStore(session_state_dir=tmp_path))  # type: ignore[arg-type]
+
+        tree = reader.read("sess-metrics")
+
+        assert tree is not None
+        snap = tree.recent[0]
+        assert snap.read_interactions == ()
+        assert snap.total_tokens == 133463
+        assert snap.duration_ms == 124335
+        assert snap.total_tool_calls == 18
+        assert snap.model == "claude-sonnet-4.5"
+        assert snap.error_message is None
+
+    def test_subagent_failed_populates_error_message(self, tmp_path: Path) -> None:
+        session_dir = tmp_path / "sess-fail"
+        events = [
+            _started_event(tool_call_id="tc-f", timestamp="2026-01-01T00:00:01Z"),
+            (
+                '{"type":"subagent.failed","timestamp":"2026-01-01T00:00:30Z",'
+                '"data":{"toolCallId":"tc-f","agentName":"general-purpose",'
+                '"agentDisplayName":"General Purpose Agent",'
+                '"error":"AbortError: This operation was aborted"}}'
+            ),
+        ]
+        _write_events(session_dir, events)
+        reader = SubAgentReader(store=_FakeStore(session_state_dir=tmp_path))  # type: ignore[arg-type]
+
+        tree = reader.read("sess-fail")
+
+        assert tree is not None
+        snap = tree.recent[0]
+        assert snap.error_message is not None
+        assert "Abort" in snap.error_message
+        assert snap.success is False
+        # ``subagent.failed`` is also terminal — it must move the sub-agent
+        # out of the running bucket.
+        assert tree.running == ()
+
+    def test_foreground_subagent_has_no_read_interactions_and_keeps_result_content(
+        self, tmp_path: Path
+    ) -> None:
+        """Foreground tasks return output synchronously; they don't
+        produce read_agent calls and the existing result_content must
+        still round-trip intact."""
+        session_dir = tmp_path / "sess-fg"
+        events = [
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:00:00Z",'
+                '"data":{"toolName":"task","toolCallId":"tc-fg",'
+                '"arguments":{"name":"fg","agent_type":"explore","prompt":"look"}}}'
+            ),
+            _started_event(tool_call_id="tc-fg", timestamp="2026-01-01T00:00:01Z"),
+            _completed_event(tool_call_id="tc-fg", timestamp="2026-01-01T00:00:05Z"),
+            (
+                '{"type":"tool.execution_complete","timestamp":"2026-01-01T00:00:05Z",'
+                '"data":{"toolCallId":"tc-fg","success":true,'
+                '"result":{"content":"the answer"}}}'
+            ),
+        ]
+        _write_events(session_dir, events)
+        reader = SubAgentReader(store=_FakeStore(session_state_dir=tmp_path))  # type: ignore[arg-type]
+
+        tree = reader.read("sess-fg")
+
+        assert tree is not None
+        snap = tree.recent[0]
+        assert snap.read_interactions == ()
+        assert snap.result_content == "the answer"
+        assert snap.total_tokens is None
+        assert snap.error_message is None

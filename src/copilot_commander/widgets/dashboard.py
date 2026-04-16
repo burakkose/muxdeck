@@ -823,7 +823,16 @@ class AgentDetailPanel(Static):
         self.update(result)
 
     def set_subagent(self, subagent: DashboardSubAgentView | None) -> None:
-        """Render sub-agent focus: prompt (input) + result (output)."""
+        """Render sub-agent focus.
+
+        Background sub-agents don't have their own session directory:
+        the launch ack is a useless one-liner, and the real picture is
+        the read_agent interactions + terminal metrics the parent
+        records. For them we render a structured metrics-and-
+        interactions block. Everything else (foreground sub-agents,
+        ones we have no metrics for yet) keeps the prompt+result
+        rendering so we don't regress on the common case.
+        """
         result = Text()
         _section_header(result, "sub-agent detail")
         if subagent is None:
@@ -832,7 +841,7 @@ class AgentDetailPanel(Static):
             return
 
         is_running = subagent.is_running
-        is_failure = subagent.success is False
+        is_failure = subagent.success is False or subagent.error_message is not None
         glyph = "▶" if is_running else ("✗" if is_failure else "✓")
         glyph_color = AQUA if is_running else (SEVERITY_ERROR if is_failure else GREEN)
         status_label = "running" if is_running else ("failed" if is_failure else "completed")
@@ -843,6 +852,9 @@ class AgentDetailPanel(Static):
         result.append(name, style=f"bold {FG}")
         result.append("  ")
         result.append(status_label, style=status_style)
+        if subagent.mode:
+            result.append("  ")
+            result.append(f"[{subagent.mode}]", style=FG4)
         result.append("\n")
 
         if subagent.description:
@@ -856,6 +868,10 @@ class AgentDetailPanel(Static):
         _field_row(result, "id", subagent.tool_call_id[:16], FG4)
         _field_row(result, "duration", _format_subagent_duration(subagent), FG2)
 
+        has_structured = _has_structured_signals(subagent)
+        if has_structured:
+            _render_subagent_metrics(result, subagent)
+
         if subagent.prompt:
             result.append("\n")
             result.append("  input\n", style=f"bold {FG4}")
@@ -863,7 +879,9 @@ class AgentDetailPanel(Static):
             for line in snippet.splitlines() or [snippet]:
                 result.append(f"  {line}\n", style=FG2)
 
-        if subagent.result_content:
+        if has_structured:
+            _render_subagent_interactions(result, subagent)
+        elif subagent.result_content:
             result.append("\n")
             # For background agents the parent's "result" is only a
             # launch acknowledgement — the real agent output lives in
@@ -882,6 +900,73 @@ class AgentDetailPanel(Static):
                 result.append(f"  {line}\n", style=FG1)
 
         self.update(result)
+
+
+def _has_structured_signals(subagent: DashboardSubAgentView) -> bool:
+    """True when we have anything richer than the launch ack.
+
+    Metrics, an error, or observed read_agent interactions all count.
+    When none of these are present we fall back to the prompt+result
+    rendering — there's nothing new to show.
+    """
+    return bool(
+        subagent.read_interactions
+        or subagent.total_tokens is not None
+        or subagent.duration_ms is not None
+        or subagent.total_tool_calls is not None
+        or subagent.model
+        or subagent.error_message
+    )
+
+
+def _render_subagent_metrics(text: Text, subagent: DashboardSubAgentView) -> None:
+    if subagent.duration_ms is not None:
+        _field_row(text, "elapsed", _format_duration_ms(subagent.duration_ms), FG2)
+    if subagent.total_tokens is not None:
+        _field_row(text, "tokens", f"{subagent.total_tokens:,}", AQUA)
+    if subagent.total_tool_calls is not None:
+        _field_row(text, "tools", str(subagent.total_tool_calls), FG2)
+    if subagent.model:
+        _field_row(text, "model", subagent.model, PURPLE)
+    if subagent.error_message:
+        text.append("  error     ", style=FG4)
+        text.append(f"{_truncate(subagent.error_message, 400)}\n", style=SEVERITY_ERROR)
+
+
+def _render_subagent_interactions(text: Text, subagent: DashboardSubAgentView) -> None:
+    interactions = subagent.read_interactions
+    text.append("\n")
+    text.append(f"  interactions ({len(interactions)})\n", style=f"bold {FG4}")
+    if not interactions:
+        text.append("  —\n", style=FG4)
+        return
+    # Cap what we render so a runaway coordinator can't push everything
+    # else off-screen. The adapter already caps in-memory storage.
+    visible = interactions[-10:]
+    for interaction in visible:
+        ts = interaction.timestamp.astimezone(UTC).strftime("%H:%M:%S")
+        text.append("  ▸ ", style=AQUA)
+        text.append(ts, style=FG4)
+        text.append("  read_agent(", style=FG2)
+        text.append(interaction.arguments_summary, style=FG1)
+        text.append(")\n", style=FG2)
+        if interaction.result_content:
+            snippet = _truncate(interaction.result_content, 400)
+            lines = snippet.splitlines() or [snippet]
+            for line in lines[:4]:
+                text.append("      ", style=FG4)
+                text.append(f"{line}\n", style=FG2)
+
+
+def _format_duration_ms(duration_ms: int) -> str:
+    if duration_ms < 1000:
+        return f"{duration_ms}ms"
+    seconds = duration_ms / 1000
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes = int(seconds // 60)
+    remainder = int(seconds - minutes * 60)
+    return f"{minutes}m{remainder:02d}s"
 
 
 def _field_row(text: Text, label: str, value: str | None, style: str) -> None:

@@ -33,7 +33,11 @@ from pathlib import Path
 from typing import Protocol
 
 from copilot_commander.adapters.copilot_session_store import SessionStoreRoot
-from copilot_commander.domain.subagents import SubAgentSnapshot, SubAgentTree
+from copilot_commander.domain.subagents import (
+    ReadAgentInteraction,
+    SubAgentSnapshot,
+    SubAgentTree,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -52,6 +56,11 @@ class _SessionDirProvider(Protocol):
 
     @property
     def extra_roots(self) -> tuple[SessionStoreRoot, ...]: ...
+
+
+_MAX_READ_INTERACTIONS_PER_TASK = 50
+_READ_AGENT_RESULT_MAX_CHARS = 2000
+_READ_AGENT_ARGS_MAX_CHARS = 200
 
 
 @dataclass(slots=True)
@@ -75,6 +84,15 @@ class _StreamState:
     started: dict[str, SubAgentSnapshot]
     completed: list[SubAgentSnapshot]
     task_details: dict[str, _TaskDetails]
+    # Background sub-agents stream output back to the parent via a
+    # sequence of ``read_agent`` tool calls keyed by the task's ``name``
+    # argument. We resolve that name back to the task's tool call id so
+    # interactions land on the right sub-agent detail.
+    task_name_to_tcid: dict[str, str]
+    # ``tool.execution_start`` for ``read_agent`` races ahead of its
+    # ``tool.execution_complete``. Buffer the half-parsed interaction
+    # keyed by the read_agent tool call id until the result arrives.
+    pending_read_agents: dict[str, _PendingReadAgent]
     tree: SubAgentTree
 
 
@@ -138,6 +156,8 @@ class SubAgentReader:
                 started={},
                 completed=[],
                 task_details={},
+                task_name_to_tcid={},
+                pending_read_agents={},
                 tree=SubAgentTree(
                     session_id=session_id,
                     running=(),
@@ -211,6 +231,8 @@ class SubAgentReader:
                 started=state.started,
                 completed=state.completed,
                 task_details=state.task_details,
+                task_name_to_tcid=state.task_name_to_tcid,
+                pending_read_agents=state.pending_read_agents,
             )
 
     def _trim_completed(self, state: _StreamState) -> None:
@@ -278,6 +300,29 @@ class _TaskDetails:
     result_content: str | None = None
     result_detailed: str | None = None
     success: bool | None = None
+    # Populated from ``subagent.completed`` / ``subagent.failed``.
+    model: str | None = None
+    total_tokens: int | None = None
+    duration_ms: int | None = None
+    total_tool_calls: int | None = None
+    error_message: str | None = None
+    # Correlated ``read_agent`` interactions for background sub-agents.
+    read_interactions: list[ReadAgentInteraction] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class _PendingReadAgent:
+    """A ``read_agent`` call observed on ``tool.execution_start`` whose
+    completion event has not landed yet.
+
+    We need both halves to produce a :class:`ReadAgentInteraction`:
+    the start gives us the target ``agent_id`` and the wall-clock
+    timestamp, the completion gives us the textual result.
+    """
+
+    target_agent_id: str
+    timestamp: datetime
+    arguments_summary: str
 
 
 def _apply_event(
@@ -286,6 +331,8 @@ def _apply_event(
     started: dict[str, SubAgentSnapshot],
     completed: list[SubAgentSnapshot],
     task_details: dict[str, _TaskDetails],
+    task_name_to_tcid: dict[str, str],
+    pending_read_agents: dict[str, _PendingReadAgent],
 ) -> None:
     event_type = event.get("type")
     data = event.get("data")
@@ -293,15 +340,37 @@ def _apply_event(
         return
     # Enrichment side-channel: capture task tool prompt/result so the
     # sub-agent detail view has meaningful input and output.
-    if event_type == "tool.execution_start" and _as_str(data.get("toolName")) == "task":
-        tcid = _as_str(data.get("toolCallId"))
-        args = data.get("arguments")
-        if tcid and isinstance(args, dict):
-            detail = task_details.setdefault(tcid, _TaskDetails())
-            detail.task_name = _as_str(args.get("name"))
-            detail.agent_type = _as_str(args.get("agent_type"))
-            detail.prompt = _as_str(args.get("prompt"))
-            detail.mode = _as_str(args.get("mode"))
+    if event_type == "tool.execution_start":
+        tool_name = _as_str(data.get("toolName"))
+        if tool_name == "task":
+            tcid = _as_str(data.get("toolCallId"))
+            args = data.get("arguments")
+            if tcid and isinstance(args, dict):
+                detail = task_details.setdefault(tcid, _TaskDetails())
+                detail.task_name = _as_str(args.get("name"))
+                detail.agent_type = _as_str(args.get("agent_type"))
+                detail.prompt = _as_str(args.get("prompt"))
+                detail.mode = _as_str(args.get("mode"))
+                if detail.task_name is not None:
+                    task_name_to_tcid[detail.task_name] = tcid
+            return
+        if tool_name == "read_agent":
+            read_tcid = _as_str(data.get("toolCallId"))
+            args = data.get("arguments")
+            if not read_tcid or not isinstance(args, dict):
+                return
+            target = _as_str(args.get("agent_id"))
+            if target is None:
+                return
+            timestamp = _parse_iso(event.get("timestamp"))
+            if timestamp is None:
+                return
+            pending_read_agents[read_tcid] = _PendingReadAgent(
+                target_agent_id=target,
+                timestamp=timestamp,
+                arguments_summary=_summarise_read_agent_args(args),
+            )
+            return
         return
     # ``tool.execution_complete`` does not carry ``toolName`` in the
     # current CLI — match by ``toolCallId`` against the tasks we
@@ -310,7 +379,18 @@ def _apply_event(
     # view never had any output to show.
     if event_type == "tool.execution_complete":
         tcid = _as_str(data.get("toolCallId"))
-        if tcid and tcid in task_details:
+        if not tcid:
+            return
+        pending = pending_read_agents.pop(tcid, None)
+        if pending is not None:
+            _record_read_agent_completion(
+                pending,
+                data,
+                task_name_to_tcid=task_name_to_tcid,
+                task_details=task_details,
+            )
+            return
+        if tcid in task_details:
             detail = task_details[tcid]
             result = data.get("result")
             if isinstance(result, dict):
@@ -323,7 +403,7 @@ def _apply_event(
                 detail.success = success
         return
 
-    if event_type not in ("subagent.started", "subagent.completed"):
+    if event_type not in ("subagent.started", "subagent.completed", "subagent.failed"):
         return
     tool_call_id = data.get("toolCallId")
     if not isinstance(tool_call_id, str) or not tool_call_id:
@@ -346,7 +426,14 @@ def _apply_event(
         )
         return
 
-    # subagent.completed
+    # subagent.completed / subagent.failed — both terminal.
+    _record_terminal_metrics(
+        data,
+        task_details=task_details,
+        tool_call_id=tool_call_id,
+        failed=event_type == "subagent.failed",
+    )
+
     existing = started.pop(tool_call_id, None)
     if existing is None:
         agent_name = _as_str(data.get("agentName")) or "unknown"
@@ -374,6 +461,104 @@ def _apply_event(
     )
 
 
+def _record_terminal_metrics(
+    data: dict[str, object],
+    *,
+    task_details: dict[str, _TaskDetails],
+    tool_call_id: str,
+    failed: bool,
+) -> None:
+    """Copy metrics off a ``subagent.completed``/``subagent.failed`` event
+    onto the matching task's detail record."""
+    detail = task_details.setdefault(tool_call_id, _TaskDetails())
+    detail.model = _as_str(data.get("model")) or detail.model
+    total_tokens = _as_int(data.get("totalTokens"))
+    if total_tokens is not None:
+        detail.total_tokens = total_tokens
+    duration_ms = _as_int(data.get("durationMs"))
+    if duration_ms is not None:
+        detail.duration_ms = duration_ms
+    total_tool_calls = _as_int(data.get("totalToolCalls"))
+    if total_tool_calls is not None:
+        detail.total_tool_calls = total_tool_calls
+    if failed:
+        detail.success = False
+        error = _as_str(data.get("error"))
+        if error is not None:
+            detail.error_message = error
+
+
+def _record_read_agent_completion(
+    pending: _PendingReadAgent,
+    data: dict[str, object],
+    *,
+    task_name_to_tcid: dict[str, str],
+    task_details: dict[str, _TaskDetails],
+) -> None:
+    """Finalize a ``read_agent`` interaction and attach it to its task.
+
+    The task it belongs to is the one whose ``task_name`` matches the
+    ``agent_id`` the read_agent call was targeting — that is how the
+    parent addresses its background children.
+    """
+    task_tcid = task_name_to_tcid.get(pending.target_agent_id)
+    if task_tcid is None:
+        return
+    detail = task_details.setdefault(task_tcid, _TaskDetails())
+    result_content = _extract_read_agent_result(data.get("result"))
+    detail.read_interactions.append(
+        ReadAgentInteraction(
+            timestamp=pending.timestamp,
+            arguments_summary=pending.arguments_summary,
+            result_content=result_content,
+        )
+    )
+    if len(detail.read_interactions) > _MAX_READ_INTERACTIONS_PER_TASK:
+        # Keep the most recent window so long-running coordinators
+        # don't grow memory without bound.
+        del detail.read_interactions[:-_MAX_READ_INTERACTIONS_PER_TASK]
+
+
+def _extract_read_agent_result(result: object) -> str | None:
+    if isinstance(result, dict):
+        detailed = _as_str(result.get("detailedContent"))
+        content = _as_str(result.get("content"))
+        chosen = detailed or content
+    elif isinstance(result, str):
+        chosen = result or None
+    else:
+        chosen = None
+    if chosen is None:
+        return None
+    if len(chosen) > _READ_AGENT_RESULT_MAX_CHARS:
+        return chosen[: _READ_AGENT_RESULT_MAX_CHARS - 1].rstrip() + "…"
+    return chosen
+
+
+def _summarise_read_agent_args(args: dict[str, object]) -> str:
+    """Format read_agent arguments as a compact one-line summary.
+
+    We keep the shape close to the source (``agent_id=..., wait=...``)
+    so operators who know the CLI recognise it, but cap length so the
+    UI can render one-line entries without wrapping.
+    """
+    parts: list[str] = []
+    agent_id = _as_str(args.get("agent_id"))
+    if agent_id is not None:
+        parts.append(f'agent_id="{agent_id}"')
+    for key in ("wait", "timeout", "since_turn"):
+        if key in args:
+            raw = args[key]
+            if isinstance(raw, bool):
+                parts.append(f"{key}={'true' if raw else 'false'}")
+            elif isinstance(raw, int | float | str):
+                parts.append(f"{key}={raw}")
+    summary = ", ".join(parts)
+    if len(summary) > _READ_AGENT_ARGS_MAX_CHARS:
+        return summary[: _READ_AGENT_ARGS_MAX_CHARS - 1].rstrip() + "…"
+    return summary
+
+
 def _enrich(snapshot: SubAgentSnapshot, task_details: dict[str, _TaskDetails]) -> SubAgentSnapshot:
     detail = task_details.get(snapshot.tool_call_id)
     if detail is None:
@@ -391,6 +576,12 @@ def _enrich(snapshot: SubAgentSnapshot, task_details: dict[str, _TaskDetails]) -
         mode=detail.mode,
         result_content=detail.result_detailed or detail.result_content,
         success=detail.success,
+        read_interactions=tuple(detail.read_interactions),
+        total_tokens=detail.total_tokens,
+        duration_ms=detail.duration_ms,
+        total_tool_calls=detail.total_tool_calls,
+        model=detail.model,
+        error_message=detail.error_message,
     )
 
 
@@ -415,6 +606,16 @@ def _parse_iso(value: object) -> datetime | None:
 def _as_str(value: object) -> str | None:
     if isinstance(value, str) and value:
         return value
+    return None
+
+
+def _as_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
     return None
 
 
