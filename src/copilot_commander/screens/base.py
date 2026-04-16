@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
@@ -57,3 +58,22 @@ class ShellScreen(Screen[None]):
 
     def refresh_data(self) -> None:
         return
+
+    # ── loading indicator helpers ─────────────────────────────────────
+    # Textual's ``Widget.loading = True`` overlays a LoadingIndicator on
+    # the widget — the canonical way to signal "data is in flight" so
+    # screens never flash an empty list while a worker is running.
+
+    def begin_loading(self, *widgets: object) -> None:
+        """Mark one or more widgets as loading. Safe to call pre-mount."""
+        for widget in widgets:
+            # Widget may not be mounted yet or may not support the
+            # ``loading`` attribute on older Textual versions — the
+            # user just loses the spinner, not correctness.
+            with contextlib.suppress(Exception):
+                widget.loading = True  # type: ignore[attr-defined]
+
+    def end_loading(self, *widgets: object) -> None:
+        for widget in widgets:
+            with contextlib.suppress(Exception):
+                widget.loading = False  # type: ignore[attr-defined]
