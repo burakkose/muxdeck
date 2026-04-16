@@ -9,9 +9,10 @@ python3.14 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -e '.[dev]'
+python -m pre_commit install --hook-type pre-commit --hook-type pre-push
 ```
 
-Use Python 3.14 or newer, and run all project commands from the activated `.venv`.
+Use Python 3.14 or newer, and run all project commands from the activated `.venv`. CI and Copilot automation both run on Python 3.14.
 
 ## Run the app
 
@@ -34,6 +35,16 @@ Run the operator console from a tmux window when possible. If your panes live on
 - `5` switches to setup
 - `?` opens the in-app help screen
 
+## Worktrees usage
+
+- `j` / `k` move the worktree selection
+- `s` / `enter` preview an agent start intent for the selected worktree
+- `x` executes the current start intent
+- `c` creates a new worktree for the selected repository
+- `a` selects an existing worktree by path
+- `d` deletes the selected worktree
+- `P` prunes stale worktrees
+
 ## Discovery model
 
 - Discovery uses `tmux list-panes -a`, so it scans panes across **all windows** on the current tmux server, not just the current window.
@@ -44,12 +55,15 @@ Run the operator console from a tmux window when possible. If your panes live on
 ## Quality gates
 
 ```bash
+python -m pre_commit run --all-files
 python -m ruff check .
 python -m ruff format --check .
 python -m mypy .
-python -m pytest
+PYTHONPATH=src python -m pytest tests/ -q --tb=short
 copilot-commander
 ```
+
+Run `python -m pre_commit run --all-files` before opening a pull request to catch formatting and repository-hygiene issues locally. The pre-push hook runs `mypy` and `pytest` so new worktrees stay aligned with CI.
 
 ## Layout
 

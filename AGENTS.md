@@ -33,6 +33,7 @@ Build `copilot-commander` as a high-quality Python 3.14+ Textual TUI with strong
 - Prefer **one worktree per active task** when parallelizing work.
 - Keep worktrees clean: no mixed-purpose changes, no lingering generated files, no untracked scratch artifacts.
 - Before starting, confirm the task scope and avoid bleeding into adjacent todos.
+- After creating or switching to a worktree, install the repository hooks with `python -m pre_commit install --hook-type pre-commit --hook-type pre-push`.
 
 ## Implementation expectations
 
@@ -49,6 +50,7 @@ Build `copilot-commander` as a high-quality Python 3.14+ Textual TUI with strong
 
 - Run the relevant checks before finishing any code task.
 - Preferred validation stack, when configured:
+  - `python -m pre_commit run --all-files`
   - `python -m pytest`
   - `ruff check .`
   - `ruff format --check .`

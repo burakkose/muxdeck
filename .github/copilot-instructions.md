@@ -68,7 +68,9 @@ python -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
+python -m pre_commit install --hook-type pre-commit --hook-type pre-push
 python -m pytest
+python -m pre_commit run --all-files
 ruff check .
 ruff format --check .
 mypy .
