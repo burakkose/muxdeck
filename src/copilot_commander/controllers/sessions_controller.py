@@ -66,6 +66,26 @@ def _summary_for(session: CopilotLocalSession) -> str:
     return f"session {session.session_id[:8]}"
 
 
+def _resume_command_for(session: CopilotLocalSession) -> str:
+    """Shape of the resume invocation shown in the UI.
+
+    Windows-side sessions (started from ``pwsh`` on the Windows host)
+    cannot be resumed from the WSL shell directly, because the Copilot
+    CLI that owns them lives on the Windows ``PATH``. Surface an
+    explicit pwsh wrapper so copying the command from the UI still
+    works when someone pastes it into any tmux pane.
+    """
+    if session.origin == "windows":
+        if session.windows_cwd:
+            escaped = session.windows_cwd.replace("'", "''")
+            return (
+                f'pwsh.exe -NoExit -Command "Set-Location -LiteralPath '
+                f"'{escaped}'; copilot --resume={session.session_id}\""
+            )
+        return f'pwsh.exe -NoExit -Command "copilot --resume={session.session_id}"'
+    return f"copilot --resume={session.session_id}"
+
+
 def _status_glyph(status: str) -> str:
     return {
         "active": "🟢",
@@ -90,6 +110,7 @@ class SessionListItemView:
     last_event_type: str
     cwd: str
     is_resumable: bool
+    origin: str = "local"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +132,8 @@ class SessionDetailView:
     checkpoint_count: int
     is_resumable: bool
     resume_command: str
+    origin: str = "local"
+    windows_cwd: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,6 +204,7 @@ class SessionsController:
                     last_event_type=s.last_event_type or "—",
                     cwd=str(s.cwd) if s.cwd else "—",
                     is_resumable=not s.is_cleanly_closed or s.session_id in live_session_ids,
+                    origin=s.origin,
                 )
             )
 
@@ -195,8 +219,8 @@ class SessionsController:
                     summary=_summary_for(raw),
                     repository=raw.repository or "—",
                     branch=raw.branch or "—",
-                    cwd=str(raw.cwd) if raw.cwd else "—",
-                    git_root=str(raw.git_root) if raw.git_root else "—",
+                    cwd=(raw.windows_cwd or (str(raw.cwd) if raw.cwd else "—")),
+                    git_root=(raw.windows_git_root or (str(raw.git_root) if raw.git_root else "—")),
                     status=status,
                     status_glyph=_status_glyph(status),
                     created_at=_relative_time(raw.created_at),
@@ -205,7 +229,9 @@ class SessionsController:
                     last_event_at=_relative_time(raw.last_event_at),
                     checkpoint_count=raw.checkpoint_count,
                     is_resumable=not raw.is_cleanly_closed or raw.session_id in live_session_ids,
-                    resume_command=f"copilot --resume={raw.session_id}",
+                    resume_command=_resume_command_for(raw),
+                    origin=raw.origin,
+                    windows_cwd=raw.windows_cwd,
                 )
 
         return SessionsState(
@@ -235,8 +261,8 @@ class SessionsController:
             summary=_summary_for(raw),
             repository=raw.repository or "—",
             branch=raw.branch or "—",
-            cwd=str(raw.cwd) if raw.cwd else "—",
-            git_root=str(raw.git_root) if raw.git_root else "—",
+            cwd=(raw.windows_cwd or (str(raw.cwd) if raw.cwd else "—")),
+            git_root=(raw.windows_git_root or (str(raw.git_root) if raw.git_root else "—")),
             status=status,
             status_glyph=_status_glyph(status),
             created_at=_relative_time(raw.created_at),
@@ -245,7 +271,9 @@ class SessionsController:
             last_event_at=_relative_time(raw.last_event_at),
             checkpoint_count=raw.checkpoint_count,
             is_resumable=not raw.is_cleanly_closed or raw.session_id in live_session_ids,
-            resume_command=f"copilot --resume={raw.session_id}",
+            resume_command=_resume_command_for(raw),
+            origin=raw.origin,
+            windows_cwd=raw.windows_cwd,
         )
 
 

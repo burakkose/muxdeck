@@ -9,6 +9,7 @@ from stat import S_ISSOCK
 from typing import Literal
 
 from copilot_commander.adapters.tmux_adapter import TmuxAdapter, parse_tmux_socket_path
+from copilot_commander.adapters.windows_host import WindowsHostInfo
 from copilot_commander.exceptions import TmuxCommandError
 from copilot_commander.types import PathLike
 
@@ -42,6 +43,8 @@ class SetupDoctorReport:
     pane_count: int | None
     socket_options: tuple[TmuxSocketOption, ...]
     checks: tuple[SetupCheck, ...]
+    windows_host: WindowsHostInfo | None = None
+    windows_session_count: int | None = None
 
     @property
     def error_count(self) -> int:
@@ -71,12 +74,16 @@ class SetupDoctorService:
         env: Mapping[str, str] | None = None,
         clock: Callable[[], datetime] | None = None,
         socket_search_roots: tuple[Path, ...] | None = None,
+        windows_host_provider: Callable[[], WindowsHostInfo | None] | None = None,
+        windows_session_count_provider: Callable[[], int | None] | None = None,
     ) -> None:
         self._tmux = tmux
         self._configured_socket_path = configured_socket_path
         self._env = os.environ if env is None else env
         self._clock = clock or (lambda: datetime.now(UTC))
         self._socket_search_roots = socket_search_roots
+        self._windows_host_provider = windows_host_provider
+        self._windows_session_count_provider = windows_session_count_provider
 
     def build_report(self) -> SetupDoctorReport:
         selected_socket_path = self._tmux.socket_path
@@ -157,6 +164,18 @@ class SetupDoctorService:
                     )
                 )
 
+        windows_host: WindowsHostInfo | None = None
+        windows_session_count: int | None = None
+        if self._windows_host_provider is not None:
+            windows_host = self._windows_host_provider()
+            if windows_host is not None and windows_host.is_wsl:
+                checks.append(self._windows_host_check(windows_host))
+                if self._windows_session_count_provider is not None and windows_host.is_available:
+                    windows_session_count = self._windows_session_count_provider()
+                    checks.append(
+                        self._windows_session_count_check(windows_host, windows_session_count)
+                    )
+
         return SetupDoctorReport(
             generated_at=self._clock(),
             selected_socket_path=self._stringify_path(selected_socket_path),
@@ -166,11 +185,69 @@ class SetupDoctorService:
             pane_count=pane_count,
             socket_options=options,
             checks=tuple(checks),
+            windows_host=windows_host,
+            windows_session_count=windows_session_count,
         )
 
     def select_socket(self, socket_path: PathLike | None) -> SetupDoctorReport:
         self._tmux.set_socket_path(socket_path)
         return self.build_report()
+
+    def _windows_host_check(self, info: WindowsHostInfo) -> SetupCheck:
+        """Describe how the Windows-side ``.copilot`` directory was found."""
+        distro = f" ({info.distro})" if info.distro else ""
+        if info.session_state_dir is not None and info.is_available:
+            return SetupCheck(
+                key="windows-host",
+                status="ok",
+                title=f"WSL bridge{distro}",
+                detail=(
+                    f"scanning Windows session-state at {info.session_state_dir} "
+                    f"(resolved via {info.resolver})"
+                ),
+            )
+        if info.session_state_dir is not None:
+            return SetupCheck(
+                key="windows-host",
+                status="warning",
+                title=f"WSL bridge{distro}",
+                detail=(
+                    f"resolved Windows USERPROFILE via {info.resolver} but "
+                    f"{info.session_state_dir} is missing or not a directory"
+                ),
+            )
+        return SetupCheck(
+            key="windows-host",
+            status="warning",
+            title=f"WSL bridge{distro}",
+            detail=info.error or "WSL detected but no Windows session-state directory was resolved",
+        )
+
+    def _windows_session_count_check(
+        self,
+        info: WindowsHostInfo,
+        count: int | None,
+    ) -> SetupCheck:
+        if count is None:
+            return SetupCheck(
+                key="windows-sessions",
+                status="info",
+                title="Windows sessions",
+                detail="session count unavailable",
+            )
+        if count == 0:
+            return SetupCheck(
+                key="windows-sessions",
+                status="info",
+                title="Windows sessions",
+                detail=f"no Copilot sessions discovered under {info.session_state_dir}",
+            )
+        return SetupCheck(
+            key="windows-sessions",
+            status="ok",
+            title="Windows sessions",
+            detail=f"discovered {count} Copilot session(s) on the Windows side",
+        )
 
     def _attached_server_check(self, attached_socket_path: Path | None) -> SetupCheck:
         if attached_socket_path is None:

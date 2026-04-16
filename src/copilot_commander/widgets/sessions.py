@@ -115,10 +115,14 @@ class SessionListPanel(Static, can_focus=True):
 
             row_style = f"bold {FG}" if is_selected else FG4
             pointer = "▸" if is_selected else " "
+            summary_text = Text()
+            if item.origin == "windows":
+                summary_text.append("[win] ", style=f"bold {BLUE}")
+            summary_text.append(item.summary[:50], style=row_style)
 
             table.add_row(
                 Text(f"{pointer}{item.status_glyph}", style=row_style),
-                Text(item.summary[:50], style=row_style),
+                summary_text,
                 Text(item.repository, style=f"{AQUA}" if is_selected else FG4),
                 Text(item.branch[:20], style=f"{YELLOW}" if is_selected else FG4),
                 Text(item.updated, style=row_style),
@@ -145,6 +149,8 @@ class SessionDetailPanel(Static):
 
         content.append(f" {detail.status_glyph} {detail.status.upper()} ", style=f"bold {color}")
         content.append("  ")
+        if detail.origin == "windows":
+            content.append("[win] ", style=f"bold {BLUE}")
         content.append(detail.summary, style=f"bold {FG}")
         content.append("\n\n")
 

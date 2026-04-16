@@ -475,3 +475,57 @@ class TestStartAgent:
 
         assert result.success is True
         assert "my-agent" in result.message
+
+
+class TestResumeWindowsSession:
+    def test_local_session_uses_plain_copilot(self) -> None:
+        tmux = FakeTmux()
+        svc = TmuxActionService(tmux)
+
+        result = svc.resume_session("abc123", origin="local")
+
+        assert result.success is True
+        assert len(tmux.send_keys_calls) == 1
+        (sent,) = tmux.send_keys_calls[0].keys
+        assert sent == "copilot --resume=abc123"
+
+    def test_windows_session_wraps_in_pwsh_with_setlocation(self) -> None:
+        tmux = FakeTmux()
+        svc = TmuxActionService(tmux)
+
+        result = svc.resume_session(
+            "abc123",
+            origin="windows",
+            windows_cwd="C:\\Users\\alice\\proj",
+        )
+
+        assert result.success is True
+        (sent,) = tmux.send_keys_calls[0].keys
+        assert sent.startswith('pwsh.exe -NoExit -Command "')
+        assert "Set-Location -LiteralPath 'C:\\Users\\alice\\proj'" in sent
+        assert "copilot --resume=abc123" in sent
+
+    def test_windows_session_without_cwd_skips_setlocation(self) -> None:
+        tmux = FakeTmux()
+        svc = TmuxActionService(tmux)
+
+        result = svc.resume_session("abc123", origin="windows")
+
+        assert result.success is True
+        (sent,) = tmux.send_keys_calls[0].keys
+        assert "Set-Location" not in sent
+        assert "copilot --resume=abc123" in sent
+
+    def test_windows_session_escapes_single_quote(self) -> None:
+        tmux = FakeTmux()
+        svc = TmuxActionService(tmux)
+
+        svc.resume_session(
+            "abc123",
+            origin="windows",
+            windows_cwd="C:\\Users\\o'brien\\proj",
+        )
+
+        (sent,) = tmux.send_keys_calls[0].keys
+        # PowerShell single-quote escape doubles the quote.
+        assert "o''brien" in sent

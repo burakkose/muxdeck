@@ -1,7 +1,10 @@
 """Read-only adapter for Copilot CLI local session storage.
 
-Scans ``~/.copilot/session-state/`` to discover all local sessions and
-parse their workspace metadata and last-event status.
+Scans one or more ``.copilot/session-state/`` directories to discover
+local sessions. When muxdeck runs inside WSL the store is pointed at
+both the Linux home and the Windows-side ``%USERPROFILE%\\.copilot\\
+session-state`` directory so sessions started from ``pwsh`` are
+visible alongside WSL-native ones.
 """
 
 from __future__ import annotations
@@ -9,15 +12,19 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 _log = logging.getLogger(__name__)
 
 _DEFAULT_SESSION_DIR = Path.home() / ".copilot" / "session-state"
 
 _CLEANLY_CLOSED_EVENTS = frozenset({"session.shutdown"})
+
+SessionOrigin = Literal["local", "windows"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +43,20 @@ class CopilotLocalSession:
     last_event_at: datetime | None = None
     checkpoint_count: int = 0
     is_cleanly_closed: bool = False
+    origin: SessionOrigin = "local"
+    # Verbatim Windows-style paths (``C:\Users\...``) preserved from
+    # ``workspace.yaml`` so the resume command can hand them to pwsh
+    # without re-translating from the WSL mount.
+    windows_cwd: str | None = None
+    windows_git_root: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionStoreRoot:
+    """A directory to scan and the origin tag to stamp on its sessions."""
+
+    path: Path
+    origin: SessionOrigin = "local"
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -109,7 +130,16 @@ def _count_checkpoints(session_dir: Path) -> int:
     return sum(1 for f in cp_dir.iterdir() if f.suffix == ".md" and f.name != "index.md")
 
 
-def _parse_session_dir(session_dir: Path) -> CopilotLocalSession | None:
+def _is_windows_style_path(value: str) -> bool:
+    """Heuristic: drive-letter absolute paths like ``C:\\foo`` or ``C:/foo``."""
+    return len(value) >= 3 and value[1:3] in (":\\", ":/")
+
+
+def _parse_session_dir(
+    session_dir: Path,
+    *,
+    origin: SessionOrigin = "local",
+) -> CopilotLocalSession | None:
     """Parse a single session directory into a CopilotLocalSession."""
     workspace_path = session_dir / "workspace.yaml"
     if not workspace_path.exists():
@@ -120,6 +150,17 @@ def _parse_session_dir(session_dir: Path) -> CopilotLocalSession | None:
 
     cwd_str = ws.get("cwd")
     git_root_str = ws.get("git_root")
+
+    # Windows sessions persist ``cwd`` in native form (``C:\Users\...``).
+    # Preserve the raw strings so resume can feed them back to pwsh,
+    # while still building a ``Path`` for POSIX-side consumers.
+    windows_cwd: str | None = None
+    windows_git_root: str | None = None
+    if origin == "windows":
+        if cwd_str and _is_windows_style_path(cwd_str):
+            windows_cwd = cwd_str
+        if git_root_str and _is_windows_style_path(git_root_str):
+            windows_git_root = git_root_str
 
     # Parse last event
     events_path = session_dir / "events.jsonl"
@@ -147,6 +188,9 @@ def _parse_session_dir(session_dir: Path) -> CopilotLocalSession | None:
         last_event_at=last_event_at,
         checkpoint_count=_count_checkpoints(session_dir),
         is_cleanly_closed=is_closed,
+        origin=origin,
+        windows_cwd=windows_cwd,
+        windows_git_root=windows_git_root,
     )
 
 
@@ -154,12 +198,16 @@ def _parse_session_dir(session_dir: Path) -> CopilotLocalSession | None:
 class CopilotSessionStore:
     """Cached, read-only store for local Copilot CLI sessions.
 
-    Scans ``~/.copilot/session-state/`` and caches results with a TTL.
+    Scans one or more ``.copilot/session-state/`` roots and caches
+    results with a TTL. In WSL the second root typically points at the
+    Windows-side session-state directory so ``pwsh``-launched sessions
+    are visible next to WSL-native ones.
     """
 
     session_state_dir: Path = field(default_factory=lambda: _DEFAULT_SESSION_DIR)
     max_age_days: int = 60
     cache_ttl_sec: float = 30.0
+    extra_roots: tuple[SessionStoreRoot, ...] = ()
 
     _cache: list[CopilotLocalSession] = field(default_factory=list, init=False, repr=False)
     _cache_time: float = field(default=0.0, init=False, repr=False)
@@ -173,6 +221,12 @@ class CopilotSessionStore:
         self._cache_time = now
         return list(self._cache)
 
+    def set_extra_roots(self, roots: Sequence[SessionStoreRoot]) -> None:
+        """Replace the secondary roots and invalidate the cache."""
+        self.extra_roots = tuple(roots)
+        self._cache = []
+        self._cache_time = 0.0
+
     def get_session(self, session_id: str) -> CopilotLocalSession | None:
         """Look up a single session by ID."""
         for s in self.discover():
@@ -180,33 +234,76 @@ class CopilotSessionStore:
                 return s
         return None
 
-    def _scan(self) -> list[CopilotLocalSession]:
-        if not self.session_state_dir.is_dir():
-            _log.debug("session state dir does not exist: %s", self.session_state_dir)
-            return []
+    def count_by_origin(self, origin: SessionOrigin) -> int:
+        """Count cached (or freshly-scanned) sessions for a given origin."""
+        return sum(1 for s in self.discover() if s.origin == origin)
 
+    def _iter_roots(self) -> list[SessionStoreRoot]:
+        roots: list[SessionStoreRoot] = [SessionStoreRoot(self.session_state_dir, "local")]
+        seen: set[Path] = set()
+        for root in roots:
+            seen.add(root.path)
+        for extra in self.extra_roots:
+            if extra.path in seen:
+                continue
+            seen.add(extra.path)
+            roots.append(extra)
+        return roots
+
+    def _scan(self) -> list[CopilotLocalSession]:
         cutoff: datetime | None = None
         if self.max_age_days > 0:
-            cutoff = datetime.now(UTC) - __import__("datetime").timedelta(days=self.max_age_days)
+            from datetime import timedelta
+
+            cutoff = datetime.now(UTC) - timedelta(days=self.max_age_days)
+
+        sessions: list[CopilotLocalSession] = []
+        for root in self._iter_roots():
+            sessions.extend(self._scan_root(root, cutoff=cutoff))
+
+        # Deduplicate by session_id — the local root wins when the same
+        # id shows up on both sides (shouldn't happen, but be defensive
+        # against mounted paths overlapping).
+        by_id: dict[str, CopilotLocalSession] = {}
+        for session in sessions:
+            existing = by_id.get(session.session_id)
+            if existing is None or (existing.origin == "windows" and session.origin == "local"):
+                by_id[session.session_id] = session
+        deduped = list(by_id.values())
+
+        deduped.sort(
+            key=lambda s: s.updated_at or s.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        return deduped
+
+    def _scan_root(
+        self,
+        root: SessionStoreRoot,
+        *,
+        cutoff: datetime | None,
+    ) -> list[CopilotLocalSession]:
+        if not root.path.is_dir():
+            _log.debug("session state dir does not exist: %s", root.path)
+            return []
 
         sessions: list[CopilotLocalSession] = []
         try:
-            entries = list(self.session_state_dir.iterdir())
+            entries = list(root.path.iterdir())
         except OSError:
-            _log.warning("failed to list session state dir: %s", self.session_state_dir)
+            _log.warning("failed to list session state dir: %s", root.path)
             return []
 
         for entry in entries:
             if not entry.is_dir():
                 continue
             try:
-                session = _parse_session_dir(entry)
+                session = _parse_session_dir(entry, origin=root.origin)
             except Exception:
                 _log.debug("failed to parse session dir: %s", entry.name, exc_info=True)
                 continue
             if session is None:
                 continue
-            # Filter by age
             if (
                 cutoff is not None
                 and session.updated_at is not None
@@ -214,13 +311,12 @@ class CopilotSessionStore:
             ):
                 continue
             sessions.append(session)
-
-        # Sort by updated_at desc (most recent first)
-        sessions.sort(
-            key=lambda s: s.updated_at or s.created_at or datetime.min.replace(tzinfo=UTC),
-            reverse=True,
-        )
         return sessions
 
 
-__all__ = ["CopilotLocalSession", "CopilotSessionStore"]
+__all__ = [
+    "CopilotLocalSession",
+    "CopilotSessionStore",
+    "SessionOrigin",
+    "SessionStoreRoot",
+]

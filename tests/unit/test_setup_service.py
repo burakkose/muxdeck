@@ -146,3 +146,92 @@ class SetupDoctorServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SetupDoctorWindowsHostTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_root = Path(tempfile.mkdtemp(prefix="setup-windows-"))
+        self.addCleanup(lambda: shutil.rmtree(self.temp_root, ignore_errors=True))
+
+    def _build_service(
+        self,
+        *,
+        windows_host: object,
+        windows_count: int | None = None,
+    ) -> SetupDoctorService:
+        tmux = _FakeTmux(
+            panes=(
+                TmuxPaneRecord(
+                    session_name="main",
+                    window_id="@1",
+                    window_name="win",
+                    pane_id="%1",
+                    pane_current_command="bash",
+                    pane_current_path="/home",
+                    pane_pid=1,
+                    pane_active=True,
+                    window_active=True,
+                ),
+            ),
+            socket_path=None,
+        )
+        return SetupDoctorService(
+            tmux,  # type: ignore[arg-type]
+            env={"TMUX": ""},
+            clock=lambda: datetime(2026, 4, 16, tzinfo=UTC),
+            socket_search_roots=(),
+            windows_host_provider=lambda: windows_host,  # type: ignore[arg-type,return-value]
+            windows_session_count_provider=lambda: windows_count,
+        )
+
+    def test_non_wsl_adds_no_windows_checks(self) -> None:
+        from copilot_commander.adapters.windows_host import WindowsHostInfo
+
+        service = self._build_service(windows_host=WindowsHostInfo(is_wsl=False))
+        report = service.build_report()
+
+        keys = {c.key for c in report.checks}
+        self.assertNotIn("windows-host", keys)
+        self.assertNotIn("windows-sessions", keys)
+        self.assertIsNone(report.windows_session_count)
+
+    def test_wsl_with_available_host_reports_ok_and_count(self) -> None:
+        from copilot_commander.adapters.windows_host import WindowsHostInfo
+
+        target = self.temp_root / "session-state"
+        target.mkdir(parents=True)
+        info = WindowsHostInfo(
+            is_wsl=True,
+            distro="Ubuntu",
+            windows_userprofile="C:\\Users\\alice",
+            session_state_dir=target,
+            resolver="wslvar",
+        )
+        service = self._build_service(windows_host=info, windows_count=3)
+        report = service.build_report()
+
+        by_key = {c.key: c for c in report.checks}
+        self.assertEqual(by_key["windows-host"].status, "ok")
+        self.assertIn(str(target), by_key["windows-host"].detail)
+        self.assertIn("wslvar", by_key["windows-host"].detail)
+        self.assertEqual(by_key["windows-sessions"].status, "ok")
+        self.assertIn("3 Copilot session", by_key["windows-sessions"].detail)
+        self.assertEqual(report.windows_session_count, 3)
+
+    def test_wsl_without_resolved_dir_surfaces_warning(self) -> None:
+        from copilot_commander.adapters.windows_host import WindowsHostInfo
+
+        info = WindowsHostInfo(
+            is_wsl=True,
+            distro="Ubuntu",
+            resolver="none",
+            error="wslu not installed",
+        )
+        service = self._build_service(windows_host=info)
+        report = service.build_report()
+
+        by_key = {c.key: c for c in report.checks}
+        self.assertEqual(by_key["windows-host"].status, "warning")
+        self.assertIn("wslu", by_key["windows-host"].detail)
+        # No count check when dir is unavailable.
+        self.assertNotIn("windows-sessions", by_key)
