@@ -165,6 +165,8 @@ class SessionsScreen(ShellScreen):
             session.session_id,
             cwd=session.cwd or session.git_root,
             window_name=f"copilot-{(session.summary or session.session_id)[:20]}",
+            origin=session.origin,
+            windows_cwd=session.windows_cwd,
         )
         if result.success:
             self.set_status(f"✓ {result.message}")

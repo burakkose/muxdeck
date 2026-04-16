@@ -253,21 +253,39 @@ class TmuxActionService:
         *,
         cwd: Path | None = None,
         window_name: str | None = None,
+        origin: str = "local",
+        windows_cwd: str | None = None,
+        pwsh_binary: str = "pwsh.exe",
     ) -> ActionResult:
         """Resume a Copilot CLI session in a new tmux window.
 
         Creates a detached window and runs ``copilot --resume=<session_id>``
         so the session appears alongside existing panes.
+
+        When ``origin`` is ``"windows"`` the session was created on the
+        Windows side of WSL, so we wrap the resume in ``pwsh`` and use
+        the original Windows-style ``cwd`` the CLI persisted. The tmux
+        window still starts in the WSL directory (or ``None``) because
+        PowerShell's own ``Set-Location`` handles the Windows path.
         """
-        cmd = f"copilot --resume={session_id}"
         name = window_name or f"copilot-{session_id[:8]}"
+        if origin == "windows":
+            keys = self._build_windows_resume_keys(
+                session_id=session_id,
+                windows_cwd=windows_cwd,
+                pwsh_binary=pwsh_binary,
+            )
+            start_directory: Path | None = None
+        else:
+            keys = [f"copilot --resume={session_id}"]
+            start_directory = cwd
         try:
             meta = self._tmux.new_window(
                 window_name=name,
-                start_directory=cwd,
+                start_directory=start_directory,
                 detached=True,
             )
-            self._tmux.send_keys(meta.pane_id, [cmd], literal=True, append_enter=True)
+            self._tmux.send_keys(meta.pane_id, keys, literal=True, append_enter=True)
             return ActionResult(
                 success=True,
                 message=f"resumed session {session_id[:8]}… in {meta.pane_id}",
@@ -278,6 +296,31 @@ class TmuxActionService:
                 success=False,
                 message=f"failed to resume: {exc}",
             )
+
+    @staticmethod
+    def _build_windows_resume_keys(
+        *,
+        session_id: str,
+        windows_cwd: str | None,
+        pwsh_binary: str,
+    ) -> list[str]:
+        """Assemble the key sequence that starts pwsh + resumes copilot.
+
+        We run a single ``pwsh -NoExit -Command "..."`` invocation so the
+        pane keeps the interactive PowerShell prompt after the CLI exits,
+        which matches the user's existing workflow of running ``pwsh``
+        then ``copilot`` manually.
+        """
+        script_parts: list[str] = []
+        if windows_cwd:
+            # PowerShell accepts forward or back slashes; quote the path
+            # to survive spaces. Single quotes keep it literal so ``$``
+            # or backticks inside the path aren't expanded.
+            escaped = windows_cwd.replace("'", "''")
+            script_parts.append(f"Set-Location -LiteralPath '{escaped}'")
+        script_parts.append(f"copilot --resume={session_id}")
+        script = "; ".join(script_parts)
+        return [f'{pwsh_binary} -NoExit -Command "{script}"']
 
     def start_agent(
         self,

@@ -17,7 +17,11 @@ from copilot_commander.adapters import (
     SQLiteStore,
     TmuxAdapter,
 )
-from copilot_commander.adapters.copilot_session_store import CopilotSessionStore
+from copilot_commander.adapters.copilot_session_store import (
+    CopilotSessionStore,
+    SessionStoreRoot,
+)
+from copilot_commander.adapters.windows_host import WindowsHostInfo, detect_windows_host
 from copilot_commander.bindings import GLOBAL_BINDINGS
 from copilot_commander.config import AppConfig, load_config
 from copilot_commander.controllers import (
@@ -400,6 +404,14 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         session_contexts=sync_store,
     )
     copilot_session_store = CopilotSessionStore()
+    # WSL users launch some agents through pwsh.exe, which stores its
+    # session state under the Windows %USERPROFILE%. Bridge that here so
+    # both roots feed the same Sessions screen and Setup diagnostics.
+    windows_host: WindowsHostInfo = detect_windows_host(env=os.environ)
+    if windows_host.is_available and windows_host.session_state_dir is not None:
+        copilot_session_store.set_extra_roots(
+            [SessionStoreRoot(windows_host.session_state_dir, "windows")]
+        )
     sessions_ctrl = SessionsController(copilot_session_store)
     dashboard = DashboardController(store)
     agent_controller = AgentController(store, sessions)
@@ -435,6 +447,8 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         setup=SetupDoctorService(
             tmux_adapter,
             configured_socket_path=resolved_config.tmux.socket_path,
+            windows_host_provider=lambda: windows_host,
+            windows_session_count_provider=lambda: copilot_session_store.count_by_origin("windows"),
         ),
         attention=attention,
         operations=operations,
