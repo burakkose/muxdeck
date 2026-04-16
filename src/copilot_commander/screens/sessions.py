@@ -77,9 +77,17 @@ class SessionsScreen(ShellScreen):
             return
 
         # Keep showing the previous state until the worker finishes so
-        # the screen never flashes blank on refresh.
-        if self._state is None and not self._loading:
+        # the screen never flashes blank on refresh. On first load
+        # (_state is None) paint a loading indicator on the list +
+        # detail panels so the user sees progress instead of an empty
+        # shell.
+        first_load = self._state is None
+        if first_load and not self._loading:
             self.set_status("loading sessions…")
+            self.begin_loading(
+                self.query_one(SessionListPanel),
+                self.query_one(SessionDetailPanel),
+            )
 
         selected_id = self._selected_session_id
         filter_text = self._filter_text
@@ -94,9 +102,7 @@ class SessionsScreen(ShellScreen):
             live_ids: frozenset[str] = frozenset()
             try:
                 agents = store.list_agents()
-                live_ids = frozenset(
-                    a.copilot_session_id for a in agents if a.copilot_session_id
-                )
+                live_ids = frozenset(a.copilot_session_id for a in agents if a.copilot_session_id)
             except Exception:
                 pass
             return sessions_ctrl.build_state(
@@ -114,11 +120,19 @@ class SessionsScreen(ShellScreen):
             return
         if event.state == WorkerState.ERROR:
             self._loading = False
+            self.end_loading(
+                self.query_one(SessionListPanel),
+                self.query_one(SessionDetailPanel),
+            )
             self.set_status("session load failed")
             return
         if event.state != WorkerState.SUCCESS:
             return
         self._loading = False
+        self.end_loading(
+            self.query_one(SessionListPanel),
+            self.query_one(SessionDetailPanel),
+        )
         state = event.worker.result
         if state is None:
             return
@@ -144,9 +158,7 @@ class SessionsScreen(ShellScreen):
             state.unclosed_count,
             state.completed_count,
         )
-        self.set_status(
-            f"{state.total_count} sessions · {state.active_count} active"
-        )
+        self.set_status(f"{state.total_count} sessions · {state.active_count} active")
 
     def on_session_selected(self, event: SessionSelected) -> None:
         if event.session_id == self._selected_session_id:

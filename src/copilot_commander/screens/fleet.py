@@ -81,8 +81,14 @@ class FleetScreen(ShellScreen):
         if controller is None:
             self.set_status("fleet controller unavailable")
             return
-        if self._state is None and not self._loading:
+        first_load = self._state is None
+        if first_load and not self._loading:
             self.set_status("loading fleet…")
+            self.begin_loading(
+                self.query_one(FleetGroupsPanel),
+                self.query_one(FleetResourcesPanel),
+                self.query_one(FleetHistoryPanel),
+            )
         filters = self._filters
 
         def _load() -> FleetState:
@@ -96,11 +102,21 @@ class FleetScreen(ShellScreen):
             return
         if event.state == WorkerState.ERROR:
             self._loading = False
+            self.end_loading(
+                self.query_one(FleetGroupsPanel),
+                self.query_one(FleetResourcesPanel),
+                self.query_one(FleetHistoryPanel),
+            )
             self.set_status("fleet load failed")
             return
         if event.state != WorkerState.SUCCESS:
             return
         self._loading = False
+        self.end_loading(
+            self.query_one(FleetGroupsPanel),
+            self.query_one(FleetResourcesPanel),
+            self.query_one(FleetHistoryPanel),
+        )
         state = event.worker.result
         if state is None:
             return
@@ -111,9 +127,7 @@ class FleetScreen(ShellScreen):
         self.query_one(FleetSummaryBar).set_state(state)
         self.query_one(FleetGroupsPanel).set_groups(state.groups)
         self.query_one(FleetResourcesPanel).set_resources(state.resources)
-        self.query_one(FleetHistoryPanel).set_history(
-            state.history_metrics, state.recent_activity
-        )
+        self.query_one(FleetHistoryPanel).set_history(state.history_metrics, state.recent_activity)
         self.query_one(FleetSearchPanel).set_search(
             query=self._filters.normalized_query(),
             helpers=state.search_helpers,
