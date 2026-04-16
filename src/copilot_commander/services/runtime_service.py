@@ -14,6 +14,7 @@ from copilot_commander.exceptions import GitCommandError, TmuxCommandError
 from copilot_commander.perf import timed
 from copilot_commander.services.discovery_service import PaneDiscovery, PaneDiscoveryReport
 from copilot_commander.services.monitoring_service import MonitoringDiscovery, MonitoringReport
+from copilot_commander.services.subtask_registry import SubTaskRegistry
 from copilot_commander.types import Clock
 
 _log = logging.getLogger(__name__)
@@ -125,6 +126,7 @@ class RuntimeSynchronizer:
         *,
         agent_store: RuntimeAgentStore | None = None,
         worktree_sync: RuntimeWorktreeSyncPort | None = None,
+        subtask_registry: SubTaskRegistry | None = None,
         dead_grace_period_sec: int = 10,
         clock: Clock = utc_now,
     ) -> None:
@@ -133,6 +135,7 @@ class RuntimeSynchronizer:
         self._git = git
         self._agent_store = agent_store
         self._worktree_sync = worktree_sync
+        self._subtask_registry = subtask_registry
         self._dead_grace_period_sec = dead_grace_period_sec
         self._clock = clock
 
@@ -173,6 +176,7 @@ class RuntimeSynchronizer:
             )
         self._reap_stale_agents(refreshed_report, warnings=warnings)
         self._sync_worktrees(git_context_cache, warnings=warnings)
+        self._update_subtasks(refreshed_report)
         return RuntimeSyncReport(
             discovery_report=refreshed_report,
             monitoring_report=monitoring_report,
@@ -260,6 +264,23 @@ class RuntimeSynchronizer:
         except Exception:
             _log.exception("worktree sync failed")
             warnings.append(RuntimeSyncWarning(message="worktree sync failed"))
+
+    def _update_subtasks(self, report: PaneDiscoveryReport) -> None:
+        """Feed task evidence from discovered panes into the subtask registry."""
+        if self._subtask_registry is None:
+            return
+        for pane in report.panes:
+            evidence = pane.session_evidence
+            if evidence is None:
+                continue
+            bg_count = getattr(evidence, "background_task_count", 0)
+            task_ev = getattr(evidence, "task_evidence", ())
+            self._subtask_registry.update(
+                pane.snapshot.pane_id,
+                task_ev,
+                bg_count,
+            )
+        self._subtask_registry.expire_all()
 
     def _enrich_discovery(
         self,

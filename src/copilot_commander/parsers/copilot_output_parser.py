@@ -304,6 +304,89 @@ class CopilotActivityMarker:
     span: CopilotEvidenceSpan
 
 
+# ── Sub-task / background-agent evidence ────────────────────────────
+
+TaskStatus = Literal["running", "completed", "idle", "failed", "cancelled"]
+
+_TASK_COUNT_PATTERN = re.compile(r"(\d+)\s+background\s+/tasks?", re.IGNORECASE)
+_TASK_RUNNING_PATTERN = re.compile(r"\u25cf\s+(\S+)\(([^)]+)\)\s+(.+)")
+_TASK_COMPLETED_PATTERN = re.compile(
+    r'\u25cf\s+Background\s+agent\s+"([^"]+)"\s+\((\w[\w-]*)\)\s+completed\.',
+    re.IGNORECASE,
+)
+_TASK_IDLE_PATTERN = re.compile(
+    r'\u25cf\s+Background\s+agent\s+"([^"]+)"\s+\((\w[\w-]*)\)\s+is\s+idle',
+    re.IGNORECASE,
+)
+_TASK_BG_NUMBER_PATTERN = re.compile(r"(\d+)\s+backg")
+
+
+@dataclass(frozen=True, slots=True)
+class CopilotTaskEvidence:
+    """Evidence of a single background task/sub-agent."""
+
+    agent_type_label: str
+    model: str | None
+    description: str
+    status: TaskStatus
+
+
+def _detect_task_count_wrapped(output: str) -> int:
+    """Detect background task count even when status bar is line-wrapped."""
+    m = _TASK_COUNT_PATTERN.search(output)
+    if m is not None:
+        return int(m.group(1))
+    lines = output.splitlines()
+    for i, line in enumerate(lines):
+        num_match = _TASK_BG_NUMBER_PATTERN.search(line)
+        if num_match is None:
+            continue
+        window = "\n".join(lines[i : i + 4])
+        if re.search(r"/tasks?\b", window, re.IGNORECASE):
+            return int(num_match.group(1))
+    return 0
+
+
+def _parse_task_evidence(
+    output: str,
+) -> tuple[int, tuple[CopilotTaskEvidence, ...]]:
+    """Parse background task count and individual task evidence."""
+    background_task_count = _detect_task_count_wrapped(output)
+    tasks: list[CopilotTaskEvidence] = []
+    tail = output[-4000:] if len(output) > 4000 else output
+    tail_lines = tail.splitlines()[-80:]
+    search_block = "\n".join(tail_lines)
+
+    for m in _TASK_RUNNING_PATTERN.finditer(search_block):
+        tasks.append(CopilotTaskEvidence(
+            agent_type_label=m.group(1), model=m.group(2),
+            description=m.group(3).strip(), status="running",
+        ))
+    for m in _TASK_COMPLETED_PATTERN.finditer(search_block):
+        tasks.append(CopilotTaskEvidence(
+            agent_type_label=m.group(1), model=m.group(2),
+            description="completed", status="completed",
+        ))
+    for m in _TASK_IDLE_PATTERN.finditer(search_block):
+        tasks.append(CopilotTaskEvidence(
+            agent_type_label=m.group(1), model=m.group(2),
+            description="idle", status="idle",
+        ))
+    seen: set[tuple[str, str | None]] = set()
+    unique: list[CopilotTaskEvidence] = []
+    for t in tasks:
+        key = (t.agent_type_label, t.model)
+        if key not in seen:
+            seen.add(key)
+            unique.append(t)
+        else:
+            for i, existing in enumerate(unique):
+                if (existing.agent_type_label, existing.model) == key:
+                    unique[i] = t
+                    break
+    return background_task_count, tuple(unique)
+
+
 @dataclass(frozen=True, slots=True)
 class CopilotOutputParseResult:
     session_ids: tuple[CopilotSessionIdCandidate, ...]
@@ -314,6 +397,8 @@ class CopilotOutputParseResult:
     ui_markers: tuple[CopilotUIMarker, ...]
     activity_markers: tuple[CopilotActivityMarker, ...] = ()
     evidence_spans: tuple[CopilotEvidenceSpan, ...] = ()
+    background_task_count: int = 0
+    task_evidence: tuple[CopilotTaskEvidence, ...] = ()
 
 
 @lru_cache(maxsize=128)
@@ -494,6 +579,8 @@ def parse_copilot_output(output: str) -> CopilotOutputParseResult:
             )
             evidence_spans.append(span)
 
+    bg_count, task_ev = _parse_task_evidence(output)
+
     return CopilotOutputParseResult(
         session_ids=tuple(session_ids),
         boundaries=tuple(boundaries),
@@ -503,4 +590,6 @@ def parse_copilot_output(output: str) -> CopilotOutputParseResult:
         ui_markers=tuple(ui_markers),
         activity_markers=tuple(activity_markers),
         evidence_spans=tuple(evidence_spans),
+        background_task_count=bg_count,
+        task_evidence=task_ev,
     )

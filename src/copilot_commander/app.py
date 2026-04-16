@@ -59,6 +59,7 @@ from copilot_commander.services import (
     WorktreeService,
 )
 from copilot_commander.services.action_service import TmuxActionService
+from copilot_commander.services.subtask_registry import SubTaskRegistry
 
 _log = logging.getLogger(__name__)
 
@@ -401,7 +402,8 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     )
     copilot_session_store = CopilotSessionStore()
     sessions_ctrl = SessionsController(copilot_session_store)
-    dashboard = DashboardController(store)
+    subtask_registry = SubTaskRegistry()
+    dashboard = DashboardController(store, subtask_registry=subtask_registry)
     agent_controller = AgentController(store, sessions)
     attention = AttentionController(dashboard, AttentionInboxService())
     operations = OperationsController(
@@ -411,7 +413,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         actions=action_service,
     )
     fleet = FleetController(store, local_sessions=copilot_session_store)
-    sync_dashboard = DashboardController(sync_store)
+    sync_dashboard = DashboardController(sync_store, subtask_registry=subtask_registry)
     return CommanderRuntime(
         config=resolved_config,
         store=store,
@@ -427,6 +429,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
             git_adapter,
             agent_store=sync_store,
             worktree_sync=sync_worktree_service,
+            subtask_registry=subtask_registry,
             dead_grace_period_sec=resolved_config.general.dead_grace_period_sec,
         ),
         sync_store=sync_store,

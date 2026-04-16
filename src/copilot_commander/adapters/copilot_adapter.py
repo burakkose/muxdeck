@@ -9,6 +9,7 @@ from typing import Literal
 from copilot_commander.domain.value_objects import CommandResult
 from copilot_commander.exceptions import CommandError
 from copilot_commander.parsers import CopilotOutputParseResult, parse_copilot_output
+from copilot_commander.parsers.copilot_output_parser import CopilotTaskEvidence
 from copilot_commander.types import CommandRunner, PathLike
 
 _COPILOT_EXECUTABLE_NAMES = frozenset(
@@ -150,6 +151,8 @@ class CopilotSessionEvidence:
     latest_usage: CopilotUsageSummary | None
     blocking_issue_kinds: tuple[str, ...]
     error_messages: tuple[str, ...]
+    background_task_count: int = 0
+    task_evidence: tuple[CopilotTaskEvidence, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -376,6 +379,8 @@ class CopilotAdapter:
             latest_usage=usage_snapshots[-1] if usage_snapshots else None,
             blocking_issue_kinds=tuple(issue.kind for issue in parse_result.blocking_issues),
             error_messages=tuple(error.message for error in parse_result.errors),
+            background_task_count=parse_result.background_task_count,
+            task_evidence=parse_result.task_evidence,
         )
 
     def interpret_command_result(self, result: CommandResult, /) -> CopilotSessionEvidence:

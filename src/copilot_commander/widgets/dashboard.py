@@ -17,6 +17,7 @@ from copilot_commander.controllers import (
     DashboardHealthSummary,
     DashboardMetricView,
     DashboardSelectedAgentView,
+    DashboardSubTaskView,
 )
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.services.operator_status_service import (
@@ -358,9 +359,12 @@ class AgentListPanel(Static, can_focus=True):
             # Selection indicator: ▎ bar on left
             indicator = Text("▎ ", style=f"bold {BLUE}") if is_selected else Text("  ")
             br_style = PURPLE if is_selected else FG4
+            name_text = Text(display_name, style=f"bold {FG}" if is_selected else FG2)
+            if agent.subtask_count > 0:
+                name_text.append(f" ⚡{agent.subtask_count}", style=f"bold {YELLOW}")
             table.add_row(
                 indicator,
-                Text(display_name, style=f"bold {FG}" if is_selected else FG2),
+                name_text,
                 Text(status_text, style=status_style),
                 Text(_format_idle(agent.idle_seconds), style=FG4),
                 Text(agent.branch or "─", style=br_style, overflow="ellipsis"),
@@ -448,6 +452,9 @@ class AgentDetailPanel(Static):
                 result.append(event, style=_event_color(event))
                 result.append("\n")
 
+        # ── subtasks section ──
+        _render_subtask_section(result, item.subtask_count, agent.sub_tasks)
+
         self.update(result)
 
 
@@ -457,6 +464,59 @@ def _field_row(text: Text, label: str, value: str | None, style: str) -> None:
         return
     text.append(f"  {label:<10}", style=FG4)
     text.append(f"{value}\n", style=style)
+
+
+_SUBTASK_STATUS_STYLES: dict[str, str] = {
+    "running": f"bold {GREEN}",
+    "completed": FG4,
+    "idle": YELLOW,
+    "failed": SEVERITY_ERROR,
+    "cancelled": FG4,
+}
+
+
+def _render_subtask_section(
+    text: Text,
+    count: int,
+    tasks: tuple[DashboardSubTaskView, ...],
+) -> None:
+    """Render subtasks section in the detail panel."""
+    if count <= 0:
+        return
+    text.append("\n")
+    _section_header(text, "subtasks")
+    text.append("  ⚡ ", style=f"bold {YELLOW}")
+    text.append(f"{count} background task{'s' if count != 1 else ''}\n", style=FG1)
+
+    if not tasks:
+        text.append("  ", style="")
+        text.append("details unavailable from parent pane\n", style=f"italic {FG4}")
+        return
+
+    known = len(tasks)
+    if known < count:
+        text.append(f"  known details for {known} of {count}\n", style=FG4)
+
+    for i, task in enumerate(tasks):
+        is_last = i == len(tasks) - 1
+        connector = "└─" if is_last else "├─"
+        text.append(f"  {connector} ", style=FG4)
+        text.append(task.agent_type_label, style=f"bold {AQUA}")
+        if task.model:
+            short_model = task.model.split("-")[-1] if "-" in task.model else task.model
+            text.append(f" ({short_model})", style=FG3)
+        text.append("  ")
+        style = _SUBTASK_STATUS_STYLES.get(task.status, FG2)
+        text.append(task.status, style=style)
+        if task.description:
+            desc = task.description[:40] + "…" if len(task.description) > 40 else task.description
+            text.append(f"  {desc}", style=FG4)
+        text.append("\n")
+
+    unknown = count - known
+    if unknown > 0:
+        text.append(f"  └─ {unknown} task{'s' if unknown != 1 else ''} ", style=FG4)
+        text.append("(details unknown)\n", style=f"italic {FG4}")
 
 
 class FleetHealthPanel(Static):

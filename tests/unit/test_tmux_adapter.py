@@ -317,6 +317,18 @@ class TmuxAdapterTests(unittest.TestCase):
         self.assertEqual(context.value.exit_code, 1)
         self.assertEqual(context.value.stderr, "can't find pane: %99")
 
+    def test_select_window_builds_command(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "select-window", "-t", "=muxdeck:@7"))]
+        )
+
+        TmuxAdapter(runner).select_window("=muxdeck:@7")
+
+        self.assertEqual(
+            runner.calls,
+            [(("tmux", "select-window", "-t", "=muxdeck:@7"), 10.0)],
+        )
+
     def test_runner_command_error_is_wrapped(self) -> None:
         runner = FakeCommandRunner(
             results=[],

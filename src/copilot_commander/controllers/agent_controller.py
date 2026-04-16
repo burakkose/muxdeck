@@ -67,6 +67,8 @@ class AgentTargetView:
     repo_root: str | None
     branch: str | None
     latest_session_id: str | None
+    tmux_session_name: str | None = None
+    tmux_window_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,11 +205,14 @@ class AgentController:
     def open_pane_intent(self, agent_id: str) -> AgentIntentView:
         agent = self._require_agent(agent_id)
         target = self._target_from_agent(agent)
+        meta: list[tuple[str, str]] = [("pane_target", target.pane_target)]
+        if agent.tmux_window_id:
+            meta.append(("window_id", agent.tmux_window_id))
         return AgentIntentView(
             kind="open_pane",
             agent=target,
             label="Open pane",
-            metadata=(("pane_target", target.pane_target),),
+            metadata=tuple(meta),
         )
 
     def open_worktree_intent(self, agent_id: str) -> AgentIntentView:
@@ -250,6 +255,8 @@ class AgentController:
             name=agent.name,
             status=agent.status,
             pane_target=agent.tmux_pane_id,
+            tmux_session_name=agent.tmux_session_name,
+            tmux_window_id=agent.tmux_window_id,
             worktree_path=worktree_path,
             repo_root=repo_root,
             branch=agent.branch,

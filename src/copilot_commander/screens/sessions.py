@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.timer import Timer
 from textual.widgets import Input
 
 from copilot_commander.bindings import SESSIONS_BINDINGS, SESSIONS_HINTS
@@ -33,8 +34,8 @@ class SessionsScreen(ShellScreen):
         self._state: SessionsState | None = None
         self._show_completed: bool = True
         self._filter_text: str = ""
-        self._filter_debounce_timer: object | None = None
-        self._detail_timer: object | None = None
+        self._filter_debounce_timer: Timer | None = None
+        self._detail_timer: Timer | None = None
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="sessions-root"):
@@ -101,7 +102,7 @@ class SessionsScreen(ShellScreen):
             return
         self._selected_session_id = event.session_id
         if self._detail_timer is not None:
-            self._detail_timer.stop()  # type: ignore[union-attr]
+            self._detail_timer.stop()
         self._detail_timer = self.set_timer(0.05, self._update_selected_detail)
 
     def _update_selected_detail(self) -> None:
@@ -125,7 +126,7 @@ class SessionsScreen(ShellScreen):
         if event.input.id == "sessions-filter-input":
             self._filter_text = event.value
             if self._filter_debounce_timer is not None:
-                self._filter_debounce_timer.stop()  # type: ignore[union-attr]
+                self._filter_debounce_timer.stop()
             self._filter_debounce_timer = self.set_timer(0.3, self.refresh_data)
 
     def action_cursor_down(self) -> None:
@@ -192,9 +193,13 @@ class SessionsScreen(ShellScreen):
                 if (
                     agent.copilot_session_id == self._selected_session_id
                     and self.runtime.actions
-                    and agent.pane_id
+                    and agent.tmux_pane_id
                 ):
-                    result = self.runtime.actions.focus_pane(agent.pane_id)
+                    result = self.runtime.actions.focus_pane(
+                        agent.tmux_pane_id,
+                        tmux_window_id=agent.tmux_window_id,
+                        tmux_session_name=agent.tmux_session_name,
+                    )
                     msg = f"✓ {result.message}" if result.success else f"✗ {result.message}"
                     self.set_status(msg)
                     return
