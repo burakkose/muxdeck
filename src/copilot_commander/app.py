@@ -185,15 +185,27 @@ class CommanderApp(App[None]):
             and self.runtime.store.get_session(current_session_id) is not None
         ):
             return current_session_id
+        # Try interpreting current_session_id as a copilot session ID
+        if current_session_id is not None:
+            by_copilot = self.runtime.store.get_session_by_copilot_session_id(
+                current_session_id
+            )
+            if by_copilot is not None:
+                return by_copilot.id
         if self.selected_agent_id is not None:
             agent_sessions = self.runtime.store.list_sessions(self.selected_agent_id)
             if agent_sessions:
                 return agent_sessions[0].id
-        if (
-            self.selected_session_id is not None
-            and self.runtime.store.get_session(self.selected_session_id) is not None
-        ):
-            return self.selected_session_id
+        if self.selected_session_id is not None:
+            # selected_session_id may be an internal ID or a copilot session ID
+            sess = self.runtime.store.get_session(self.selected_session_id)
+            if sess is not None:
+                return self.selected_session_id
+            by_copilot = self.runtime.store.get_session_by_copilot_session_id(
+                self.selected_session_id
+            )
+            if by_copilot is not None:
+                return by_copilot.id
         sessions = self.runtime.store.list_sessions()
         return sessions[0].id if sessions else None
 

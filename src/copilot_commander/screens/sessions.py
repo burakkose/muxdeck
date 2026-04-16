@@ -31,7 +31,7 @@ class SessionsScreen(ShellScreen):
         super().__init__(runtime)
         self._selected_session_id: str | None = None
         self._state: SessionsState | None = None
-        self._show_completed: bool = False
+        self._show_completed: bool = True
         self._filter_text: str = ""
         self._filter_debounce_timer: object | None = None
         self._detail_timer: object | None = None
