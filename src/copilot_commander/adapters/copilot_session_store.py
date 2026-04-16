@@ -234,7 +234,12 @@ class CopilotSessionStore:
 
     session_state_dir: Path = field(default_factory=lambda: _DEFAULT_SESSION_DIR)
     max_age_days: int = 60
-    cache_ttl_sec: float = 30.0
+    # 5 minutes. The old 30 s ceiling expired during normal idle and
+    # forced a multi-second 9P rescan on the UI thread the next time
+    # someone moved the cursor in the Sessions screen. The per-entry
+    # mtime cache already keeps rescans cheap when they do run; the
+    # TTL only governs how often we touch the filesystem at all.
+    cache_ttl_sec: float = 300.0
     extra_roots: tuple[SessionStoreRoot, ...] = ()
 
     _cache: list[CopilotLocalSession] = field(default_factory=list, init=False, repr=False)
@@ -266,13 +271,21 @@ class CopilotSessionStore:
         # entries under removed or added roots simply go unused. This
         # avoids paying the cold-scan cost again when a root toggles.
 
-    def get_session(self, session_id: str) -> CopilotLocalSession | None:
+    def get_session(
+        self, session_id: str, *, warm_only: bool = False
+    ) -> CopilotLocalSession | None:
         """Look up a single session by ID.
 
         Fast path: O(1) dict lookup against the last-scan index when
         the TTL cache is still warm. Falls back to ``discover()`` only
         if the cache is stale so the result is never a wrong answer
         from a deleted session.
+
+        Set ``warm_only=True`` to skip the fallback entirely — callers
+        on the UI thread (e.g. cursor movement in the Sessions screen)
+        use this so they never block on a multi-second rescan. Returns
+        None if the id is not in the warm index; callers should surface
+        stale data instead of freezing the UI.
         """
         now = time.monotonic()
         if self._cache and (now - self._cache_time) < self.cache_ttl_sec:
@@ -281,6 +294,8 @@ class CopilotSessionStore:
                 return cached
             # Not in the warm index — may be a freshly created session
             # that we haven't seen yet. Fall through to a rescan.
+        if warm_only:
+            return self._by_id.get(session_id)
         for s in self.discover():
             if s.session_id == session_id:
                 return s

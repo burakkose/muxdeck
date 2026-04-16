@@ -220,6 +220,33 @@ def test_store_get_session(tmp_path: Path) -> None:
     assert store.get_session("nonexistent") is None
 
 
+def test_store_get_session_warm_only_skips_rescan(tmp_path: Path) -> None:
+    """Warm-only lookups must never trigger a disk scan.
+
+    Cursor movement in the Sessions screen calls this on the UI
+    thread, so a rescan would freeze the UI for multi-second 9P walks.
+    We verify this by deleting the session dir after the initial warm
+    scan: a warm-only lookup must still return the cached entry (no
+    rescan observes the deletion), while the default lookup re-scans
+    and returns None.
+    """
+    _make_session(tmp_path, "warm-1", summary="First")
+    store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=60)
+    store.discover()
+    # Expire the TTL and delete the backing session dir.
+    store._cache_time = 0.0
+    import shutil
+
+    shutil.rmtree(tmp_path / "warm-1")
+
+    warm = store.get_session("warm-1", warm_only=True)
+    assert warm is not None
+    assert warm.summary == "First"
+    # Default lookup triggers a rescan, which now finds nothing.
+    store._cache_time = 0.0
+    assert store.get_session("warm-1") is None
+
+
 def test_store_empty_dir(tmp_path: Path) -> None:
     store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=0)
     assert store.discover() == []
