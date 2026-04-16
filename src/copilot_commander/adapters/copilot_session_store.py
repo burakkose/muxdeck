@@ -197,6 +197,21 @@ def _parse_session_dir(
 
 
 @dataclass(slots=True)
+class _CachedEntry:
+    """Parsed session plus the mtimes that make it current.
+
+    Cheap mtime stats are enough to invalidate an entry: the Copilot CLI
+    appends to ``events.jsonl`` on every exchange and rewrites
+    ``workspace.yaml`` when metadata changes, so if neither mtime has
+    moved the previously-parsed ``CopilotLocalSession`` is still good.
+    """
+
+    session: CopilotLocalSession
+    events_mtime_ns: int
+    workspace_mtime_ns: int
+
+
+@dataclass(slots=True)
 class CopilotSessionStore:
     """Cached, read-only store for local Copilot CLI sessions.
 
@@ -204,6 +219,17 @@ class CopilotSessionStore:
     results with a TTL. In WSL the second root typically points at the
     Windows-side session-state directory so ``pwsh``-launched sessions
     are visible next to WSL-native ones.
+
+    Two caches work together:
+
+    * ``_cache`` / ``_cache_time`` — short-TTL gate that returns the
+      most recent scan verbatim so rapid successive calls don't even
+      hit the filesystem.
+    * ``_entry_cache`` — per-session-dir cache keyed by (events mtime,
+      workspace mtime). Survives across scans and lets repeat
+      discoveries skip re-reading files that haven't changed. This is
+      what turns a slow 9P-mounted Windows root (~3 s cold) into a
+      ~100 ms warm rescan.
     """
 
     session_state_dir: Path = field(default_factory=lambda: _DEFAULT_SESSION_DIR)
@@ -213,6 +239,9 @@ class CopilotSessionStore:
 
     _cache: list[CopilotLocalSession] = field(default_factory=list, init=False, repr=False)
     _cache_time: float = field(default=0.0, init=False, repr=False)
+    _entry_cache: dict[Path, _CachedEntry] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def discover(self, *, force: bool = False) -> list[CopilotLocalSession]:
         """Return all local sessions, using cache if fresh."""
@@ -228,6 +257,9 @@ class CopilotSessionStore:
         self.extra_roots = tuple(roots)
         self._cache = []
         self._cache_time = 0.0
+        # Per-entry cache stays valid — it's keyed by absolute path, so
+        # entries under removed or added roots simply go unused. This
+        # avoids paying the cold-scan cost again when a root toggles.
 
     def get_session(self, session_id: str) -> CopilotLocalSession | None:
         """Look up a single session by ID."""
@@ -260,8 +292,16 @@ class CopilotSessionStore:
             cutoff = datetime.now(UTC) - timedelta(days=self.max_age_days)
 
         sessions: list[CopilotLocalSession] = []
+        live_paths: set[Path] = set()
         for root in self._iter_roots():
-            sessions.extend(self._scan_root(root, cutoff=cutoff))
+            root_sessions, root_paths = self._scan_root(root, cutoff=cutoff)
+            sessions.extend(root_sessions)
+            live_paths.update(root_paths)
+
+        # Drop cached entries whose session directory disappeared so
+        # the cache size tracks the real session-state dirs.
+        for stale in set(self._entry_cache) - live_paths:
+            self._entry_cache.pop(stale, None)
 
         # Deduplicate by session_id — the local root wins when the same
         # id shows up on both sides (shouldn't happen, but be defensive
@@ -284,39 +324,85 @@ class CopilotSessionStore:
         root: SessionStoreRoot,
         *,
         cutoff: datetime | None,
-    ) -> list[CopilotLocalSession]:
+    ) -> tuple[list[CopilotLocalSession], set[Path]]:
+        """Scan a single session-state root directory.
+
+        Returns the discovered sessions and the set of live session-dir
+        paths so the caller can prune the entry cache.
+        """
         if not root.path.is_dir():
             _log.debug("session state dir does not exist: %s", root.path)
-            return []
+            return [], set()
 
         try:
-            entries = [e for e in root.path.iterdir() if e.is_dir()]
+            entries = [Path(e.path) for e in os.scandir(root.path) if e.is_dir()]
         except OSError:
             _log.warning("failed to list session state dir: %s", root.path)
-            return []
+            return [], set()
 
         if not entries:
-            return []
+            return [], set()
 
-        def _parse_one(entry: Path) -> CopilotLocalSession | None:
+        origin = root.origin
+        entry_cache = self._entry_cache
+
+        def _resolve(entry: Path) -> CopilotLocalSession | None:
+            """Return a session for one directory, using cache when possible.
+
+            Fast path: stat the two small files whose mtimes change when
+            the session does. If both match the cache, skip the full
+            parse entirely.
+            """
+            workspace_path = entry / "workspace.yaml"
+            events_path = entry / "events.jsonl"
+
             try:
-                return _parse_session_dir(entry, origin=root.origin)
+                workspace_mtime = workspace_path.stat().st_mtime_ns
+            except OSError:
+                # No workspace.yaml → not a session dir. Drop any stale
+                # cache entry and skip.
+                entry_cache.pop(entry, None)
+                return None
+
+            try:
+                events_mtime = events_path.stat().st_mtime_ns
+            except OSError:
+                events_mtime = 0
+
+            cached = entry_cache.get(entry)
+            if (
+                cached is not None
+                and cached.events_mtime_ns == events_mtime
+                and cached.workspace_mtime_ns == workspace_mtime
+                and cached.session.origin == origin
+            ):
+                return cached.session
+
+            try:
+                session = _parse_session_dir(entry, origin=origin)
             except Exception:
                 _log.debug("failed to parse session dir: %s", entry.name, exc_info=True)
                 return None
+            if session is None:
+                return None
 
-        # Parse entries in parallel. Each entry reads workspace.yaml and
-        # tails events.jsonl — I/O-bound work that benefits sharply from
-        # threading, especially on WSL's /mnt/c 9P mount where per-file
-        # latency dominates. Keep the worker count bounded so we don't
-        # swamp the filesystem or hold the GIL under contention.
+            entry_cache[entry] = _CachedEntry(
+                session=session,
+                events_mtime_ns=events_mtime,
+                workspace_mtime_ns=workspace_mtime,
+            )
+            return session
+
+        # Parallelise both the mtime-check fast path and the full parse
+        # slow path. Per-entry work is I/O-bound (stat + small file
+        # reads), which is exactly where threading wins on 9P mounts.
         max_workers = min(16, max(2, (os.cpu_count() or 4) * 2), len(entries))
         sessions: list[CopilotLocalSession] = []
         with ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="copilot-session-scan",
         ) as pool:
-            for session in pool.map(_parse_one, entries):
+            for session in pool.map(_resolve, entries):
                 if session is None:
                     continue
                 if (
@@ -326,7 +412,7 @@ class CopilotSessionStore:
                 ):
                     continue
                 sessions.append(session)
-        return sessions
+        return sessions, set(entries)
 
 
 __all__ = [

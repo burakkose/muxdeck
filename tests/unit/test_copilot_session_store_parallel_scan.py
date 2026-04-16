@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from copilot_commander.adapters.copilot_session_store import (
     CopilotSessionStore,
     SessionStoreRoot,
@@ -109,3 +111,77 @@ def test_parallel_scan_across_multiple_roots(tmp_path: Path) -> None:
     origins = {s.session_id: s.origin for s in all_sessions}
     assert all(origins[f"lin-{i}"] == "local" for i in range(10))
     assert all(origins[f"win-{i}"] == "windows" for i in range(10))
+
+
+def test_incremental_cache_reuses_unchanged_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Second scan should skip the full parse when nothing changed."""
+    from copilot_commander.adapters import copilot_session_store as module
+
+    root = tmp_path / "state"
+    root.mkdir()
+    for i in range(5):
+        _write_session(root, f"sess-{i}")
+
+    store = CopilotSessionStore(session_state_dir=root, cache_ttl_sec=0.0)
+    store.discover()  # populate cache
+
+    call_count = {"n": 0}
+    real_parse = module._parse_session_dir
+
+    def _counting_parse(*args: object, **kwargs: object) -> object:
+        call_count["n"] += 1
+        return real_parse(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(module, "_parse_session_dir", _counting_parse)
+
+    # Second discover with nothing changed on disk.
+    store.discover()
+    assert call_count["n"] == 0, "cache hit should skip _parse_session_dir entirely"
+
+
+def test_incremental_cache_invalidates_on_events_mtime_bump(tmp_path: Path) -> None:
+    """Appending to events.jsonl must force a reparse of that entry."""
+    import os
+
+    root = tmp_path / "state"
+    root.mkdir()
+    _write_session(root, "sess-a")
+
+    store = CopilotSessionStore(session_state_dir=root, cache_ttl_sec=0.0)
+    first = store.discover()
+    assert len(first) == 1
+
+    events = root / "sess-a" / "events.jsonl"
+    # Append a new event and bump mtime explicitly (file-system clock
+    # resolution can otherwise collapse two writes onto the same ns).
+    with events.open("a", encoding="utf-8") as fh:
+        fh.write('{"type": "session.shutdown", "timestamp": "2099-01-01T00:00:00Z"}\n')
+    st = events.stat()
+    os.utime(events, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+    second = store.discover()
+    assert len(second) == 1
+    # The shutdown event should now be reflected.
+    assert second[0].last_event_type == "session.shutdown"
+    assert second[0].is_cleanly_closed is True
+
+
+def test_incremental_cache_drops_removed_sessions(tmp_path: Path) -> None:
+    """Deleting a session dir should evict it from the cache."""
+    import shutil
+
+    root = tmp_path / "state"
+    root.mkdir()
+    _write_session(root, "keep")
+    _write_session(root, "remove")
+
+    store = CopilotSessionStore(session_state_dir=root, cache_ttl_sec=0.0)
+    assert {s.session_id for s in store.discover()} == {"keep", "remove"}
+
+    shutil.rmtree(root / "remove")
+
+    assert {s.session_id for s in store.discover()} == {"keep"}
+    # Cache should no longer reference the removed path.
+    assert not any(p.name == "remove" for p in store._entry_cache)
