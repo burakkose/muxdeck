@@ -48,9 +48,8 @@ class CopilotOutputParserTests(unittest.TestCase):
         output = "\n".join(
             (
                 "waiting for confirmation before applying patch",
-                "fatal: merge conflict in src/app.py",
+                "CONFLICT (content): merge conflict in src/app.py",
                 "authentication failed; sign in again",
-                "tool failed with exit code 1",
                 "HTTP 429 rate limit exceeded",
                 "Traceback (most recent call last):",
             )
@@ -58,16 +57,19 @@ class CopilotOutputParserTests(unittest.TestCase):
 
         result = parse_copilot_output(output)
 
+        # tool_failure patterns were intentionally removed because
+        # "command failed" / "exit code N" / "stderr:" match routine
+        # tool output and produced constant false positives in the
+        # status layer. The remaining blocking kinds cover the signals
+        # that actually require operator attention.
         assert [issue.kind for issue in result.blocking_issues] == [
             "waiting_for_confirmation",
             "merge_conflict",
             "authentication_issue",
-            "tool_failure",
             "rate_limit",
         ]
-        assert len(result.errors) == 2
-        assert result.errors[0].span.start_line == 2
-        assert result.errors[1].span.start_line == 6
+        assert len(result.errors) == 1
+        assert result.errors[0].span.start_line == 5
         assert all(span.confidence >= Decimal("0.9000") for span in result.evidence_spans)
 
     def test_parse_copilot_output_stays_quiet_on_noise(self) -> None:

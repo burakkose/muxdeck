@@ -69,15 +69,25 @@ class MonitoringServiceTests(unittest.TestCase):
         assert result.needs_attention is True
         assert result.attention_reason == "waiting for confirmation input"
 
-    def test_compute_status_heuristics_blocked_dead_idle_and_running(self) -> None:
+    def test_compute_status_heuristics_dead_idle_running_and_active_blocking_kind_ignored(
+        self,
+    ) -> None:
         now = datetime(2025, 1, 1, 12, tzinfo=UTC)
 
-        blocked = compute_status_heuristics(
+        # A non-confirmation "blocking kind" (authentication_issue /
+        # rate_limit / merge_conflict / tool_failure) by itself no
+        # longer flips status to BLOCKED. The agent is RUNNING when
+        # fresh activity was observed this cycle, regardless of what
+        # noisy patterns appeared in the scrollback. The signal is
+        # still preserved for downstream uses (attention reasons when
+        # the agent later goes quiet).
+        running_with_stale_blocking_pattern = compute_status_heuristics(
             StatusHeuristicInput(
                 started_at=now - timedelta(minutes=10),
                 observed_at=now,
-                previous_last_activity_at=now - timedelta(minutes=1),
+                previous_last_activity_at=now - timedelta(seconds=5),
                 blocking_issue_kinds=("authentication_issue",),
+                activity_observed=True,
             )
         )
         dead = compute_status_heuristics(
@@ -104,13 +114,34 @@ class MonitoringServiceTests(unittest.TestCase):
             )
         )
 
-        assert blocked.status is AgentStatus.BLOCKED
-        assert blocked.attention_reason == "authentication issue requires attention"
+        assert running_with_stale_blocking_pattern.status is AgentStatus.RUNNING
         assert dead.status is AgentStatus.DEAD
         assert idle.status is AgentStatus.IDLE
         assert idle.needs_attention is True
         assert running.status is AgentStatus.RUNNING
         assert running.last_activity_at == now
+
+    def test_compute_status_heuristics_idle_surfaces_blocking_kind_reason(self) -> None:
+        """An agent that went quiet on an auth/rate-limit pattern should
+
+        still get the descriptive attention reason even though status
+        itself is IDLE, not BLOCKED.
+        """
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        result = compute_status_heuristics(
+            StatusHeuristicInput(
+                started_at=now - timedelta(hours=1),
+                observed_at=now,
+                previous_last_activity_at=now - timedelta(minutes=20),
+                blocking_issue_kinds=("rate_limit",),
+            ),
+            thresholds=MonitoringThresholds(
+                idle_after_seconds=60, attention_idle_after_seconds=300
+            ),
+        )
+        assert result.status is AgentStatus.IDLE
+        assert result.needs_attention is True
+        assert result.attention_reason == "rate limit is blocking progress"
 
     def test_compute_status_heuristics_completed_agent_dead_pane(self) -> None:
         """Dead pane + marked_complete exit reason → COMPLETED, not DEAD."""

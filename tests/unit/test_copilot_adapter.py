@@ -144,7 +144,8 @@ class CopilotAdapterTests(unittest.TestCase):
                 "Prompt: summarize repo status",
                 "Response: working on it",
                 "waiting for confirmation before applying patch",
-                "fatal: merge conflict in src/app.py",
+                "CONFLICT (content): merge conflict in src/app.py",
+                "fatal: build aborted",
                 "input_tokens: 1,200",
                 "output_tokens: 345",
             )
@@ -159,7 +160,7 @@ class CopilotAdapterTests(unittest.TestCase):
             "waiting_for_confirmation",
             "merge_conflict",
         )
-        assert evidence.error_messages == ("fatal: merge conflict in src/app.py",)
+        assert evidence.error_messages == ("fatal: build aborted",)
         assert evidence.parse_result.boundaries[0].kind == "prompt_start"
         assert latest_usage is not None
         assert latest_usage.input_tokens == 1200

@@ -342,6 +342,12 @@ def compute_status_heuristics(
         )
 
     blocking_kind = _first_blocking_kind(payload.blocking_issue_kinds)
+    # WAITING_INPUT is the only "agent needs the user" state. The
+    # scrollback has to mention a confirmation prompt *and* the pane
+    # has to have been quiet long enough that we're confident the
+    # agent is waiting (not just emitting the prompt as part of normal
+    # output). Without the idle gate a fresh line like
+    # "Would you like me to..." would flip status mid-response.
     if (
         blocking_kind == "waiting_for_confirmation"
         and idle_seconds >= applied_thresholds.waiting_input_after_seconds
@@ -353,29 +359,41 @@ def compute_status_heuristics(
             needs_attention=True,
             attention_reason="waiting for confirmation input",
         )
-    if blocking_kind is not None and blocking_kind != "waiting_for_confirmation":
-        return StatusHeuristicResult(
-            status=AgentStatus.BLOCKED,
-            idle_seconds=idle_seconds,
-            last_activity_at=last_activity_at,
-            needs_attention=True,
-            attention_reason=_blocking_attention_reason(blocking_kind),
-        )
+    # Everything else that the output parser calls a "blocking" kind
+    # (tool_failure, merge_conflict, authentication_issue, rate_limit)
+    # is noise for status classification. A tool call that returns a
+    # non-zero exit code, an "stderr:" line, or the word "sign in"
+    # appearing anywhere in the scrollback are all part of normal
+    # agent work — classifying the agent as BLOCKED because of them
+    # flips the dashboard even while the agent is actively producing
+    # output. Fresh activity is the canonical "working" signal; let
+    # the idle / RUNNING branches below handle classification. These
+    # kinds can still surface as attention reasons once the agent
+    # goes quiet (see the error / idle branches).
     if payload.error_messages and idle_seconds >= applied_thresholds.error_after_seconds:
+        reason = payload.error_messages[0]
+        if blocking_kind is not None and blocking_kind != "waiting_for_confirmation":
+            reason = _blocking_attention_reason(blocking_kind)
         return StatusHeuristicResult(
             status=AgentStatus.ERROR,
             idle_seconds=idle_seconds,
             last_activity_at=last_activity_at,
             needs_attention=True,
-            attention_reason=payload.error_messages[0],
+            attention_reason=reason,
         )
     if idle_seconds >= applied_thresholds.attention_idle_after_seconds:
+        reason = f"idle for {idle_seconds}s"
+        if blocking_kind is not None and blocking_kind != "waiting_for_confirmation":
+            # The agent went quiet while one of these signals was on
+            # screen — worth surfacing as the attention reason even
+            # though we don't flip status on it by itself.
+            reason = _blocking_attention_reason(blocking_kind)
         return StatusHeuristicResult(
             status=AgentStatus.IDLE,
             idle_seconds=idle_seconds,
             last_activity_at=last_activity_at,
             needs_attention=True,
-            attention_reason=f"idle for {idle_seconds}s",
+            attention_reason=reason,
         )
     if idle_seconds >= applied_thresholds.idle_after_seconds:
         return StatusHeuristicResult(
