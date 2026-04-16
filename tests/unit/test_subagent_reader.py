@@ -182,14 +182,10 @@ class TestSubAgentReader:
         reader = SubAgentReader(_FakeStore(session_state_dir=tmp_path))
         first = reader.read(session_id)
         assert first is not None
-        # Sanity: replace file contents but keep mtime → cached result wins.
-        original_mtime = events_path.stat().st_mtime_ns
-        events_path.write_text("", encoding="utf-8")
-        import os
-
-        os.utime(events_path, ns=(original_mtime, original_mtime))
+        # File untouched → the incremental reader hands back the same
+        # tree object without re-opening the file.
+        assert events_path.exists()
         second = reader.read(session_id)
-        # Same cached tree object is returned.
         assert second is first
 
     def test_mtime_cache_invalidates_on_update(self, tmp_path: Path) -> None:
@@ -253,6 +249,116 @@ class TestSubAgentReader:
         tree = reader.read(session_id)
         assert tree is not None
         assert len(tree.running) == 1
+
+    def test_incremental_append_only_reads_new_bytes(self, tmp_path: Path) -> None:
+        """Appending a new event must not cause a full-file re-parse.
+
+        We prove it by monkey-patching ``Path.open`` to record how
+        many bytes each read call consumes. The second read, after
+        appending one line, should consume strictly less than the
+        full file.
+        """
+        session_id = "session-incr"
+        session_dir = tmp_path / session_id
+        first_line = _started_event(
+            tool_call_id="call_a",
+            timestamp="2026-04-03T21:00:00.000Z",
+        )
+        _write_events(session_dir, [first_line])
+        events_path = session_dir / "events.jsonl"
+
+        reader = SubAgentReader(_FakeStore(session_state_dir=tmp_path))
+        first = reader.read(session_id)
+        assert first is not None
+        assert len(first.running) == 1
+
+        baseline_size = events_path.stat().st_size
+
+        # Append a second event.
+        with events_path.open("a", encoding="utf-8") as fh:
+            fh.write(
+                _completed_event(
+                    tool_call_id="call_a",
+                    timestamp="2026-04-03T21:00:05.000Z",
+                )
+                + "\n"
+            )
+
+        # Intercept the open+read the reader performs and record how
+        # many characters come back.
+        read_sizes: list[int] = []
+        original_open = Path.open
+
+        def tracking_open(self: Path, *args: object, **kwargs: object) -> object:
+            fh = original_open(self, *args, **kwargs)  # type: ignore[arg-type]
+            if self == events_path:
+                original_read = fh.read
+
+                def read(size: int = -1, _orig: object = original_read) -> str:
+                    data = _orig(size)  # type: ignore[operator]
+                    if isinstance(data, str):
+                        read_sizes.append(len(data))
+                    return data  # type: ignore[no-any-return]
+
+                fh.read = read  # type: ignore[method-assign]
+            return fh
+
+        import unittest.mock
+
+        with unittest.mock.patch.object(Path, "open", tracking_open):
+            second = reader.read(session_id)
+
+        assert second is not None
+        # Only the appended bytes were read — not the whole file.
+        total_read = sum(read_sizes)
+        assert total_read > 0
+        assert total_read < baseline_size, (
+            f"reader consumed {total_read} bytes but baseline file was "
+            f"{baseline_size}; expected incremental tail read"
+        )
+        # And the tree reflects the new event.
+        assert second.running == ()
+        assert len(second.recent) == 1
+
+    def test_rotation_resets_offset(self, tmp_path: Path) -> None:
+        """If the file shrinks below our offset (truncate or swap), we
+        reset and reparse from byte zero instead of silently skipping."""
+        session_id = "session-rot"
+        session_dir = tmp_path / session_id
+        _write_events(
+            session_dir,
+            [
+                _started_event(
+                    tool_call_id="call_old",
+                    timestamp="2026-04-03T21:00:00.000Z",
+                ),
+                _completed_event(
+                    tool_call_id="call_old",
+                    timestamp="2026-04-03T21:00:01.000Z",
+                ),
+            ],
+        )
+        reader = SubAgentReader(_FakeStore(session_state_dir=tmp_path))
+        first = reader.read(session_id)
+        assert first is not None
+        assert len(first.recent) == 1
+
+        # Rewrite the file with a single new event (smaller than original).
+        _write_events(
+            session_dir,
+            [
+                _started_event(
+                    tool_call_id="call_new",
+                    timestamp="2026-04-03T22:00:00.000Z",
+                ),
+            ],
+        )
+        second = reader.read(session_id)
+        assert second is not None
+        # We saw the fresh event and forgot the old one (file was rotated).
+        assert len(second.running) == 1
+        assert second.running[0].tool_call_id == "call_new"
+        assert second.recent == ()
 
 
 class TestSubAgentSnapshot:
