@@ -8,12 +8,20 @@ from textual.containers import Horizontal, Vertical
 
 from copilot_commander.bindings import WORKTREE_BINDINGS, WORKTREE_HINTS
 from copilot_commander.controllers import (
+    WorktreeActionView,
     WorktreeDetailView,
     WorktreeStartAgentIntent,
     WorktreeSummaryView,
 )
+from copilot_commander.exceptions import DomainValidationError, PersistenceError
 from copilot_commander.screens.base import ShellScreen
 from copilot_commander.screens.confirm_dialog import ConfirmScreen
+from copilot_commander.screens.worktree_input import (
+    AttachWorktreeResult,
+    AttachWorktreeScreen,
+    CreateWorktreeResult,
+    CreateWorktreeScreen,
+)
 from copilot_commander.widgets.worktrees import (
     ConflictPanel,
     StartIntentPanel,
@@ -153,6 +161,46 @@ class WorktreesScreen(ShellScreen):
         else:
             self.set_status(f"✗ {result.message}")
 
+    def action_create_worktree(self) -> None:
+        if self._detail is None:
+            self.set_status("no repo selected for create")
+            return
+        self.app.push_screen(
+            CreateWorktreeScreen(repo_root=self._detail.summary.repo_root),
+            callback=self._on_create_worktree_result,
+        )
+
+    def _on_create_worktree_result(self, result: CreateWorktreeResult | None) -> None:
+        if result is None:
+            self.set_status("create cancelled")
+            return
+        try:
+            action_view = self.runtime.worktrees.create_worktree(
+                result.repo_root,
+                task_title=result.task_title,
+            )
+        except (DomainValidationError, PersistenceError) as exc:
+            self.set_status(f"✗ create failed: {exc}")
+            return
+        self._refresh_after_worktree_action(action_view)
+
+    def action_attach_worktree(self) -> None:
+        self.app.push_screen(
+            AttachWorktreeScreen(),
+            callback=self._on_attach_worktree_result,
+        )
+
+    def _on_attach_worktree_result(self, result: AttachWorktreeResult | None) -> None:
+        if result is None:
+            self.set_status("select existing cancelled")
+            return
+        try:
+            action_view = self.runtime.worktrees.attach_worktree(result.path)
+        except (DomainValidationError, PersistenceError) as exc:
+            self.set_status(f"✗ attach failed: {exc}")
+            return
+        self._refresh_after_worktree_action(action_view)
+
     def action_delete_worktree(self) -> None:
         """Delete the selected worktree after confirmation."""
         if self._selected_worktree_id is None:
@@ -229,3 +277,10 @@ class WorktreesScreen(ShellScreen):
             self.set_status(f"✗ prune failed: {exc}")
             return
         self.refresh_data()
+
+    def _refresh_after_worktree_action(self, action_view: WorktreeActionView) -> None:
+        self._start_intent = None
+        if action_view.worktree is not None:
+            self._selected_worktree_id = action_view.worktree.summary.worktree_id
+        self.refresh_data()
+        self.set_status(f"✓ {action_view.message}")

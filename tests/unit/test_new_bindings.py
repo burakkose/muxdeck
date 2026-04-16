@@ -35,6 +35,14 @@ class TestDashboardBindings(unittest.TestCase):
         actions = self._binding_actions(WORKTREE_BINDINGS)
         assert "delete_worktree" in actions
 
+    def test_worktree_create_binding_exists(self) -> None:
+        actions = self._binding_actions(WORKTREE_BINDINGS)
+        assert "create_worktree" in actions
+
+    def test_worktree_attach_binding_exists(self) -> None:
+        actions = self._binding_actions(WORKTREE_BINDINGS)
+        assert "attach_worktree" in actions
+
     def test_worktree_prune_binding_exists(self) -> None:
         actions = self._binding_actions(WORKTREE_BINDINGS)
         assert "prune_worktrees" in actions
@@ -57,6 +65,14 @@ class TestDashboardBindingKeys(unittest.TestCase):
     def test_worktree_delete_key_is_d(self) -> None:
         km = self._key_map(WORKTREE_BINDINGS)
         assert km["delete_worktree"] == "d"
+
+    def test_worktree_create_key_is_c(self) -> None:
+        km = self._key_map(WORKTREE_BINDINGS)
+        assert km["create_worktree"] == "c"
+
+    def test_worktree_attach_key_is_a(self) -> None:
+        km = self._key_map(WORKTREE_BINDINGS)
+        assert km["attach_worktree"] == "a"
 
     def test_worktree_prune_key_is_shift_p(self) -> None:
         km = self._key_map(WORKTREE_BINDINGS)

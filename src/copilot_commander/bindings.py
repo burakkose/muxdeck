@@ -116,6 +116,8 @@ WORKTREE_BINDINGS: Final[list[BindingSpec]] = [
     Binding("enter", "preview_start_agent", "Start intent", show=False),
     Binding("s", "preview_start_agent", "Start intent", show=False),
     Binding("x", "execute_start", "Execute start", show=False),
+    Binding("c", "create_worktree", "Create worktree", show=False),
+    Binding("a", "attach_worktree", "Select existing", show=False),
     Binding("d", "delete_worktree", "Delete", show=False),
     Binding("P", "prune_worktrees", "Prune stale", show=False),
 ]
@@ -124,6 +126,8 @@ WORKTREE_HINTS = (
     KeyHint("j/k/↑↓", "move"),
     KeyHint("s", "start intent"),
     KeyHint("x", "execute"),
+    KeyHint("c", "create"),
+    KeyHint("a", "select existing"),
     KeyHint("d", "delete"),
     KeyHint("P", "prune"),
 )

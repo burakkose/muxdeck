@@ -28,7 +28,10 @@ class SQLiteStoreIntegrationTests(unittest.TestCase):
             self.assertEqual(store.database_path, database_path.resolve())
             self.assertTrue(store.foreign_keys_enabled)
             self.assertEqual(store.journal_mode, "wal")
-            self.assertEqual(store.applied_migrations(), ("0001_initial.sql",))
+            self.assertEqual(
+                store.applied_migrations(),
+                ("0001_initial.sql", "0002_add_tasks.sql"),
+            )
 
         connection = sqlite3.connect(database_path)
         self.addCleanup(connection.close)
@@ -52,7 +55,10 @@ class SQLiteStoreIntegrationTests(unittest.TestCase):
 
         self.assertIsNotNone(journal_mode)
         self.assertEqual(journal_mode[0].lower(), "wal")
-        self.assertEqual(migrations, [("0001_initial.sql",)])
+        self.assertEqual(
+            migrations,
+            [("0001_initial.sql",), ("0002_add_tasks.sql",)],
+        )
         expected_tables = {
             "migrations",
             "agents",
@@ -60,6 +66,7 @@ class SQLiteStoreIntegrationTests(unittest.TestCase):
             "sessions",
             "events",
             "log_chunks",
+            "tasks",
             "settings",
             "cache_entries",
         }
@@ -75,6 +82,10 @@ class SQLiteStoreIntegrationTests(unittest.TestCase):
                 "idx_events_occurred_at",
                 "idx_log_chunks_agent_id",
                 "idx_log_chunks_session_id",
+                "idx_tasks_status",
+                "idx_tasks_repo_root",
+                "idx_tasks_assigned_agent_id",
+                "idx_tasks_assigned_worktree_id",
             }.issubset(indexes)
         )
 

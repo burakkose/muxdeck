@@ -69,6 +69,7 @@ from copilot_commander.services.setup_service import (
     SetupDoctorService,
     TmuxSocketOption,
 )
+from copilot_commander.services.task_service import TaskService
 from copilot_commander.services.worktree_service import (
     WorktreeAttachResult,
     WorktreeCreateResult,
@@ -124,6 +125,7 @@ __all__ = [
     "SetupDoctorService",
     "StatusHeuristicInput",
     "StatusHeuristicResult",
+    "TaskService",
     "TmuxSocketOption",
     "WorktreeAttachResult",
     "WorktreeCreateResult",

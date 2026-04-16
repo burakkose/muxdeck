@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal, cast
 
 import pytest
+from textual.widgets import Input
 
 from copilot_commander.app import CommanderApp, CommanderRuntime
 from copilot_commander.controllers import (
@@ -20,6 +22,7 @@ from copilot_commander.controllers import (
     ReplayJumpMarkerView,
     ReplayStateView,
     ReplayTranscriptEntryView,
+    WorktreeActionView,
     WorktreeConflictView,
     WorktreeDetailView,
     WorktreeStartAgentIntent,
@@ -255,8 +258,10 @@ class FakeActionService:
 
 
 class FakeWorktreeController:
-    def list_worktrees(self) -> tuple[WorktreeSummaryView, ...]:
-        return (
+    def __init__(self) -> None:
+        self.create_calls: list[tuple[str, str]] = []
+        self.attach_calls: list[str] = []
+        self._worktrees: list[WorktreeSummaryView] = [
             WorktreeSummaryView(
                 worktree_id="worktree-1",
                 repo_root="/repo",
@@ -274,14 +279,18 @@ class FakeWorktreeController:
                 context_count=1,
                 has_conflicts=True,
             ),
-        )
+        ]
+
+    def list_worktrees(self) -> tuple[WorktreeSummaryView, ...]:
+        return tuple(self._worktrees)
 
     def get_worktree_detail(self, worktree_id: str) -> WorktreeDetailView:
-        del worktree_id
-        summary = self.list_worktrees()[0]
-        return WorktreeDetailView(
-            summary=summary,
-            conflicts=(
+        summary = next(
+            (worktree for worktree in self._worktrees if worktree.worktree_id == worktree_id),
+            self._worktrees[0],
+        )
+        conflicts = (
+            (
                 WorktreeConflictView(
                     code="orphan",
                     message="stale branch assignment",
@@ -290,9 +299,16 @@ class FakeWorktreeController:
                     agent_id="agent-1",
                     branch=summary.branch,
                 ),
-            ),
+            )
+            if summary.worktree_id == "worktree-1"
+            else ()
+        )
+        pane_targets = ("%1",) if summary.worktree_id == "worktree-1" else ()
+        return WorktreeDetailView(
+            summary=summary,
+            conflicts=conflicts,
             active_session_ids=("session-1",),
-            pane_targets=("%1",),
+            pane_targets=pane_targets,
         )
 
     def start_agent_intent(
@@ -301,17 +317,89 @@ class FakeWorktreeController:
         *,
         model: str | None = None,
     ) -> WorktreeStartAgentIntent:
-        del worktree_id
+        summary = self.get_worktree_detail(worktree_id).summary
         return WorktreeStartAgentIntent(
-            worktree_id="worktree-1",
-            repo_root="/repo",
-            worktree_path="/repo/worktrees/ui",
-            branch="task/ui",
+            worktree_id=summary.worktree_id,
+            repo_root=summary.repo_root,
+            worktree_path=summary.path,
+            branch=summary.branch,
             suggested_session_name="muxdeck",
-            suggested_window_name="ui",
-            prompt="Continue work for task/ui",
+            suggested_window_name=summary.branch.rsplit("/", 1)[-1],
+            prompt=f"Continue work for {summary.branch}",
             model=model,
         )
+
+    def create_worktree(
+        self,
+        cwd: str,
+        *,
+        task_title: str | None = None,
+        **_: object,
+    ) -> WorktreeActionView:
+        title = task_title or "new worktree"
+        slug = self._slugify(title)
+        summary = WorktreeSummaryView(
+            worktree_id=f"worktree-{len(self._worktrees) + 1}",
+            repo_root=cwd,
+            path=f"{cwd}/worktrees/{slug}",
+            branch=f"task/{slug}",
+            base_branch="main",
+            is_main_worktree=False,
+            is_dirty=False,
+            ahead_count=0,
+            behind_count=0,
+            locked=False,
+            assigned_agent_id=None,
+            assigned_agent_name=None,
+            active_session_count=0,
+            context_count=0,
+            has_conflicts=False,
+        )
+        self.create_calls.append((cwd, title))
+        self._worktrees.append(summary)
+        detail = self.get_worktree_detail(summary.worktree_id)
+        return WorktreeActionView(
+            action="create",
+            message=f"created {summary.path}",
+            worktree=detail,
+            conflicts=(),
+        )
+
+    def attach_worktree(self, cwd_or_path: str, **_: object) -> WorktreeActionView:
+        path = Path(cwd_or_path)
+        repo_root = str(path.parents[1]) if len(path.parents) > 1 else str(path.parent)
+        slug = path.name or "attached"
+        summary = WorktreeSummaryView(
+            worktree_id=f"worktree-{len(self._worktrees) + 1}",
+            repo_root=repo_root,
+            path=str(path),
+            branch=f"task/{slug}",
+            base_branch="main",
+            is_main_worktree=False,
+            is_dirty=False,
+            ahead_count=0,
+            behind_count=0,
+            locked=False,
+            assigned_agent_id=None,
+            assigned_agent_name=None,
+            active_session_count=0,
+            context_count=0,
+            has_conflicts=False,
+        )
+        self.attach_calls.append(str(path))
+        self._worktrees.append(summary)
+        detail = self.get_worktree_detail(summary.worktree_id)
+        return WorktreeActionView(
+            action="attach",
+            message=f"attached {summary.path}",
+            worktree=detail,
+            conflicts=(),
+        )
+
+    @staticmethod
+    def _slugify(value: str) -> str:
+        parts = [part for part in value.casefold().split() if part]
+        return "-".join(parts) or "worktree"
 
 
 class FakeReplayController:
@@ -600,3 +688,40 @@ async def test_textual_shell_navigation_and_updates() -> None:
         app.action_show_setup()
         await pilot.pause()
         assert "/tmp/tmux-1000/default" in rendered_text(app.screen.query_one("#setup-summary"))
+
+
+@pytest.mark.asyncio
+async def test_worktrees_screen_can_create_and_select_existing_worktrees() -> None:
+    runtime = FakeRuntime()
+    app = CommanderApp(cast(CommanderRuntime, runtime))
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_show_worktrees()
+        await pilot.pause()
+
+        await pilot.press("c")
+        await pilot.pause()
+        app.screen.query_one("#create-worktree-title", Input).value = "New task"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert runtime.worktrees.create_calls == [("/repo", "New task")]
+        assert "task/new-task" in rendered_text(app.screen.query_one("#worktrees-detail"))
+        assert (
+            "created /repo/worktrees/new-task"
+            in rendered_text(app.screen.query_one("#shell-footer")).lower()
+        )
+
+        await pilot.press("a")
+        await pilot.pause()
+        app.screen.query_one("#attach-worktree-path", Input).value = "/repo/worktrees/ops"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert runtime.worktrees.attach_calls == ["/repo/worktrees/ops"]
+        assert "/repo/worktrees/ops" in rendered_text(app.screen.query_one("#worktrees-detail"))
+        assert (
+            "attached /repo/worktrees/ops"
+            in rendered_text(app.screen.query_one("#shell-footer")).lower()
+        )

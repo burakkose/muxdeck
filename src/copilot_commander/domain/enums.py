@@ -16,6 +16,23 @@ class AgentStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class TaskStatus(StrEnum):
+    PENDING = "pending"
+    ASSIGNED = "assigned"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TaskPriority(StrEnum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+    URGENT = "urgent"
+
+
 class EvidenceKind(StrEnum):
     RAW = "raw"
     DERIVED = "derived"
