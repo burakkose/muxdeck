@@ -139,3 +139,91 @@ class TestAgentListPanelExpansion:
         panel = AgentListPanel()
         panel.set_agents([], selected_agent_id=None)
         assert panel.toggle_expand() is None
+
+
+class TestAgentListPanelSubAgentNavigation:
+    def test_cursor_steps_over_subagent_rows(self) -> None:
+        panel = AgentListPanel()
+        panel.set_agents([_agent("a1"), _agent("a2")], selected_agent_id="a1")
+        panel.toggle_expand()
+        panel.set_subagents(
+            "a1",
+            DashboardSubAgentTreeView(
+                agent_id="a1",
+                session_id="s",
+                running=(_subagent_view("call_r1"), _subagent_view("call_r2")),
+                recent=(),
+            ),
+        )
+        # Rows are now: a1, header, sub1, sub2, a2 → 5 total.
+        assert len(panel._rows) == 5
+        # Cursor starts on a1.
+        assert panel.selected_agent_id == "a1"
+        assert panel.selected_subagent is None
+        # Step into header.
+        panel.move_cursor(1)
+        assert panel.selected_agent_id == "a1"
+        # Step onto the first sub-agent.
+        panel.move_cursor(1)
+        assert panel.selected_agent_id == "a1"
+        sub = panel.selected_subagent
+        assert sub is not None
+        assert sub.tool_call_id == "call_r1"
+        # Step onto a2 — agent id flips to a2, subagent becomes None.
+        panel.move_cursor(2)
+        assert panel.selected_agent_id == "a2"
+        assert panel.selected_subagent is None
+
+    def test_collapse_from_subagent_row_snaps_back_to_parent(self) -> None:
+        panel = AgentListPanel()
+        panel.set_agents([_agent("a1"), _agent("a2")], selected_agent_id="a1")
+        panel.toggle_expand()
+        panel.set_subagents(
+            "a1",
+            DashboardSubAgentTreeView(
+                agent_id="a1",
+                session_id="s",
+                running=(_subagent_view("call_r1"),),
+                recent=(),
+            ),
+        )
+        # Move cursor to sub-agent row.
+        panel.move_cursor(2)
+        assert panel.selected_subagent is not None
+        # Toggle collapses the parent; cursor should land on a1 again.
+        panel.toggle_expand()
+        assert panel.selected_agent_id == "a1"
+        assert panel.selected_subagent is None
+        assert "a1" not in panel._expanded
+
+    def test_completed_subagents_are_hidden(self) -> None:
+        panel = AgentListPanel()
+        panel.set_agents([_agent("a1")], selected_agent_id="a1")
+        panel.toggle_expand()
+        panel.set_subagents(
+            "a1",
+            DashboardSubAgentTreeView(
+                agent_id="a1",
+                session_id="s",
+                running=(_subagent_view("call_r"),),
+                recent=(_subagent_view("call_c", running=False),),
+            ),
+        )
+        # Rows: a1, header, sub_running → recent is NOT included.
+        assert len(panel._rows) == 3
+
+    def test_header_shows_running_count_when_not_loading(self) -> None:
+        panel = AgentListPanel()
+        panel.set_agents([_agent("a1")], selected_agent_id="a1")
+        panel.toggle_expand()
+        panel.set_subagents(
+            "a1",
+            DashboardSubAgentTreeView(
+                agent_id="a1",
+                session_id="s",
+                running=(_subagent_view("r1"), _subagent_view("r2"), _subagent_view("r3")),
+                recent=(),
+            ),
+        )
+        # count on the parent row.
+        assert panel._running_subagent_count("a1") == 3
