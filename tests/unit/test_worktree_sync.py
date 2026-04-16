@@ -25,10 +25,8 @@ from copilot_commander.adapters.git_adapter import (
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.config import AppConfig
 from copilot_commander.domain.models import Agent, Worktree
-from copilot_commander.domain.value_objects import utc_now
 from copilot_commander.services.worktree_service import (
     WorktreeService,
-    WorktreeSyncReport,
 )
 
 
@@ -186,11 +184,11 @@ class TestWorktreeSync(unittest.TestCase):
 
         report = service.sync_worktrees_from_git([Path(root)])
 
-        self.assertEqual(report.repo_roots_scanned, 1)
-        self.assertEqual(report.worktrees_upserted, 2)
-        self.assertEqual(report.worktrees_total, 2)
-        self.assertEqual(len(report.errors), 0)
-        self.assertEqual(len(store.list_worktrees()), 2)
+        assert report.repo_roots_scanned == 1
+        assert report.worktrees_upserted == 2
+        assert report.worktrees_total == 2
+        assert len(report.errors) == 0
+        assert len(store.list_worktrees()) == 2
 
     def test_sync_updates_existing_worktree(self) -> None:
         root = "/home/user/repo"
@@ -215,13 +213,13 @@ class TestWorktreeSync(unittest.TestCase):
 
         report = service.sync_worktrees_from_git([Path(root)])
 
-        self.assertEqual(report.worktrees_upserted, 1)
+        assert report.worktrees_upserted == 1
         updated = store.get_worktree("wt-1")
         assert updated is not None
         # Preserves agent assignment
-        self.assertEqual(updated.assigned_agent_id, "agent-1")
+        assert updated.assigned_agent_id == "agent-1"
         # Updates last_seen_at
-        self.assertGreater(updated.last_seen_at, now)
+        assert updated.last_seen_at > now
 
     def test_sync_skips_bare_worktrees(self) -> None:
         root = "/home/user/repo"
@@ -233,8 +231,8 @@ class TestWorktreeSync(unittest.TestCase):
 
         report = service.sync_worktrees_from_git([Path(root)])
 
-        self.assertEqual(report.worktrees_total, 1)
-        self.assertEqual(report.worktrees_upserted, 1)
+        assert report.worktrees_total == 1
+        assert report.worktrees_upserted == 1
 
     def test_sync_deduplicates_repo_roots(self) -> None:
         root = "/home/user/repo"
@@ -247,8 +245,8 @@ class TestWorktreeSync(unittest.TestCase):
             [Path(root), Path(root), Path(root)]
         )
 
-        self.assertEqual(report.repo_roots_scanned, 1)
-        self.assertEqual(report.worktrees_upserted, 1)
+        assert report.repo_roots_scanned == 1
+        assert report.worktrees_upserted == 1
 
     def test_sync_handles_git_error_gracefully(self) -> None:
         """If git fails for one root, other roots still sync."""
@@ -280,18 +278,18 @@ class TestWorktreeSync(unittest.TestCase):
             [Path(root_bad), Path(root_ok)]
         )
 
-        self.assertEqual(report.repo_roots_scanned, 2)
-        self.assertEqual(report.worktrees_upserted, 1)
-        self.assertEqual(len(report.errors), 1)
-        self.assertIn("not a git repository", report.errors[0])
+        assert report.repo_roots_scanned == 2
+        assert report.worktrees_upserted == 1
+        assert len(report.errors) == 1
+        assert "not a git repository" in report.errors[0]
 
     def test_sync_empty_repo_roots(self) -> None:
         service, store = _make_service()
 
         report = service.sync_worktrees_from_git([])
 
-        self.assertEqual(report.repo_roots_scanned, 0)
-        self.assertEqual(report.worktrees_upserted, 0)
+        assert report.repo_roots_scanned == 0
+        assert report.worktrees_upserted == 0
 
     def test_sync_assigns_agent_from_live_agents(self) -> None:
         """Agent worktree_path should map to assigned_agent_id."""
@@ -319,8 +317,8 @@ class TestWorktreeSync(unittest.TestCase):
         service.sync_worktrees_from_git([Path(root)])
 
         wts = store.list_worktrees()
-        self.assertEqual(len(wts), 1)
-        self.assertEqual(wts[0].assigned_agent_id, "agent-99")
+        assert len(wts) == 1
+        assert wts[0].assigned_agent_id == "agent-99"
 
 
 if __name__ == "__main__":

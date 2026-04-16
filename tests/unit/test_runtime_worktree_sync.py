@@ -14,6 +14,8 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from typing import Never
+
 from copilot_commander.adapters.copilot_adapter import CopilotCommandDetection
 from copilot_commander.services.discovery_service import (
     DiscoveryPaneSnapshot,
@@ -120,9 +122,9 @@ class TestRuntimeWorktreeSync(unittest.TestCase):
 
         sync.refresh()
 
-        self.assertEqual(len(wt_sync.called_with), 1)
+        assert len(wt_sync.called_with) == 1
         roots = wt_sync.called_with[0]
-        self.assertTrue(any(str(r) == "/repo" for r in roots))
+        assert any(str(r) == "/repo" for r in roots)
 
     def test_worktree_sync_not_called_when_none(self) -> None:
         """When worktree_sync is None, refresh still works."""
@@ -144,8 +146,8 @@ class TestRuntimeWorktreeSync(unittest.TestCase):
 
         result = sync.refresh()
 
-        self.assertIsNotNone(result.discovery_report)
-        self.assertEqual(result.error, None)
+        assert result.discovery_report is not None
+        assert result.error is None
 
     def test_worktree_sync_error_becomes_warning(self) -> None:
         """If worktree sync fails, it should add a warning, not crash."""
@@ -160,7 +162,7 @@ class TestRuntimeWorktreeSync(unittest.TestCase):
         )
 
         class FailingSync:
-            def sync_worktrees_from_git(self, repo_roots):
+            def sync_worktrees_from_git(self, repo_roots) -> Never:
                 msg = "sync failed"
                 raise RuntimeError(msg)
 
@@ -174,12 +176,11 @@ class TestRuntimeWorktreeSync(unittest.TestCase):
         result = sync.refresh()
 
         # Should still complete, not raise
-        self.assertIsNotNone(result.discovery_report)
+        assert result.discovery_report is not None
         # Should have a warning about the failure
         warning_msgs = [w.message for w in result.warnings]
-        self.assertTrue(
-            any("worktree sync failed" in m for m in warning_msgs),
-            f"Expected worktree sync warning, got: {warning_msgs}",
+        assert any("worktree sync failed" in m for m in warning_msgs), (
+            f"Expected worktree sync warning, got: {warning_msgs}"
         )
 
 
