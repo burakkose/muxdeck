@@ -366,11 +366,27 @@ class AgentListPanel(Static, can_focus=True):
             empty.append(" to scan", style=FG4)
             self.update(empty)
             return
+        # Capture whatever the cursor was on before the refresh. We
+        # want to keep the user on the *exact* row they were looking
+        # at — including sub-agent children — not just the parent.
+        prior_parent = self._parent_agent_id_at(self._selected_index)
+        prior_sub = self.selected_subagent
+        prior_is_header = self._is_header_row(self._selected_index)
         self._rebuild_rows()
-        # Prefer an explicit selection from the caller; otherwise keep
-        # the cursor on the same parent agent across refreshes.
-        target_parent = selected_agent_id or self._parent_agent_id_at(self._selected_index)
-        self._selected_index = self._row_index_for_agent(target_parent)
+        # Explicit selection from the caller wins only when it changes
+        # the parent focus; if the caller is just echoing back the
+        # same parent we already had, don't clobber the in-parent
+        # position the user has navigated to.
+        if selected_agent_id is not None and selected_agent_id != prior_parent:
+            self._selected_index = self._row_index_for_agent(selected_agent_id)
+        else:
+            target_parent = prior_parent or selected_agent_id
+            sub_call_id = prior_sub.tool_call_id if prior_sub is not None else None
+            self._selected_index = self._row_index_for_position(
+                parent_agent_id=target_parent,
+                sub_tool_call_id=sub_call_id,
+                prefer_header=prior_is_header,
+            )
         self._refresh_table()
         self._post_selection(self._selected_index)
 
@@ -435,13 +451,21 @@ class AgentListPanel(Static, can_focus=True):
 
     def set_subagents(self, agent_id: str, tree: DashboardSubAgentTreeView) -> None:
         """Feed a loaded sub-agent tree back into the widget."""
+        # Preserve the cursor position the same way :meth:`set_agents`
+        # does — rebuilding rows invalidates indices, and we don't
+        # want the user to lose their place when a tree refresh lands.
+        prior_parent = self._parent_agent_id_at(self._selected_index)
+        prior_sub = self.selected_subagent
+        prior_is_header = self._is_header_row(self._selected_index)
         self._subagents[agent_id] = tree
         self._loading.discard(agent_id)
         self._rebuild_rows()
-        # Clamp cursor — if the tree shrank, the previous index may now
-        # point past the last row.
         if self._rows:
-            self._selected_index = min(self._selected_index, len(self._rows) - 1)
+            self._selected_index = self._row_index_for_position(
+                parent_agent_id=prior_parent,
+                sub_tool_call_id=prior_sub.tool_call_id if prior_sub is not None else None,
+                prefer_header=prior_is_header,
+            )
         self._refresh_table()
 
     def _post_selection(self, index: int | None) -> None:
@@ -464,6 +488,45 @@ class AgentListPanel(Static, can_focus=True):
             if isinstance(row, _AgentRow) and row.agent.agent_id == agent_id:
                 return idx
         return 0
+
+    def _row_index_for_position(
+        self,
+        *,
+        parent_agent_id: str | None,
+        sub_tool_call_id: str | None,
+        prefer_header: bool,
+    ) -> int:
+        """Restore the cursor to the row that was focused before a refresh.
+
+        Prefers the specific sub-agent (by tool_call_id), falls back to
+        the sub-agent header, then to the parent row itself, so a
+        periodic refresh never drags the user back up to the parent
+        row while they're browsing children.
+        """
+        if parent_agent_id is None:
+            return 0
+        parent_idx = 0
+        header_idx: int | None = None
+        for idx, row in enumerate(self._rows):
+            if isinstance(row, _AgentRow) and row.agent.agent_id == parent_agent_id:
+                parent_idx = idx
+            elif isinstance(row, _SubAgentHeaderRow) and row.parent_agent_id == parent_agent_id:
+                header_idx = idx
+            elif (
+                sub_tool_call_id is not None
+                and isinstance(row, _SubAgentRow)
+                and row.parent_agent_id == parent_agent_id
+                and row.subagent.tool_call_id == sub_tool_call_id
+            ):
+                return idx
+        if prefer_header and header_idx is not None:
+            return header_idx
+        return parent_idx
+
+    def _is_header_row(self, index: int) -> bool:
+        if not self._rows or index >= len(self._rows):
+            return False
+        return isinstance(self._rows[index], _SubAgentHeaderRow)
 
     def _rebuild_rows(self) -> None:
         rows: list[_Row] = []
