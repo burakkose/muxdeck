@@ -44,7 +44,14 @@ class SessionSelected(Message):
 
 
 class SessionListPanel(Static, can_focus=True):
-    """Table listing all discovered Copilot CLI sessions."""
+    """Table listing all discovered Copilot CLI sessions.
+
+    Rendering is optimised for rapid cursor movement: per-row cells are
+    pre-built in two variants (selected / unselected) when the list is
+    set, so ``_render_table`` only has to assemble a ``rich.Table`` out
+    of already-constructed ``Text`` objects instead of re-allocating 7
+    columns x N rows of styled text on every keystroke.
+    """
 
     selected_index: reactive[int] = reactive(0)
 
@@ -52,6 +59,14 @@ class SessionListPanel(Static, can_focus=True):
         super().__init__(id=widget_id, **kwargs)
         self._items: tuple[SessionListItemView, ...] = ()
         self._selected_session_id: str | None = None
+        # Parallel to ``_items``: each entry is a 2-tuple of (unselected,
+        # selected) row cells. Populated by ``_rebuild_row_cache``.
+        self._row_cache: tuple[
+            tuple[tuple[Text, ...], tuple[Text, ...]], ...
+        ] = ()
+        # Draw coalescing: rapid cursor moves merge into one paint per
+        # Textual frame instead of one rebuild per keystroke.
+        self._render_pending: bool = False
 
     def set_sessions(
         self,
@@ -61,6 +76,7 @@ class SessionListPanel(Static, can_focus=True):
         notify: bool = True,
     ) -> None:
         self._items = items
+        self._rebuild_row_cache()
         if selected_session_id is not None:
             self._selected_session_id = selected_session_id
             idx = next(
@@ -82,8 +98,12 @@ class SessionListPanel(Static, can_focus=True):
         if not self._items:
             return None
         new_index = max(0, min(len(self._items) - 1, self.selected_index + delta))
+        if new_index == self.selected_index:
+            # Already at the edge — no repaint needed at all.
+            item = self._items[new_index]
+            return item.session_id
         self.selected_index = new_index
-        self._render_table()
+        self._schedule_render()
         item = self._items[new_index]
         self.post_message(SessionSelected(item.session_id))
         return item.session_id
@@ -92,6 +112,43 @@ class SessionListPanel(Static, can_focus=True):
         if not self._items or self.selected_index >= len(self._items):
             return None
         return self._items[self.selected_index].session_id
+
+    def _schedule_render(self) -> None:
+        """Coalesce multiple rapid render requests into one paint.
+
+        Holding ``j`` fires ``move_cursor`` many times per Textual
+        frame; without coalescing we'd rebuild the table once per
+        keystroke. ``call_after_refresh`` defers the actual render to
+        the next compositor tick so successive moves collapse into a
+        single repaint at the final index.
+        """
+        if self._render_pending:
+            return
+        self._render_pending = True
+        self.call_after_refresh(self._flush_render)
+
+    def _flush_render(self) -> None:
+        self._render_pending = False
+        self._render_table()
+
+    def _rebuild_row_cache(self) -> None:
+        """Pre-build row cells for every item in both selection states.
+
+        Each item contributes two 7-tuples of ``Text`` — one for the
+        unselected look and one for the selected look. During cursor
+        movement ``_render_table`` just picks the right variant per row
+        rather than re-allocating ``Text`` and re-running the style
+        logic N times.
+        """
+        cache: list[tuple[tuple[Text, ...], tuple[Text, ...]]] = []
+        for item in self._items:
+            cache.append(
+                (
+                    _build_row_cells(item, selected=False),
+                    _build_row_cells(item, selected=True),
+                )
+            )
+        self._row_cache = tuple(cache)
 
     def _render_table(self) -> None:
         table = Table(
@@ -109,28 +166,40 @@ class SessionListPanel(Static, can_focus=True):
         table.add_column("CPs", width=4, justify="right")
         table.add_column("State", width=10, no_wrap=True)
 
-        for idx, item in enumerate(self._items):
-            is_selected = idx == self.selected_index
-            color = _STATUS_COLORS.get(item.status, FG4)
-
-            row_style = f"bold {FG}" if is_selected else FG4
-            pointer = "▸" if is_selected else " "
-            summary_text = Text()
-            if item.origin == "windows":
-                summary_text.append("[win] ", style=f"bold {BLUE}")
-            summary_text.append(item.summary[:50], style=row_style)
-
-            table.add_row(
-                Text(f"{pointer}{item.status_glyph}", style=row_style),
-                summary_text,
-                Text(item.repository, style=f"{AQUA}" if is_selected else FG4),
-                Text(item.branch[:20], style=f"{YELLOW}" if is_selected else FG4),
-                Text(item.updated, style=row_style),
-                Text(str(item.checkpoint_count), style=row_style),
-                Text(item.status, style=f"bold {color}"),
-            )
+        selected_idx = self.selected_index
+        for idx, variants in enumerate(self._row_cache):
+            cells = variants[1] if idx == selected_idx else variants[0]
+            table.add_row(*cells)
 
         self.update(table)
+
+
+def _build_row_cells(
+    item: SessionListItemView,
+    *,
+    selected: bool,
+) -> tuple[Text, ...]:
+    """Construct the 7 ``Text`` cells for a single row.
+
+    Pulled out of ``_render_table`` so row cells can be pre-built once
+    per ``set_sessions`` call and re-used on every cursor move.
+    """
+    color = _STATUS_COLORS.get(item.status, FG4)
+    row_style = f"bold {FG}" if selected else FG4
+    pointer = "▸" if selected else " "
+    summary_text = Text()
+    if item.origin == "windows":
+        summary_text.append("[win] ", style=f"bold {BLUE}")
+    summary_text.append(item.summary[:50], style=row_style)
+    return (
+        Text(f"{pointer}{item.status_glyph}", style=row_style),
+        summary_text,
+        Text(item.repository, style=AQUA if selected else FG4),
+        Text(item.branch[:20], style=YELLOW if selected else FG4),
+        Text(item.updated, style=row_style),
+        Text(str(item.checkpoint_count), style=row_style),
+        Text(item.status, style=f"bold {color}"),
+    )
 
 
 class SessionDetailPanel(Static):

@@ -242,6 +242,9 @@ class CopilotSessionStore:
     _entry_cache: dict[Path, _CachedEntry] = field(
         default_factory=dict, init=False, repr=False
     )
+    _by_id: dict[str, CopilotLocalSession] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def discover(self, *, force: bool = False) -> list[CopilotLocalSession]:
         """Return all local sessions, using cache if fresh."""
@@ -249,6 +252,7 @@ class CopilotSessionStore:
         if not force and self._cache and (now - self._cache_time) < self.cache_ttl_sec:
             return list(self._cache)
         self._cache = self._scan()
+        self._by_id = {s.session_id: s for s in self._cache}
         self._cache_time = now
         return list(self._cache)
 
@@ -256,13 +260,27 @@ class CopilotSessionStore:
         """Replace the secondary roots and invalidate the cache."""
         self.extra_roots = tuple(roots)
         self._cache = []
+        self._by_id = {}
         self._cache_time = 0.0
         # Per-entry cache stays valid — it's keyed by absolute path, so
         # entries under removed or added roots simply go unused. This
         # avoids paying the cold-scan cost again when a root toggles.
 
     def get_session(self, session_id: str) -> CopilotLocalSession | None:
-        """Look up a single session by ID."""
+        """Look up a single session by ID.
+
+        Fast path: O(1) dict lookup against the last-scan index when
+        the TTL cache is still warm. Falls back to ``discover()`` only
+        if the cache is stale so the result is never a wrong answer
+        from a deleted session.
+        """
+        now = time.monotonic()
+        if self._cache and (now - self._cache_time) < self.cache_ttl_sec:
+            cached = self._by_id.get(session_id)
+            if cached is not None:
+                return cached
+            # Not in the warm index — may be a freshly created session
+            # that we haven't seen yet. Fall through to a rescan.
         for s in self.discover():
             if s.session_id == session_id:
                 return s

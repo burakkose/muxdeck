@@ -116,18 +116,41 @@ class DashboardScreen(ShellScreen):
                 if self._state is None:
                     self.set_status("Discovering agents…")
                 return
-        self._selected_agent_id = self._state.selected_agent_id
-        if self._selected_agent_id is not None:
-            self.commander_app.remember_agent_selection(self._selected_agent_id)
+        # Preserve the live selection across async refreshes.
+        #
+        # The sync worker captures ``_selected_agent_id`` at kickoff and
+        # bakes it into ``state.selected_agent_id``. If the user pressed
+        # j/k while the sync was in flight, that value is already stale;
+        # blindly assigning it back here causes the visible cursor to
+        # snap "backward" onto the old row. Keep whatever the user just
+        # navigated to and only adopt the state's selection when we
+        # don't have one yet (e.g. first load, or the previous selection
+        # no longer exists).
+        agent_ids = {a.agent_id for a in self._state.agents}
+        if self._selected_agent_id is None or self._selected_agent_id not in agent_ids:
+            self._selected_agent_id = self._state.selected_agent_id
+        effective_selected = self._selected_agent_id
+        if effective_selected is not None:
+            self.commander_app.remember_agent_selection(effective_selected)
         self.query_one(StatusBar).set_state(self._state.health, self._state.metrics)
         filter_bar = self.query_one(FilterBar)
         filter_bar.set_query(self._filters.text_query)
         self.query_one(AgentListPanel).set_agents(
             self._state.agents,
-            selected_agent_id=self._state.selected_agent_id,
+            selected_agent_id=effective_selected,
         )
-        self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
-        self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
+        # If the live selection drifted from what the worker built, the
+        # cached ``selected_agent`` view is for the wrong agent. Rebuild
+        # the detail panels from the (fast) single-agent path so the
+        # sidebar stays consistent with the highlighted row.
+        if (
+            effective_selected is not None
+            and self._state.selected_agent_id != effective_selected
+        ):
+            self._update_selected_detail()
+        else:
+            self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
+            self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
         attention_controller = getattr(self.runtime, "attention", None)
         if attention_controller is not None:
