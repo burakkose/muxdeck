@@ -335,6 +335,74 @@ class TmuxAdapterTests(unittest.TestCase):
             Path("/tmp/tmux-1000/default"),
         )
 
+    def test_capture_pane_with_escape_sequences_passes_minus_e(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "capture-pane"), stdout="styled")],
+        )
+        out = TmuxAdapter(runner).capture_pane(
+            "%1",
+            join_wrapped_lines=True,
+            include_escape_sequences=True,
+        )
+        self.assertEqual(out, "styled")
+        # -J and -e must both be present; -t binds to the pane id.
+        args = runner.calls[0][0]
+        self.assertIn("-J", args)
+        self.assertIn("-e", args)
+        self.assertEqual(args[:2], ("tmux", "capture-pane"))
+        self.assertIn("-p", args)
+        t_index = args.index("-t")
+        self.assertEqual(args[t_index + 1], "%1")
+
+    def test_pipe_pane_to_file_builds_append_shell_command(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "pipe-pane"), stdout="")],
+        )
+        TmuxAdapter(runner).pipe_pane_to_file(
+            "%1",
+            target_path=Path("/ring path/ring.log"),
+            append=True,
+        )
+        args = runner.calls[0][0]
+        self.assertEqual(args[:4], ("tmux", "pipe-pane", "-o", "-t"))
+        self.assertEqual(args[4], "%1")
+        # Path with spaces must be shlex-quoted so the spawned shell
+        # doesn't split "/ring path/ring.log" into two tokens.
+        self.assertTrue(args[5].startswith("cat >> "))
+        self.assertIn("'/ring path/ring.log'", args[5])
+
+    def test_pipe_pane_to_file_truncate_uses_single_redirect(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "pipe-pane"), stdout="")],
+        )
+        TmuxAdapter(runner).pipe_pane_to_file(
+            "%1",
+            target_path=Path("/tmp/x"),
+            append=False,
+        )
+        args = runner.calls[0][0]
+        self.assertTrue(args[5].startswith("cat > "))
+
+    def test_stop_pipe_pane_sends_bare_pipe_pane(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "pipe-pane"), stdout="")],
+        )
+        TmuxAdapter(runner).stop_pipe_pane("%7")
+        self.assertEqual(runner.calls[0][0], ("tmux", "pipe-pane", "-t", "%7"))
+
+    def test_stop_pipe_pane_swallows_tmux_error(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(
+                    ("tmux", "pipe-pane"),
+                    exit_code=1,
+                    stderr="can't find pane: %404",
+                ),
+            ],
+        )
+        # Must not raise — a dead pane during teardown is normal.
+        TmuxAdapter(runner).stop_pipe_pane("%404")
+
 
 if __name__ == "__main__":
     unittest.main()

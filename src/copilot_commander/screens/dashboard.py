@@ -385,6 +385,28 @@ class DashboardScreen(ShellScreen):
         self.commander_app.remember_session_selection(session_id)
         self.commander_app.switch_mode("replay")
 
+    def action_view_pane(self) -> None:
+        """Open the full-screen live tmux pane viewer for the selected agent."""
+        if self._selected_agent_id is None:
+            self.set_status("no agent selected")
+            return
+        agent = self._find_selected_agent()
+        if agent is None or not agent.pane_id:
+            self.set_status("✗ agent has no pane")
+            return
+        if self.runtime.pane_stream is None:
+            self.set_status("✗ pane streaming unavailable")
+            return
+        from copilot_commander.screens.pane_viewer import PaneViewerScreen
+
+        self.app.push_screen(
+            PaneViewerScreen(
+                self.runtime,
+                pane_id=agent.pane_id,
+                display_name=agent.repo_name or agent.name,
+            )
+        )
+
     def _execute_agent_intent(
         self,
         label: str,

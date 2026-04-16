@@ -23,6 +23,7 @@ from copilot_commander.adapters.copilot_session_store import (
     CopilotSessionStore,
     SessionStoreRoot,
 )
+from copilot_commander.adapters.pane_stream import PaneStreamAdapter
 from copilot_commander.adapters.subagent_reader import SubAgentReader
 from copilot_commander.adapters.windows_host import WindowsHostInfo, detect_windows_host
 from copilot_commander.bindings import GLOBAL_BINDINGS
@@ -101,6 +102,7 @@ class CommanderRuntime:
     attention: AttentionController | None = None
     operations: OperationsController | None = None
     fleet: FleetController | None = None
+    pane_stream: PaneStreamAdapter | None = None
 
 
 def _get_tmux_safe_driver() -> type[Driver] | None:
@@ -363,6 +365,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     git_adapter = GitAdapter(process_adapter)
     tmux_adapter = TmuxAdapter(process_adapter, socket_path=resolved_config.tmux.socket_path)
     action_service = TmuxActionService(tmux=tmux_adapter)
+    pane_stream_adapter = PaneStreamAdapter(tmux=tmux_adapter)
     copilot_adapter = CopilotAdapter(process_adapter)
     sessions = SessionService(store=store)
     replay_service = ReplayService(store=store, sessions=sessions)
@@ -477,6 +480,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         attention=attention,
         operations=operations,
         fleet=fleet,
+        pane_stream=pane_stream_adapter,
     )
 
 
