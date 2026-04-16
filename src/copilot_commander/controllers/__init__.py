@@ -25,6 +25,7 @@ from copilot_commander.controllers.dashboard_controller import (
     DashboardSort,
     DashboardSortField,
     DashboardState,
+    DashboardSubTaskView,
 )
 from copilot_commander.controllers.fleet_controller import (
     FleetAgentSummaryView,
@@ -95,6 +96,7 @@ __all__ = [
     "DashboardSort",
     "DashboardSortField",
     "DashboardState",
+    "DashboardSubTaskView",
     "FleetAgentSummaryView",
     "FleetController",
     "FleetFilterState",

@@ -36,6 +36,7 @@ class FakeTmux:
 
     existing_panes: set[str] = field(default_factory=set)
     captured_text: str = ""
+    select_window_calls: list[str] = field(default_factory=list)
     select_pane_calls: list[str] = field(default_factory=list)
     send_keys_calls: list[SendKeysCall] = field(default_factory=list)
     capture_calls: list[tuple[str, int | None]] = field(default_factory=list)
@@ -46,6 +47,9 @@ class FakeTmux:
 
     def select_pane(self, target_pane: str, /) -> None:
         self.select_pane_calls.append(target_pane)
+
+    def select_window(self, target_window: str, /) -> None:
+        self.select_window_calls.append(target_window)
 
     def send_keys(
         self,
@@ -83,6 +87,7 @@ class FakeTmux:
         @dataclass
         class FakePaneMeta:
             pane_id: str
+
         return FakePaneMeta(pane_id=self.new_window_pane_id)
 
 
@@ -95,6 +100,8 @@ _TARGET = AgentTargetView(
     name="test-agent",
     status=AgentStatus.RUNNING,
     pane_target="%5",
+    tmux_session_name="muxdeck",
+    tmux_window_id="@2",
     worktree_path="/home/user/repo",
     repo_root="/home/user/repo",
     branch="main",
@@ -131,6 +138,7 @@ class TestFocusPane:
 
         assert result.success is True
         assert result.pane_id == "%5"
+        assert tmux.select_window_calls == []
         assert tmux.select_pane_calls == ["%5"]
 
     def test_pane_missing(self) -> None:
@@ -141,7 +149,32 @@ class TestFocusPane:
 
         assert result.success is False
         assert "%99" in result.message
+        assert tmux.select_window_calls == []
         assert tmux.select_pane_calls == []
+
+    def test_cross_window_focus_selects_window_before_pane(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+
+        result = svc.focus_pane(
+            "%5",
+            tmux_window_id="@2",
+            tmux_session_name="muxdeck",
+        )
+
+        assert result.success is True
+        assert tmux.select_window_calls == ["=muxdeck:@2"]
+        assert tmux.select_pane_calls == ["%5"]
+
+    def test_execute_intent_open_pane_uses_agent_window_context(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+
+        result = svc.execute_intent(_intent("open_pane"))
+
+        assert result.success is True
+        assert tmux.select_window_calls == ["=muxdeck:@2"]
+        assert tmux.select_pane_calls == ["%5"]
 
 
 # ---------------------------------------------------------------------------

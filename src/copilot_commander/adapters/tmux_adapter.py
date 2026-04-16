@@ -275,6 +275,9 @@ class TmuxAdapter:
     def select_pane(self, target_pane: str, /) -> CommandResult:
         return self._run_tmux("select-pane", "-t", target_pane)
 
+    def select_window(self, target_window: str, /) -> CommandResult:
+        return self._run_tmux("select-window", "-t", target_window)
+
     def pane_exists(self, target_pane: str, /) -> bool:
         return self.get_pane_metadata(target_pane) is not None
 

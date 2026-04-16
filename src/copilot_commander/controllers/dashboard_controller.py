@@ -19,6 +19,7 @@ from copilot_commander.services.operator_status_service import (
     OperatorStatus,
     describe_operator_status,
 )
+from copilot_commander.services.subtask_registry import SubTaskRegistry
 from copilot_commander.types import Clock
 
 DashboardSortField = Literal["last_seen", "name", "status", "cost", "idle_seconds", "started_at"]
@@ -99,6 +100,7 @@ class DashboardAlertView:
     occurred_at: datetime
     alert_id: str = ""
     operator_status: OperatorStatus | None = None
+    subtask_count: int = 0
     is_critical: bool = False
 
 
@@ -120,6 +122,15 @@ class DashboardLogLineView:
     source: str
     sequence_no: int
     content: str
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardSubTaskView:
+    task_key: str
+    agent_type_label: str
+    model: str | None
+    description: str
+    status: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +159,7 @@ class DashboardAgentListItemView:
     sparkline: str = "        "
     is_potentially_stuck: bool = False
     operator_status: OperatorStatus | None = None
+    subtask_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +175,7 @@ class DashboardSelectedAgentView:
     latest_event_at: datetime | None
     log_preview: tuple[DashboardLogLineView, ...]
     recent_events: tuple[str, ...] = ()
+    sub_tasks: tuple[DashboardSubTaskView, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,11 +199,13 @@ class DashboardController:
         clock: Clock = utc_now,
         max_cost_usd: Decimal | None = None,
         max_runtime_minutes: int | None = None,
+        subtask_registry: SubTaskRegistry | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
         self._max_cost_usd = max_cost_usd
         self._max_runtime_minutes = max_runtime_minutes
+        self._subtask_registry = subtask_registry
 
     def build_state(
         self,
@@ -331,6 +346,11 @@ class DashboardController:
             sparkline=sparkline,
             is_potentially_stuck=is_potentially_stuck,
             operator_status=operator_status,
+            subtask_count=(
+                len(self._subtask_registry.get_tasks(agent.tmux_pane_id))
+                if self._subtask_registry is not None
+                else 0
+            ),
         )
 
     def _filter_agents(
@@ -443,6 +463,20 @@ class DashboardController:
             latest_event_at=latest_event.occurred_at if latest_event is not None else None,
             log_preview=self._build_log_preview(logs, preview_line_limit=preview_line_limit),
             recent_events=_extract_recent_events(logs),
+            sub_tasks=(
+                tuple(
+                    DashboardSubTaskView(
+                        task_key=t.task_key,
+                        agent_type_label=t.agent_type_label,
+                        model=t.model,
+                        description=t.description,
+                        status=t.status,
+                    )
+                    for t in self._subtask_registry.get_tasks(item.pane_id)
+                )
+                if self._subtask_registry is not None
+                else ()
+            ),
         )
 
     def _build_log_preview(
@@ -477,6 +511,9 @@ class DashboardController:
     ) -> tuple[DashboardAlertView, ...]:
         alerts: list[DashboardAlertView] = []
         for agent in agents:
+            # Skip dead/completed agents — their alerts are stale and not actionable.
+            if agent.status in {AgentStatus.DEAD, AgentStatus.COMPLETED}:
+                continue
             if not agent.needs_attention:
                 continue
             operator_status = agent.operator_status

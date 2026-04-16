@@ -406,19 +406,51 @@ def _blocking_attention_reason(kind: str, /) -> str:
 
 
 def _has_activity_signal(session_evidence: MonitoringEvidence | None, /) -> bool:
+    """Detect current activity from recent output only.
+
+    Signals that persist forever in scrollback (session_id, historical usage,
+    old activity markers) are NOT indicators of current work.  We look for
+    evidence of *ongoing* work: recent activity markers near the tail of
+    output, recent "Esc to cancel" UI marker (shown during active generation),
+    or fresh error messages.
+    """
     if session_evidence is None:
         return False
-    return any(
-        (
-            session_evidence.copilot_session_id is not None,
-            bool(session_evidence.latest_usage),
-            bool(session_evidence.blocking_issue_kinds),
-            bool(session_evidence.error_messages),
-            bool(session_evidence.parse_result.boundaries),
-            bool(session_evidence.parse_result.ui_markers),
-            bool(session_evidence.parse_result.activity_markers),
-        )
-    )
+
+    pr = session_evidence.parse_result
+
+    # "Esc to cancel" in the last few lines means the agent is actively generating.
+    if pr.ui_markers:
+        last_marker = pr.ui_markers[-1]
+        if getattr(last_marker, "kind", "") == "esc_to_cancel":
+            return True
+
+    # Activity markers (file reads, writes, tool calls) — only count if they
+    # appear in the tail of the output (last ~30 lines).
+    if pr.activity_markers:
+        max_line = 0
+        for m in pr.activity_markers:
+            span = getattr(m, "span", None)
+            if span is not None:
+                line = getattr(span, "start_line", 0)
+                if line > max_line:
+                    max_line = line
+        for m in pr.ui_markers:
+            span = getattr(m, "span", None)
+            if span is not None:
+                line = getattr(span, "start_line", 0)
+                if line > max_line:
+                    max_line = line
+
+        if max_line > 0:
+            tail_threshold = max(1, max_line - 30)
+            for m in pr.activity_markers:
+                span = getattr(m, "span", None)
+                if span is not None and getattr(span, "start_line", 0) >= tail_threshold:
+                    return True
+
+    # Fresh error messages (usually short-lived) count as activity.
+    return bool(session_evidence.error_messages)
 
 
 def _extract_latest_activity(

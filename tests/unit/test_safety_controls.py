@@ -33,6 +33,7 @@ class FakeTmux:
     """Minimal fake satisfying TmuxOperations protocol."""
 
     existing_panes: set[str] = field(default_factory=set)
+    select_window_calls: list[str] = field(default_factory=list)
     select_pane_calls: list[str] = field(default_factory=list)
     send_keys_calls: list[SendKeysCall] = field(default_factory=list)
 
@@ -41,6 +42,9 @@ class FakeTmux:
 
     def select_pane(self, target_pane: str, /) -> None:
         self.select_pane_calls.append(target_pane)
+
+    def select_window(self, target_window: str, /) -> None:
+        self.select_window_calls.append(target_window)
 
     def send_keys(
         self,

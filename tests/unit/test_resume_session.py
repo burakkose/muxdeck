@@ -43,6 +43,9 @@ class FakeTmux:
     def select_pane(self, target_pane: str, /) -> FakeCommandResult:
         return FakeCommandResult()
 
+    def select_window(self, target_window: str, /) -> FakeCommandResult:
+        return FakeCommandResult()
+
     def send_keys(
         self,
         target_pane: str,

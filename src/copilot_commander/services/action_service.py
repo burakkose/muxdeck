@@ -19,6 +19,8 @@ class TmuxOperations(Protocol):
 
     def select_pane(self, target_pane: str, /) -> CommandResult: ...
 
+    def select_window(self, target_window: str, /) -> CommandResult: ...
+
     def send_keys(
         self,
         target_pane: str,
@@ -62,13 +64,41 @@ class ActionResult:
     pane_id: str = ""
 
 
+def _build_window_target(
+    *,
+    tmux_window_id: str | None,
+    tmux_session_name: str | None,
+) -> str | None:
+    window_id = _normalize_target_part(tmux_window_id)
+    if window_id is None:
+        return None
+    session_name = _normalize_target_part(tmux_session_name)
+    if session_name is None:
+        return window_id
+    exact_session_name = session_name if session_name.startswith("=") else f"={session_name}"
+    return f"{exact_session_name}:{window_id}"
+
+
+def _normalize_target_part(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
 class TmuxActionService:
     """Executes agent actions via tmux."""
 
     def __init__(self, tmux: TmuxOperations) -> None:
         self._tmux = tmux
 
-    def focus_pane(self, pane_id: str) -> ActionResult:
+    def focus_pane(
+        self,
+        pane_id: str,
+        *,
+        tmux_window_id: str | None = None,
+        tmux_session_name: str | None = None,
+    ) -> ActionResult:
         """Switch tmux focus to the agent's pane."""
         if not self._tmux.pane_exists(pane_id):
             return ActionResult(
@@ -76,6 +106,12 @@ class TmuxActionService:
                 message=f"pane {pane_id} does not exist",
                 pane_id=pane_id,
             )
+        window_target = _build_window_target(
+            tmux_window_id=tmux_window_id,
+            tmux_session_name=tmux_session_name,
+        )
+        if window_target is not None:
+            self._tmux.select_window(window_target)
         self._tmux.select_pane(pane_id)
         return ActionResult(
             success=True,
@@ -130,7 +166,14 @@ class TmuxActionService:
 
         if kind == "open_pane":
             pane_target = meta.get("pane_target", intent.agent.pane_target)
-            return self.focus_pane(pane_target)
+            return self.focus_pane(
+                pane_target,
+                tmux_window_id=meta.get("tmux_window_id", intent.agent.tmux_window_id),
+                tmux_session_name=meta.get(
+                    "tmux_session_name",
+                    intent.agent.tmux_session_name,
+                ),
+            )
 
         if kind == "interrupt":
             pane_target = meta.get("pane_target", intent.agent.pane_target)
