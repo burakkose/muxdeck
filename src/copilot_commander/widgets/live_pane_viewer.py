@@ -43,6 +43,7 @@ class LivePaneViewer(RichLog):
     DEFAULT_CSS = """
     LivePaneViewer {
         height: 1fr;
+        width: 1fr;
         background: #1d2021;
         border: solid #504945;
         border-title-color: #bdae93;
@@ -55,6 +56,15 @@ class LivePaneViewer(RichLog):
 
     LivePaneViewer:focus {
         border: solid #83a598;
+    }
+
+    LivePaneViewer.-input-on {
+        border: double #fabd2f;
+        border-title-color: #fabd2f;
+    }
+
+    LivePaneViewer.-input-on:focus {
+        border: double #fabd2f;
     }
     """
 

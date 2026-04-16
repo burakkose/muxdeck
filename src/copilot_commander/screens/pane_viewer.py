@@ -8,9 +8,11 @@ Opened from the Dashboard via ``v``. The screen:
   appended to a session-scoped ring file and streamed into the viewer.
 * On unmount / Escape, stops piping so tmux doesn't keep a dangling
   shell open against a vanished screen.
-* Optionally (``x``) forwards typed keys to the pane via ``send-keys``.
-  Write-through is off by default so a broken key path can't break
-  viewing — read-only observation always works.
+* Press ``f2`` to toggle **input mode**: all keystrokes (including
+  ``esc`` and arrows) are forwarded to the real pane via
+  ``send-keys``. Press ``f2`` again to return to view mode. Input is
+  off by default so a broken key path can't break viewing — read-only
+  observation always works.
 """
 
 from __future__ import annotations
@@ -21,8 +23,6 @@ from typing import TYPE_CHECKING
 
 from textual import events
 from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Vertical
 
 from copilot_commander.adapters.pane_stream import (
     PaneRingReader,
@@ -44,16 +44,30 @@ if TYPE_CHECKING:
 # unchanged ``st_size`` so idle panes are nearly free.
 _POLL_INTERVAL_SEC = 0.1
 
+# f2 is intentionally chosen because it won't collide with printable
+# characters the user may want to forward to the pane while input is
+# enabled — letter-based toggles (``x``, ``i``) prevent typing those
+# characters through to the agent.
+_INPUT_TOGGLE_KEY = "f2"
 
-PANE_VIEWER_BINDINGS: list[BindingSpec] = [
-    Binding("escape", "close_viewer", "Close", show=False, priority=True),
-    Binding("x", "toggle_write_through", "Toggle input", show=False),
-]
 
-PANE_VIEWER_HINTS: tuple[KeyHint, ...] = (
-    KeyHint("esc", "close"),
-    KeyHint("x", "toggle input"),
-)
+PANE_VIEWER_BINDINGS: list[BindingSpec] = []
+
+
+def _hints_for_mode(*, input_on: bool) -> tuple[KeyHint, ...]:
+    if input_on:
+        return (
+            KeyHint("f2", "exit input"),
+            KeyHint("all keys", "→ pane"),
+        )
+    return (
+        KeyHint("esc", "close"),
+        KeyHint("f2", "send input"),
+        KeyHint("pgup/pgdn", "scroll"),
+    )
+
+
+PANE_VIEWER_HINTS: tuple[KeyHint, ...] = _hints_for_mode(input_on=False)
 
 
 class PaneViewerScreen(ShellScreen):
@@ -86,10 +100,13 @@ class PaneViewerScreen(ShellScreen):
     # ── composition & mount ──────────────────────────────────────────
 
     def compose_body(self) -> ComposeResult:
-        with Vertical(id="pane-viewer-root"):
-            viewer = LivePaneViewer(widget_id="pane-viewer")
-            viewer.border_title = f"Pane {self._pane_id} — {self._display_name}"
-            yield viewer
+        # Yield the viewer as a direct child of ``#shell-frame`` (which
+        # is ``height: 1fr``) so it fills the full screen. A wrapper
+        # container without explicit sizing used to collapse the
+        # viewer into a narrow strip.
+        viewer = LivePaneViewer(widget_id="pane-viewer")
+        viewer.border_title = self._border_title()
+        yield viewer
 
     def on_mount(self) -> None:
         viewer = self.query_one(LivePaneViewer)
@@ -125,7 +142,10 @@ class PaneViewerScreen(ShellScreen):
         except OSError as exc:
             self.set_status(f"⚠ pipe-pane failed: {exc} — read-only")
         self.set_interval(_POLL_INTERVAL_SEC, self._drain_ring)
-        self._update_status()
+        # Focus the viewer so PgUp/PgDn scroll and every key routes
+        # through its event chain to this screen's ``on_key``.
+        viewer.focus()
+        self._update_mode_chrome()
 
     def on_unmount(self) -> None:
         self._teardown_pipe()
@@ -152,42 +172,39 @@ class PaneViewerScreen(ShellScreen):
             self.end_loading(viewer)
             self._loading_cleared = True
 
-    # ── actions ──────────────────────────────────────────────────────
-
-    def action_close_viewer(self) -> None:
-        # ``switch_mode`` to dashboard handles both push_screen and
-        # mode-based navigation callers; we were added via push_screen
-        # from the dashboard so ``pop_screen`` is the right tear-down.
-        self._teardown_pipe()
-        self.app.pop_screen()
-
-    def action_toggle_write_through(self) -> None:
-        if self._adapter is None:
-            self.set_status("✗ pane streaming unavailable")
-            return
-        self._write_through = not self._write_through
-        self._update_status()
-
-    # ── key forwarding ───────────────────────────────────────────────
+    # ── key handling ─────────────────────────────────────────────────
+    #
+    # All key handling flows through ``on_key`` rather than
+    # ``BINDINGS``. Bindings fire *before* ``on_key`` gets a chance to
+    # ``stop()`` the event, which would make the toggle key and
+    # ``escape`` forever un-forwardable to the pane. Handling keys
+    # ourselves gives us a single choke-point where input mode can
+    # decide what to intercept.
 
     async def on_key(self, event: events.Key) -> None:
-        """Forward keystrokes to the pane when write-through is on.
-
-        Only handled when the viewer has focus *and* the user has
-        explicitly enabled write-through via ``x``. Otherwise we let
-        Textual dispatch the key normally (so Escape / x / tab nav
-        still work). The bound actions take precedence over this
-        handler because they're declared in ``BINDINGS`` with
-        ``priority=True`` where needed.
-        """
-        if not self._write_through or self._adapter is None:
+        # F2 always toggles, in both modes, before anything else.
+        if event.key == _INPUT_TOGGLE_KEY:
+            event.stop()
+            event.prevent_default()
+            self._toggle_write_through()
             return
+
+        if not self._write_through or self._adapter is None:
+            # View mode: escape closes, everything else is left for
+            # Textual's default handling (RichLog scroll keys, tab
+            # navigation, etc.).
+            if event.key == "escape":
+                event.stop()
+                event.prevent_default()
+                self.action_close_viewer()
+            return
+
+        # Input mode: forward every key we know how to translate. Keys
+        # we can't translate (unmapped function keys, complex shift
+        # combos) fall through to Textual so the user isn't trapped.
         translation = translate_textual_key(event.key)
         if translation is None:
             return
-        # Stop Textual dispatching this key to its own bindings while
-        # write-through is active — otherwise printable characters
-        # would still try to trigger ``x`` / ``escape`` at the screen.
         event.stop()
         event.prevent_default()
         try:
@@ -196,6 +213,19 @@ class PaneViewerScreen(ShellScreen):
             self.set_status(f"✗ send-keys failed: {exc.stderr or 'tmux error'}")
         except OSError as exc:
             self.set_status(f"✗ send-keys failed: {exc}")
+
+    # ── actions ──────────────────────────────────────────────────────
+
+    def action_close_viewer(self) -> None:
+        self._teardown_pipe()
+        self.app.pop_screen()
+
+    def _toggle_write_through(self) -> None:
+        if self._adapter is None:
+            self.set_status("✗ pane streaming unavailable")
+            return
+        self._write_through = not self._write_through
+        self._update_mode_chrome()
 
     # ── helpers ──────────────────────────────────────────────────────
 
@@ -211,10 +241,27 @@ class PaneViewerScreen(ShellScreen):
         except OSError:
             return
 
-    def _update_status(self) -> None:
-        mode = "input: ON" if self._write_through else "input: off (press x)"
+    def _border_title(self) -> str:
+        mode = "● INPUT" if self._write_through else "VIEW"
+        return f"[{mode}] Pane {self._pane_id} — {self._display_name}"
+
+    def _update_mode_chrome(self) -> None:
+        """Reflect the current mode in title, border, footer, status."""
+        if self.is_mounted:
+            viewer = self.query_one(LivePaneViewer)
+            viewer.border_title = self._border_title()
+            viewer.set_class(self._write_through, "-input-on")
+            self.set_hints(_hints_for_mode(input_on=self._write_through))
         pipe = "streaming" if self._pipe_started else "static"
-        self.set_status(f"pane {self._pane_id} · {pipe} · {mode}")
+        if self._write_through:
+            self.set_status(
+                f"● INPUT ON · pane {self._pane_id} · {pipe} · "
+                "every key goes to the pane — press f2 to exit",
+            )
+        else:
+            self.set_status(
+                f"VIEW · pane {self._pane_id} · {pipe} · press f2 to send input · esc to close",
+            )
 
 
 __all__ = ["PANE_VIEWER_BINDINGS", "PANE_VIEWER_HINTS", "PaneViewerScreen"]
