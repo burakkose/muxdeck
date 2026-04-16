@@ -157,6 +157,7 @@ class FakeDashboardController:
                 worktree_id="worktree-1",
                 session_count=2,
                 open_session_id=selected.latest_session_id,
+                copilot_session_id=None,
                 latest_event_kind=selected.last_event_kind,
                 latest_event_severity="warning" if selected.needs_attention else "info",
                 latest_event_at=timestamp,

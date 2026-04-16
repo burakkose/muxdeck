@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 from rich.table import Table
 from rich.text import Text
@@ -159,6 +160,22 @@ def _format_idle(seconds: int) -> str:
     if seconds < 3600:
         return f"{seconds // 60}m"
     return f"{seconds // 3600}h{(seconds % 3600) // 60}m"
+
+
+def _format_duration(started_at: datetime) -> str:
+    """Format agent uptime from start to now."""
+    now = datetime.now(UTC)
+    delta = now - started_at
+    total_secs = int(delta.total_seconds())
+    if total_secs < 0:
+        return "-"
+    if total_secs < 60:
+        return f"{total_secs}s"
+    if total_secs < 3600:
+        return f"{total_secs // 60}m {total_secs % 60}s"
+    hours = total_secs // 3600
+    minutes = (total_secs % 3600) // 60
+    return f"{hours}h {minutes}m"
 
 
 def _format_cost(value: str | None) -> str:
@@ -353,6 +370,8 @@ class AgentDetailPanel(Static):
             ("window", item.window_name or "", FG2),
             ("pane", item.pane_id, BLUE),
             ("session", _format_session(agent), FG4),
+            ("copilot", agent.copilot_session_id or "", FG4),
+            ("duration", _format_duration(item.started_at), FG2),
             ("idle", _format_idle(item.idle_seconds), FG2),
             ("pulse", item.sparkline if item.sparkline.strip() else "-", AQUA),
             ("seen", format_timestamp(item.last_seen_at), FG4),

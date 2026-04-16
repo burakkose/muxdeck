@@ -74,6 +74,7 @@ def _selected(item: DashboardAgentListItemView) -> DashboardSelectedAgentView:
         worktree_id="worktree-1",
         session_count=1,
         open_session_id=item.latest_session_id,
+        copilot_session_id=None,
         latest_event_kind=item.last_event_kind,
         latest_event_severity="error" if item.status is AgentStatus.ERROR else "warning",
         latest_event_at=_TS,
