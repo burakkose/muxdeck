@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from copilot_commander.adapters.copilot_activity_reader import AgentActivity
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.events import Event, LogChunk
@@ -209,6 +210,12 @@ class SubAgentReaderPort(Protocol):
     def read(self, session_id: str) -> SubAgentTree | None: ...
 
 
+class CopilotActivityReaderPort(Protocol):
+    """Resolve what an agent is doing right now from its events log."""
+
+    def read(self, session_id: str) -> AgentActivity | None: ...
+
+
 class CopilotSessionResolverPort(Protocol):
     """Resolve a tmux pane's pid to a live Copilot session id."""
 
@@ -238,6 +245,7 @@ class DashboardController:
         max_runtime_minutes: int | None = None,
         subagent_reader: SubAgentReaderPort | None = None,
         session_resolver: CopilotSessionResolverPort | None = None,
+        activity_reader: CopilotActivityReaderPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
@@ -245,6 +253,7 @@ class DashboardController:
         self._max_runtime_minutes = max_runtime_minutes
         self._subagent_reader = subagent_reader
         self._session_resolver = session_resolver
+        self._activity_reader = activity_reader
 
     def load_subagents(self, agent_id: str) -> DashboardSubAgentTreeView:
         """Lazy-load the sub-agent tree for one agent.
@@ -377,6 +386,36 @@ class DashboardController:
 
         current_activity = _activity_from_task_title(agent.task_title)
         now = self._clock()
+
+        # Events-based current activity is much more reliable than regex
+        # parsing of the scrollback. When we have a real copilot session
+        # id and the reader is wired up, use the ground-truth tool-start
+        # stream to render "editing foo.py" / "running pytest" / "waiting:
+        # which DB?" instead of the stale task_title. Falls back to the
+        # old title-derived activity when the session hasn't persisted
+        # any events yet.
+        events_activity: AgentActivity | None = None
+        if self._activity_reader is not None and agent.copilot_session_id:
+            try:
+                events_activity = self._activity_reader.read(agent.copilot_session_id)
+            except Exception:
+                # The reader is best-effort; never let a stray IO error
+                # crash a dashboard render.
+                events_activity = None
+        if events_activity is not None and events_activity.summary:
+            current_activity = events_activity.summary
+        # ask_user pending in the events stream is the cleanest possible
+        # "agent is blocked on the operator" signal — much more reliable
+        # than regex-matching "Would you like me to..." in scrollback.
+        # Surface it as an attention reason when the status heuristic
+        # didn't already flag it (e.g. the pane hasn't been idle long
+        # enough for the scrollback-based rule to fire yet).
+        if events_activity is not None and events_activity.waiting_for_user:
+            needs_attention = True
+            if events_activity.tool_target:
+                attention_reason = f"waiting for input: {events_activity.tool_target}"
+            else:
+                attention_reason = "waiting for input"
 
         # Sparkline: record activity and build visualization
         _record_activity(agent.id, current_activity, now)
