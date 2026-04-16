@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from textual.app import App
+from textual.driver import Driver
 from textual.worker import Worker, WorkerState
 
 from copilot_commander.adapters import (
@@ -94,6 +96,32 @@ class CommanderRuntime:
     fleet: FleetController | None = None
 
 
+def _get_tmux_safe_driver() -> type[Driver] | None:
+    """Return a driver that disables the Kitty keyboard protocol inside tmux.
+
+    Textual enables the Kitty keyboard protocol (``\\x1b[>1u``) which changes
+    how modifier keys are encoded.  tmux (with ``extended-keys off``, the
+    default) does not recognise the enhanced encoding, so the prefix key
+    (e.g. Ctrl-A) stops working.  When we detect a tmux session we pop the
+    protocol immediately after Textual pushes it.
+    """
+    if not os.environ.get("TMUX"):
+        return None
+    if sys.platform == "win32":
+        return None
+
+    from textual.drivers.linux_driver import LinuxDriver
+
+    class _TmuxSafeDriver(LinuxDriver):
+        def start_application_mode(self) -> None:
+            super().start_application_mode()
+            # Pop the Kitty keyboard protocol so tmux can see its prefix key.
+            self.write("\x1b[<u")
+            self.flush()
+
+    return _TmuxSafeDriver
+
+
 class CommanderApp(App[None]):
     CSS_PATH = "styles.tcss"
     BINDINGS = GLOBAL_BINDINGS
@@ -101,7 +129,7 @@ class CommanderApp(App[None]):
     SUB_TITLE = "Operator Console"
 
     def __init__(self, runtime: CommanderRuntime) -> None:
-        super().__init__()
+        super().__init__(driver_class=_get_tmux_safe_driver())
         self.runtime = runtime
         self.selected_agent_id: str | None = None
         self.selected_worktree_id: str | None = None
