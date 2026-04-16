@@ -19,6 +19,7 @@ from copilot_commander.controllers import (
 )
 from copilot_commander.screens.base import ShellScreen
 from copilot_commander.screens.confirm_dialog import ConfirmScreen
+from copilot_commander.screens.message_input import MessageResult, SendMessageScreen
 from copilot_commander.services.attention_service import AttentionNotification
 from copilot_commander.widgets.dashboard import (
     ActivityPanel,
@@ -261,6 +262,49 @@ class DashboardScreen(ShellScreen):
 
     def action_open_worktree(self) -> None:
         self._set_agent_intent_status("open_worktree", self.runtime.agents.open_worktree_intent)
+
+    def action_send_message(self) -> None:
+        """Open modal to send a message to the selected agent's tmux pane."""
+        if self._selected_agent_id is None:
+            self.set_status("no agent selected")
+            return
+        if self.runtime.actions is None:
+            self.set_status("✗ action service unavailable")
+            return
+        agent = self._find_selected_agent()
+        if agent is None or not agent.pane_id:
+            self.set_status("✗ agent has no pane")
+            return
+        name = agent.repo_name or agent.name
+        self.app.push_screen(
+            SendMessageScreen(name, agent.pane_id),
+            callback=self._on_message_result,
+        )
+
+    def _on_message_result(self, result: MessageResult | None) -> None:
+        if result is None:
+            self.set_status("message cancelled")
+            return
+        if self.runtime.actions is None:
+            return
+        action_result = self.runtime.actions.send_message(result.pane_id, result.text)
+        prefix = "✓" if action_result.success else "✗"
+        self.set_status(f"{prefix} {action_result.message}")
+
+    def action_view_logs(self) -> None:
+        """Switch to replay screen with the selected agent's latest session."""
+        if self._selected_agent_id is None:
+            self.set_status("no agent selected")
+            return
+        if self._state is None or self._state.selected_agent is None:
+            self.set_status("no agent detail loaded")
+            return
+        session_id = self._state.selected_agent.open_session_id
+        if session_id is None:
+            self.set_status("no active session for this agent")
+            return
+        self.commander_app.remember_session_selection(session_id)
+        self.commander_app.switch_mode("replay")
 
     def _execute_agent_intent(
         self,

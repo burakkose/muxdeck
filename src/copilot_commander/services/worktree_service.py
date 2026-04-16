@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from copilot_commander.domain.value_objects import WorktreeId, utc_now
 from copilot_commander.exceptions import DomainValidationError, PersistenceError
 from copilot_commander.types import Clock
 
+_log = logging.getLogger(__name__)
 _SLUG_PATTERN = re.compile(r"[^a-z0-9]+")
 
 
@@ -138,6 +140,16 @@ class WorktreePruneReport:
     remaining_paths: tuple[Path, ...]
     conflicts: tuple[WorktreeOrphanConflict, ...]
     git_outcome: GitWorktreePruneOutcome
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeSyncReport:
+    """Result of syncing git worktrees into the store."""
+
+    repo_roots_scanned: int
+    worktrees_upserted: int
+    worktrees_total: int
+    errors: tuple[str, ...]
 
 
 class WorktreeService:
@@ -421,6 +433,85 @@ class WorktreeService:
             )
         )
 
+    def sync_worktrees_from_git(
+        self,
+        repo_roots: Sequence[Path],
+    ) -> WorktreeSyncReport:
+        """Discover worktrees from git and upsert them into the store.
+
+        Uses ``list_worktrees`` per repo root (fast, no per-worktree
+        ``inspect_repository`` calls).  Existing DB records are updated with
+        fresh branch/lock/prune state; new worktrees get created.
+
+        Agent assignments are preserved for existing records.
+        """
+        now = self._clock()
+        upserted = 0
+        total = 0
+        errors: list[str] = []
+        agent_worktree_map = self._build_agent_worktree_map()
+
+        seen_roots: set[Path] = set()
+        for root in repo_roots:
+            resolved = root.resolve()
+            if resolved in seen_roots:
+                continue
+            seen_roots.add(resolved)
+            try:
+                git_worktrees = self._git.list_worktrees(resolved)
+            except Exception as exc:
+                _log.debug("worktree sync: failed to list worktrees for %s: %s", resolved, exc)
+                errors.append(f"{resolved}: {exc}")
+                continue
+
+            for git_wt in git_worktrees:
+                if git_wt.is_bare:
+                    continue
+                total += 1
+                try:
+                    existing = self._worktrees.get_worktree_by_path(str(git_wt.path))
+                    branch = git_wt.branch or (existing.branch if existing else "detached")
+                    agent_id = (
+                        existing.assigned_agent_id
+                        if existing and existing.assigned_agent_id
+                        else agent_worktree_map.get(git_wt.path)
+                    )
+                    worktree = Worktree(
+                        id=existing.id if existing else str(WorktreeId.generate()),
+                        repo_root=str(git_wt.repo_root),
+                        path=str(git_wt.path),
+                        branch=branch,
+                        base_branch=existing.base_branch if existing else None,
+                        is_main_worktree=git_wt.is_main_worktree,
+                        is_dirty=existing.is_dirty if existing else False,
+                        ahead_count=existing.ahead_count if existing else None,
+                        behind_count=existing.behind_count if existing else None,
+                        locked=git_wt.is_locked,
+                        assigned_agent_id=agent_id,
+                        created_at=existing.created_at if existing else now,
+                        last_seen_at=now,
+                    )
+                    self._worktrees.upsert_worktree(worktree)
+                    upserted += 1
+                except Exception as exc:
+                    _log.debug("worktree sync: failed to upsert %s: %s", git_wt.path, exc)
+                    errors.append(f"{git_wt.path}: {exc}")
+
+        return WorktreeSyncReport(
+            repo_roots_scanned=len(seen_roots),
+            worktrees_upserted=upserted,
+            worktrees_total=total,
+            errors=tuple(errors),
+        )
+
+    def _build_agent_worktree_map(self) -> dict[Path, str]:
+        """Build a map from worktree path to agent ID from live agents."""
+        result: dict[Path, str] = {}
+        for agent in self._agents.list_agents():
+            if agent.worktree_path:
+                result[Path(agent.worktree_path)] = agent.id
+        return result
+
     def _build_create_request(
         self,
         *,
@@ -604,4 +695,5 @@ __all__ = [
     "WorktreePruneReport",
     "WorktreeRemoveResult",
     "WorktreeService",
+    "WorktreeSyncReport",
 ]
