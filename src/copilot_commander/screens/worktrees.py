@@ -55,6 +55,12 @@ class WorktreesScreen(ShellScreen):
         self.refresh_data()
 
     def refresh_data(self) -> None:
+        # The expensive bit used to be `WorktreeController._conflict_map`,
+        # which ran `git worktree list --porcelain` per repo_root on every
+        # refresh. The controller now skips conflict detection for the
+        # list view (only the selected worktree computes conflicts in its
+        # detail panel), so this call is back to a handful of cached
+        # SQLite queries and safe to run on the UI thread.
         self._worktrees = self.runtime.worktrees.list_worktrees()
         if self._selected_worktree_id is None and self._worktrees:
             self._selected_worktree_id = self._worktrees[0].worktree_id

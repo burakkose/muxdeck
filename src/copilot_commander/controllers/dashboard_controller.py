@@ -604,16 +604,6 @@ class DashboardController:
         )
 
 
-_ACTIVITY_PREFIXES = (
-    "reading",
-    "writing",
-    "running",
-    "thinking",
-    "searching",
-    "using",
-)
-
-
 _EVENT_EMOJI: dict[str, str] = {
     "file_read": "📖",
     "file_write": "✏️",
@@ -661,12 +651,24 @@ def _extract_recent_events(
 
 
 def _activity_from_task_title(title: str | None) -> str | None:
+    """Surface whatever Copilot said it's doing, not just whitelisted verbs.
+
+    Earlier versions only passed titles that started with a known verb
+    ("reading", "writing", ...), which meant the dashboard said nothing
+    when the parser returned a free-form title ("Investigating test
+    failures", "Refactoring cache layer"). The user's top complaint was
+    "I do not easily know what an agent is doing", so show the title
+    verbatim when it's present and non-empty; trim overly long lines so
+    the detail panel stays compact.
+    """
     if title is None:
         return None
-    lower = title.lower().strip()
-    if any(lower.startswith(p) for p in _ACTIVITY_PREFIXES):
-        return title
-    return None
+    trimmed = title.strip()
+    if not trimmed:
+        return None
+    if len(trimmed) > 120:
+        trimmed = trimmed[:117].rstrip() + "…"
+    return trimmed
 
 
 def _path_name(value: str | None) -> str | None:

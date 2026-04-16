@@ -50,9 +50,7 @@ class FakeMonitoring:
 
 
 class FakeGit:
-    def __init__(
-        self, repo_root: str = "/repo", branch: str | None = "main"
-    ) -> None:
+    def __init__(self, repo_root: str = "/repo", branch: str | None = "main") -> None:
         self.repo_root = Path(repo_root)
         self.branch = branch
 

@@ -209,8 +209,7 @@ class MonitoringService:
                 ),
                 session_exit_reason=(
                     "marked_complete"
-                    if existing_agent is not None
-                    and existing_agent.status == AgentStatus.COMPLETED
+                    if existing_agent is not None and existing_agent.status == AgentStatus.COMPLETED
                     else None
                 ),
             )
@@ -319,15 +318,21 @@ def compute_status_heuristics(
     idle_reference = last_activity_at or payload.started_at
     idle_seconds = max(0, int((payload.observed_at - idle_reference).total_seconds()))
 
+    # A completed agent stays completed while its pane is quiet — even if
+    # the pane is still alive and old error text lingers in the scrollback.
+    # Only fall through to the live-classification branches if the pane
+    # produced fresh activity after mark-complete, so the user can resume
+    # the same pane without it being frozen in a terminal state.
+    if payload.session_exit_reason == "marked_complete" and not payload.activity_observed:
+        return StatusHeuristicResult(
+            status=AgentStatus.COMPLETED,
+            idle_seconds=idle_seconds,
+            last_activity_at=last_activity_at,
+            needs_attention=False,
+            attention_reason=None,
+        )
+
     if payload.pane_dead:
-        if payload.session_exit_reason == "marked_complete":
-            return StatusHeuristicResult(
-                status=AgentStatus.COMPLETED,
-                idle_seconds=idle_seconds,
-                last_activity_at=last_activity_at,
-                needs_attention=False,
-                attention_reason=None,
-            )
         return StatusHeuristicResult(
             status=AgentStatus.DEAD,
             idle_seconds=idle_seconds,

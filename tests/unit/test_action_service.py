@@ -37,6 +37,9 @@ class FakeTmux:
     existing_panes: set[str] = field(default_factory=set)
     captured_text: str = ""
     select_pane_calls: list[str] = field(default_factory=list)
+    select_window_calls: list[str] = field(default_factory=list)
+    switch_client_calls: list[str] = field(default_factory=list)
+    has_client: bool = True
     send_keys_calls: list[SendKeysCall] = field(default_factory=list)
     capture_calls: list[tuple[str, int | None]] = field(default_factory=list)
     new_window_pane_id: str = "%10"
@@ -46,6 +49,15 @@ class FakeTmux:
 
     def select_pane(self, target_pane: str, /) -> None:
         self.select_pane_calls.append(target_pane)
+
+    def select_window(self, target_window: str, /) -> None:
+        self.select_window_calls.append(target_window)
+
+    def switch_client(self, target: str, /) -> None:
+        self.switch_client_calls.append(target)
+
+    def has_attached_client(self) -> bool:
+        return self.has_client
 
     def send_keys(
         self,
@@ -83,6 +95,7 @@ class FakeTmux:
         @dataclass
         class FakePaneMeta:
             pane_id: str
+
         return FakePaneMeta(pane_id=self.new_window_pane_id)
 
 
@@ -132,6 +145,31 @@ class TestFocusPane:
         assert result.success is True
         assert result.pane_id == "%5"
         assert tmux.select_pane_calls == ["%5"]
+        # With an attached client, switch-client is used to hand over the view.
+        assert tmux.switch_client_calls == ["%5"]
+
+    def test_cross_window_focus_selects_window_and_switches_client(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+
+        result = svc.focus_pane("%5", window_id="@42", session_name="muxdeck")
+
+        assert result.success is True
+        assert tmux.select_pane_calls == ["%5"]
+        assert tmux.select_window_calls == ["@42"]
+        assert tmux.switch_client_calls == ["%5"]
+
+    def test_no_attached_client_reports_advisory(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"}, has_client=False)
+        svc = TmuxActionService(tmux)
+
+        result = svc.focus_pane("%5", window_id="@42")
+
+        assert result.success is True
+        assert tmux.select_pane_calls == ["%5"]
+        assert tmux.select_window_calls == ["@42"]
+        assert tmux.switch_client_calls == []
+        assert "no attached tmux client" in result.message
 
     def test_pane_missing(self) -> None:
         tmux = FakeTmux(existing_panes=set())

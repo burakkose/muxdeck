@@ -140,6 +140,46 @@ class MonitoringServiceTests(unittest.TestCase):
         assert dead.status is AgentStatus.DEAD
         assert dead.needs_attention is True
 
+    def test_compute_status_heuristics_completed_live_pane_with_stale_errors(self) -> None:
+        """Live pane + marked_complete + stale error lines → COMPLETED, not ERROR.
+
+        Regression: error text captured before the user marked the agent as
+        complete must not flip the displayed status back to ERROR once the
+        pane has gone quiet.
+        """
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        completed = compute_status_heuristics(
+            StatusHeuristicInput(
+                started_at=now - timedelta(minutes=5),
+                observed_at=now,
+                previous_last_activity_at=now - timedelta(minutes=2),
+                pane_dead=False,
+                activity_observed=False,
+                error_messages=("ERROR: rate limit",),
+                session_exit_reason="marked_complete",
+            )
+        )
+        assert completed.status is AgentStatus.COMPLETED
+        assert completed.needs_attention is False
+
+    def test_compute_status_heuristics_completed_reopens_on_new_activity(self) -> None:
+        """If fresh activity appears after mark-complete, the live status wins.
+
+        This lets the user reuse the same pane without the TUI freezing on a
+        terminal COMPLETED state.
+        """
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        result = compute_status_heuristics(
+            StatusHeuristicInput(
+                started_at=now - timedelta(minutes=5),
+                observed_at=now,
+                pane_dead=False,
+                activity_observed=True,
+                session_exit_reason="marked_complete",
+            )
+        )
+        assert result.status is AgentStatus.RUNNING
+
     def test_monitor_discoveries_builds_persistable_agent_facts(self) -> None:
         now = datetime(2025, 1, 1, 12, tzinfo=UTC)
         recorder = FakeRecorder(recorded=[])

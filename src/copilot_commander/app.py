@@ -217,9 +217,7 @@ class CommanderApp(App[None]):
             return current_session_id
         # Try interpreting current_session_id as a copilot session ID
         if current_session_id is not None:
-            by_copilot = self.runtime.store.get_session_by_copilot_session_id(
-                current_session_id
-            )
+            by_copilot = self.runtime.store.get_session_by_copilot_session_id(current_session_id)
             if by_copilot is not None:
                 return by_copilot.id
         if self.selected_agent_id is not None:
@@ -324,11 +322,13 @@ class CommanderApp(App[None]):
 
     def _refresh_screen_widgets(self, *, force: bool = False) -> None:
         screen = self.screen
-        # Periodic sync only auto-refreshes the dashboard.
-        # Other screens refresh on tab switch (on_show) or manual r key.
+        # Periodic sync auto-refreshes the screens where staleness is
+        # user-visible. Other screens (worktrees, replay, setup) only
+        # refresh on tab-switch (on_show) or a manual `r` key so we don't
+        # spam git subprocesses or filesystem scans.
         if not force and not isinstance(
             screen,
-            DashboardScreen | AttentionScreen | OperationsScreen | FleetScreen,
+            DashboardScreen | AttentionScreen | OperationsScreen | FleetScreen | SessionsScreen,
         ):
             return
         refresher = getattr(screen, "refresh_data", None)
