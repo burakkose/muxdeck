@@ -1,8 +1,8 @@
-/* ── Modern Dark — copilot-commander ─────────────────────────────── */
+/* ── Gruvbox Dark — copilot-commander ─────────────────────────────── */
 
 Screen {
-    background: #151921;
-    color: #e2e8f0;
+    background: #282828;
+    color: #ebdbb2;
 }
 
 /* ── shell chrome ────────────────────────────────────────────────── */
@@ -10,61 +10,61 @@ Screen {
 #shell-tab-bar {
     dock: top;
     height: 1;
-    background: #0d1017;
-    color: #e2e8f0;
+    background: #1d2021;
+    color: #ebdbb2;
 }
 
 #shell-frame {
     height: 1fr;
     layout: vertical;
-    background: #151921;
+    background: #282828;
     padding: 0 1;
 }
 
 #shell-footer {
     dock: bottom;
     height: 1;
-    background: #0d1017;
+    background: #1d2021;
 }
 
 /* ── shared frame: borderless content area ────────────────────────── */
 
 .frame {
     border: none;
-    background: #151921;
+    background: #282828;
 }
 
 /* ── panel sections inside frames (borderless, thin separators) ─── */
 
 .section {
     border: none;
-    background: #151921;
+    background: #282828;
     padding: 0 1;
 }
 
 .section-top {
     border: none;
-    border-top: solid #272c36;
-    background: #151921;
+    border-top: solid #504945;
+    background: #282828;
     padding: 0 1;
 }
 
 .divider-right {
     border: none;
-    border-right: solid #272c36;
+    border-right: solid #504945;
     padding: 0 1;
 }
 
 /* legacy .panel for screens not yet fully migrated */
 .panel {
     border: none;
-    background: #151921;
+    background: #282828;
     padding: 0 1;
 }
 
 .muted {
-    background: #1c2029;
-    color: #94a3b8;
+    background: #3c3836;
+    color: #bdae93;
     height: 1;
     padding: 0 1;
 }
@@ -87,7 +87,7 @@ Screen {
 
 #dashboard-status-bar {
     height: 1;
-    background: #151921;
+    background: #282828;
     padding: 0 1;
 }
 
@@ -114,19 +114,18 @@ Screen {
 #dashboard-detail {
     height: auto;
     min-height: 8;
-    max-height: 20;
 }
 
 #dashboard-log {
     height: 1fr;
     min-height: 6;
-    border-top: solid #272c36;
+    border-top: solid #504945;
 }
 
 #dashboard-alerts {
     height: auto;
-    max-height: 6;
-    border-top: solid #272c36;
+    max-height: 8;
+    border-top: solid #504945;
 }
 
 /* ── attention ───────────────────────────────────────────────────── */
@@ -183,7 +182,7 @@ Screen {
 
 #operations-bottom {
     height: 1fr;
-    border-top: solid #272c36;
+    border-top: solid #504945;
 }
 
 #operations-selection {
@@ -280,13 +279,13 @@ Screen {
 #worktrees-conflicts {
     height: auto;
     max-height: 6;
-    border-top: solid #272c36;
+    border-top: solid #504945;
 }
 
 #worktrees-intent {
     height: auto;
     max-height: 10;
-    border-top: solid #272c36;
+    border-top: solid #504945;
 }
 
 /* ── replay ──────────────────────────────────────────────────────── */
@@ -309,14 +308,14 @@ Screen {
 
 #replay-detail {
     height: auto;
-    max-height: 8;
+    max-height: 10;
 }
 
 /* ── inputs ──────────────────────────────────────────────────────── */
 
 Input {
     background: transparent;
-    color: #64748b;
+    color: #a89984;
     border: none;
     height: 1;
     padding: 0 0;
@@ -324,7 +323,7 @@ Input {
 
 Input:focus {
     border: none;
-    color: #e2e8f0;
+    color: #ebdbb2;
 }
 
 #dashboard-filter-input {
@@ -338,19 +337,19 @@ Input:focus {
     height: 1;
 }
 
-/* ── scrollbars (near-invisible) ──────────────────────────────────── */
+/* ── scrollbars (subtle Gruvbox) ──────────────────────────────────── */
 
 Static {
-    scrollbar-background: #151921;
-    scrollbar-color: #1c2029;
-    scrollbar-color-hover: #272c36;
+    scrollbar-background: #282828;
+    scrollbar-color: #3c3836;
+    scrollbar-color-hover: #504945;
     scrollbar-size: 1 1;
 }
 
 ListView {
-    scrollbar-background: #151921;
-    scrollbar-color: #1c2029;
-    scrollbar-color-hover: #272c36;
+    scrollbar-background: #282828;
+    scrollbar-color: #3c3836;
+    scrollbar-color-hover: #504945;
     scrollbar-size: 1 1;
 }
 
@@ -360,10 +359,10 @@ ListView {
     height: 1fr;
     border: none;
     padding: 1 2;
-    background: #151921;
-    scrollbar-background: #151921;
-    scrollbar-color: #1c2029;
-    scrollbar-color-hover: #272c36;
+    background: #282828;
+    scrollbar-background: #282828;
+    scrollbar-color: #3c3836;
+    scrollbar-color-hover: #504945;
     scrollbar-size: 1 1;
 }
 
@@ -385,7 +384,7 @@ ListItem {
 }
 
 ListView > ListItem.--highlight {
-    background: #1e3a5f;
+    background: #3c3836;
 }
 
 /* ── sessions ────────────────────────────────────────────────────── */

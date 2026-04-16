@@ -43,7 +43,7 @@ class SessionSelected(Message):
         self.session_id = session_id
 
 
-class SessionListPanel(Static):
+class SessionListPanel(Static, can_focus=True):
     """Table listing all discovered Copilot CLI sessions."""
 
     selected_index: reactive[int] = reactive(0)
@@ -51,12 +51,32 @@ class SessionListPanel(Static):
     def __init__(self, *, widget_id: str | None = None, **kwargs: object) -> None:
         super().__init__(id=widget_id, **kwargs)
         self._items: tuple[SessionListItemView, ...] = ()
+        self._selected_session_id: str | None = None
 
-    def set_sessions(self, items: tuple[SessionListItemView, ...]) -> None:
+    def set_sessions(
+        self,
+        items: tuple[SessionListItemView, ...],
+        *,
+        selected_session_id: str | None = None,
+        notify: bool = True,
+    ) -> None:
         self._items = items
-        if self.selected_index >= len(items):
+        if selected_session_id is not None:
+            self._selected_session_id = selected_session_id
+            idx = next(
+                (i for i, s in enumerate(items) if s.session_id == selected_session_id),
+                0,
+            )
+            self.selected_index = idx
+        elif self.selected_index >= len(items):
             self.selected_index = max(0, len(items) - 1)
         self._render_table()
+        if notify and self._items:
+            item = self._items[self.selected_index]
+            self.post_message(SessionSelected(item.session_id))
+
+    def focus_list(self) -> None:
+        self.focus()
 
     def move_cursor(self, delta: int) -> str | None:
         if not self._items:

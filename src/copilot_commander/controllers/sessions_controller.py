@@ -195,6 +195,37 @@ class SessionsController:
             completed_count=completed_count,
         )
 
+    def get_session_detail(
+        self,
+        session_id: str | None,
+        *,
+        live_session_ids: frozenset[str] = frozenset(),
+    ) -> SessionDetailView | None:
+        """Build the detail view for a single session by ID."""
+        if session_id is None:
+            return None
+        raw = self._store.get_session(session_id)
+        if raw is None:
+            return None
+        status = _session_status(raw, live_session_ids)
+        return SessionDetailView(
+            session_id=raw.session_id,
+            summary=raw.summary or "(no summary)",
+            repository=raw.repository or "—",
+            branch=raw.branch or "—",
+            cwd=str(raw.cwd) if raw.cwd else "—",
+            git_root=str(raw.git_root) if raw.git_root else "—",
+            status=status,
+            status_glyph=_status_glyph(status),
+            created_at=_relative_time(raw.created_at),
+            updated_at=_relative_time(raw.updated_at),
+            last_event_type=raw.last_event_type or "—",
+            last_event_at=_relative_time(raw.last_event_at),
+            checkpoint_count=raw.checkpoint_count,
+            is_resumable=not raw.is_cleanly_closed or raw.session_id in live_session_ids,
+            resume_command=f"copilot --resume={raw.session_id}",
+        )
+
 
 __all__ = [
     "SessionDetailView",

@@ -41,6 +41,8 @@ class ReplayScreen(ShellScreen):
         self._presentation: ReplayPresentation = "parsed"
         self._follow_latest: bool = True
         self._refreshing: bool = False
+        self._filter_debounce_timer: object | None = None
+        self._load_version: int = 0
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="replay-root"):
@@ -82,31 +84,54 @@ class ReplayScreen(ShellScreen):
             self.query_one(ReplayDetailPanel).set_entry(None)
             self.set_status("no replayable sessions")
             return
-        self._state = self.runtime.replay.load_state(
-            session_id=resolved_session_id,
-            selected_index=self._selected_index,
-            filter_text=self._filter_text,
-            presentation=self._presentation,
-            follow_latest=self._follow_latest,
+        # Offload the heavy load_state call to a worker thread so the UI
+        # stays responsive.  A version token prevents stale results from
+        # overwriting newer ones when the user types faster than the worker.
+        self._load_version += 1
+        version = self._load_version
+        session_id = resolved_session_id
+        selected_index = self._selected_index
+        filter_text = self._filter_text
+        presentation = self._presentation
+        follow_latest = self._follow_latest
+
+        def _load() -> ReplayStateView:
+            return self.runtime.replay.load_state(
+                session_id=session_id,
+                selected_index=selected_index,
+                filter_text=filter_text,
+                presentation=presentation,
+                follow_latest=follow_latest,
+            )
+
+        def _on_loaded(state: ReplayStateView) -> None:
+            if version != self._load_version:
+                return  # stale result — a newer request superseded this one
+            self._state = state
+            self._selected_index = state.selected_index
+            self.commander_app.remember_session_selection(session_id)
+            self._refresh_panels()
+            status = (
+                f"session {session_id} | "
+                f"{len(state.transcript)}/{state.total_entries} entries | "
+                f"{presentation} | follow {'on' if follow_latest else 'off'} | "
+                f"export {self._export_format}"
+            )
+            if not state.transcript and filter_text.strip():
+                status = f"no replay matches for {filter_text.strip()}"
+            self.set_status(status)
+
+        self.run_worker(_load, thread=True, exclusive=True).on_complete = lambda w: (
+            _on_loaded(w.result) if not w.is_cancelled and w.result is not None else None
         )
-        self._selected_index = self._state.selected_index
-        self.commander_app.remember_session_selection(resolved_session_id)
-        self._refresh_panels()
-        status = (
-            f"session {resolved_session_id} | "
-            f"{len(self._state.transcript)}/{self._state.total_entries} entries | "
-            f"{self._presentation} | follow {'on' if self._follow_latest else 'off'} | "
-            f"export {self._export_format}"
-        )
-        if not self._state.transcript and self._filter_text.strip():
-            status = f"no replay matches for {self._filter_text.strip()}"
-        self.set_status(status)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "replay-filter-input":
             return
         self._filter_text = event.value
-        self.refresh_data()
+        if self._filter_debounce_timer is not None:
+            self._filter_debounce_timer.stop()  # type: ignore[union-attr]
+        self._filter_debounce_timer = self.set_timer(0.3, self.refresh_data)
 
     def on_replay_marker_list_panel_marker_selected(
         self,

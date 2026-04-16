@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal, Protocol
 
@@ -25,6 +25,8 @@ AgentIntentKind = Literal[
 
 class AgentQueryPort(Protocol):
     def get_agent(self, agent_id: str, /) -> Agent | None: ...
+
+    def upsert_agent(self, agent: Agent, /) -> None: ...
 
     def list_sessions(self, agent_id: str | None = None, /) -> Sequence[Session]: ...
 
@@ -167,7 +169,18 @@ class AgentController:
     ) -> AgentActionResult:
         agent = self._require_agent(agent_id)
         latest_open_session = self._latest_open_session(agent.id)
-        target = self._target_from_agent(agent)
+
+        # Update agent status to COMPLETED so the monitoring heuristic
+        # preserves it instead of flagging the dead pane as needs_attention.
+        updated_agent = replace(
+            agent,
+            status=AgentStatus.COMPLETED,
+            needs_attention=False,
+            attention_reason=None,
+        )
+        self._store.upsert_agent(updated_agent)
+
+        target = self._target_from_agent(updated_agent)
         if latest_open_session is None:
             return AgentActionResult(
                 action="mark_complete",
@@ -182,7 +195,7 @@ class AgentController:
         )
         return AgentActionResult(
             action="mark_complete",
-            agent=self._target_from_agent(agent, latest_session_id=ended.session.id),
+            agent=self._target_from_agent(updated_agent, latest_session_id=ended.session.id),
             session_id=ended.session.id,
             session_ended=True,
         )

@@ -33,6 +33,8 @@ class SessionsScreen(ShellScreen):
         self._state: SessionsState | None = None
         self._show_completed: bool = False
         self._filter_text: str = ""
+        self._filter_debounce_timer: object | None = None
+        self._detail_timer: object | None = None
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="sessions-root"):
@@ -53,6 +55,7 @@ class SessionsScreen(ShellScreen):
 
     def on_mount(self) -> None:
         self.refresh_data()
+        self.call_after_refresh(self.query_one(SessionListPanel).focus_list)
 
     def on_show(self) -> None:
         self.refresh_data()
@@ -76,7 +79,11 @@ class SessionsScreen(ShellScreen):
         )
 
         list_panel = self.query_one(SessionListPanel)
-        list_panel.set_sessions(self._state.sessions)
+        list_panel.set_sessions(
+            self._state.sessions,
+            selected_session_id=self._selected_session_id,
+            notify=False,
+        )
 
         detail_panel = self.query_one(SessionDetailPanel)
         detail_panel.set_detail(self._state.selected)
@@ -90,8 +97,19 @@ class SessionsScreen(ShellScreen):
         )
 
     def on_session_selected(self, event: SessionSelected) -> None:
+        if event.session_id == self._selected_session_id:
+            return
         self._selected_session_id = event.session_id
-        self.refresh_data()
+        if self._detail_timer is not None:
+            self._detail_timer.stop()  # type: ignore[union-attr]
+        self._detail_timer = self.set_timer(0.05, self._update_selected_detail)
+
+    def _update_selected_detail(self) -> None:
+        """Lightweight update — only refresh detail panel for cursor movement."""
+        if self.runtime.sessions_ctrl is None or self._state is None:
+            return
+        detail = self.runtime.sessions_ctrl.get_session_detail(self._selected_session_id)
+        self.query_one(SessionDetailPanel).set_detail(detail)
 
     # ── actions ──────────────────────────────────────────────────────
 
@@ -106,7 +124,9 @@ class SessionsScreen(ShellScreen):
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "sessions-filter-input":
             self._filter_text = event.value
-            self.refresh_data()
+            if self._filter_debounce_timer is not None:
+                self._filter_debounce_timer.stop()  # type: ignore[union-attr]
+            self._filter_debounce_timer = self.set_timer(0.3, self.refresh_data)
 
     def action_cursor_down(self) -> None:
         sid = self.query_one(SessionListPanel).move_cursor(1)
