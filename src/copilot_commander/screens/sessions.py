@@ -99,6 +99,10 @@ class SessionsScreen(ShellScreen):
         """Focus the filter input."""
         self.query_one("#sessions-filter-input", Input).focus()
 
+    def action_escape_filter(self) -> None:
+        """Return focus to the session list (ESC from filter)."""
+        self.query_one(SessionListPanel).focus()
+
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "sessions-filter-input":
             self._filter_text = event.value
