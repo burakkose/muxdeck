@@ -150,6 +150,7 @@ class WorktreeSyncReport:
 
     repo_roots_scanned: int
     worktrees_upserted: int
+    worktrees_removed: int
     worktrees_total: int
     errors: tuple[str, ...]
 
@@ -453,10 +454,14 @@ class WorktreeService:
         ``inspect_repository`` calls).  Existing DB records are updated with
         fresh branch/lock/prune state; new worktrees get created.
 
+        Stale DB entries (paths no longer reported by git) are deleted so
+        the list stays in sync after external prunes or manual removals.
+
         Agent assignments are preserved for existing records.
         """
         now = self._clock()
         upserted = 0
+        removed = 0
         total = 0
         errors: list[str] = []
         agent_worktree_map = self._build_agent_worktree_map()
@@ -474,9 +479,11 @@ class WorktreeService:
                 errors.append(f"{resolved}: {exc}")
                 continue
 
+            git_paths: set[str] = set()
             for git_wt in git_worktrees:
                 if git_wt.is_bare:
                     continue
+                git_paths.add(str(git_wt.path))
                 total += 1
                 try:
                     existing = self._worktrees.get_worktree_by_path(str(git_wt.path))
@@ -507,12 +514,31 @@ class WorktreeService:
                     _log.debug("worktree sync: failed to upsert %s: %s", git_wt.path, exc)
                     errors.append(f"{git_wt.path}: {exc}")
 
+            # Reconcile: delete DB entries for this repo that git no longer reports.
+            removed += self._reconcile_stale_worktrees(str(resolved), git_paths)
+
         return WorktreeSyncReport(
             repo_roots_scanned=len(seen_roots),
             worktrees_upserted=upserted,
+            worktrees_removed=removed,
             worktrees_total=total,
             errors=tuple(errors),
         )
+
+    def _reconcile_stale_worktrees(
+        self,
+        repo_root: str,
+        git_paths: set[str],
+    ) -> int:
+        """Delete DB worktree entries not present in *git_paths*."""
+        db_worktrees = self._worktrees.list_worktrees_by_repo(repo_root)
+        removed = 0
+        for db_wt in db_worktrees:
+            if db_wt.path not in git_paths:
+                _log.debug("worktree sync: removing stale DB entry %s", db_wt.path)
+                self._worktrees.delete_worktree(db_wt.id)
+                removed += 1
+        return removed
 
     def _build_agent_worktree_map(self) -> dict[Path, str]:
         """Build a map from worktree path to agent ID from live agents."""

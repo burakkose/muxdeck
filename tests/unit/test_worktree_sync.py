@@ -327,6 +327,79 @@ class TestWorktreeSync(unittest.TestCase):
         assert len(wts) == 1
         assert wts[0].assigned_agent_id == "agent-99"
 
+    def test_sync_removes_stale_db_entries(self) -> None:
+        """DB entries not reported by git should be deleted after sync."""
+        root = "/home/user/repo"
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        # Pre-populate DB with a worktree that git no longer reports
+        stale = Worktree(
+            id="stale-wt",
+            repo_root=root,
+            path=f"{root}/wt-gone",
+            branch="feat/gone",
+            created_at=now,
+            last_seen_at=now,
+        )
+        live = Worktree(
+            id="live-wt",
+            repo_root=root,
+            path=root,
+            branch="main",
+            is_main_worktree=True,
+            created_at=now,
+            last_seen_at=now,
+        )
+        store = FakeWorktreeStore()
+        store.upsert_worktree(stale)
+        store.upsert_worktree(live)
+
+        # Git only reports the main worktree
+        git_wts = (_make_git_worktree(root, root, "main", is_main=True),)
+        service, _ = _make_service({root: git_wts}, store=store)
+
+        report = service.sync_worktrees_from_git([Path(root)])
+
+        assert report.worktrees_removed == 1
+        assert store.get_worktree("stale-wt") is None
+        assert store.get_worktree("live-wt") is not None
+        assert len(store.list_worktrees()) == 1
+
+    def test_sync_no_stale_removal_when_git_fails(self) -> None:
+        """If git list fails for a root, stale entries should NOT be deleted."""
+        root = "/home/user/repo"
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        existing = Worktree(
+            id="wt-1",
+            repo_root=root,
+            path=root,
+            branch="main",
+            created_at=now,
+            last_seen_at=now,
+        )
+        store = FakeWorktreeStore()
+        store.upsert_worktree(existing)
+
+        class ErrorGit(FakeGit):
+            def list_worktrees(
+                self, cwd: str | Path, /
+            ) -> tuple[GitWorktreeInfo, ...]:
+                msg = "git failed"
+                raise RuntimeError(msg)
+
+        service = WorktreeService(
+            config=AppConfig.default(),
+            git=ErrorGit(),
+            worktrees=store,
+            agents=FakeAgentStore(),
+            session_contexts=FakeSessionContextStore(),
+        )
+
+        report = service.sync_worktrees_from_git([Path(root)])
+
+        # Error → no reconciliation, entry preserved
+        assert len(report.errors) == 1
+        assert store.get_worktree("wt-1") is not None
+
 
 if __name__ == "__main__":
     unittest.main()
