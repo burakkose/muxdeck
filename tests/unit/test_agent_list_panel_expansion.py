@@ -155,22 +155,24 @@ class TestAgentListPanelSubAgentNavigation:
                 recent=(),
             ),
         )
-        # Rows are now: a1, header, sub1, sub2, a2 → 5 total.
+        # Rows are: a1, header, sub1, sub2, a2 → 5 total. The header is
+        # decorative and should never hold the cursor.
         assert len(panel._rows) == 5
-        # Cursor starts on a1.
         assert panel.selected_agent_id == "a1"
         assert panel.selected_subagent is None
-        # Step into header.
-        panel.move_cursor(1)
-        assert panel.selected_agent_id == "a1"
-        # Step onto the first sub-agent.
+        # Step down: skip the header and land on the first sub-agent.
         panel.move_cursor(1)
         assert panel.selected_agent_id == "a1"
         sub = panel.selected_subagent
         assert sub is not None
         assert sub.tool_call_id == "call_r1"
+        # Step down again: second sub-agent.
+        panel.move_cursor(1)
+        sub = panel.selected_subagent
+        assert sub is not None
+        assert sub.tool_call_id == "call_r2"
         # Step onto a2 — agent id flips to a2, subagent becomes None.
-        panel.move_cursor(2)
+        panel.move_cursor(1)
         assert panel.selected_agent_id == "a2"
         assert panel.selected_subagent is None
 
@@ -336,3 +338,45 @@ class TestAgentListPanelSubAgentNavigation:
         last = highlights[-1]
         assert last.subagent is not None
         assert last.subagent.tool_call_id == "call_r1"
+
+    def test_cursor_skips_header_row_when_moving_down(self) -> None:
+        """Moving down from the parent lands on the first sub-agent, not the header."""
+        panel = AgentListPanel()
+        panel.set_agents([_agent("a1")], selected_agent_id="a1")
+        panel.toggle_expand()
+        panel.set_subagents(
+            "a1",
+            DashboardSubAgentTreeView(
+                agent_id="a1",
+                session_id="s",
+                running=(_subagent_view("call_r1"),),
+                recent=(),
+            ),
+        )
+        # Rows: [a1, header, sub1]. Cursor starts on a1.
+        panel.move_cursor(1)
+        # Should have skipped the header and landed on sub1.
+        sub = panel.selected_subagent
+        assert sub is not None
+        assert sub.tool_call_id == "call_r1"
+
+    def test_cursor_skips_header_row_when_moving_up(self) -> None:
+        """Moving up from a sub-agent lands on the parent, skipping the header."""
+        panel = AgentListPanel()
+        panel.set_agents([_agent("a1")], selected_agent_id="a1")
+        panel.toggle_expand()
+        panel.set_subagents(
+            "a1",
+            DashboardSubAgentTreeView(
+                agent_id="a1",
+                session_id="s",
+                running=(_subagent_view("call_r1"),),
+                recent=(),
+            ),
+        )
+        panel.move_cursor(1)  # to sub1
+        assert panel.selected_subagent is not None
+        panel.move_cursor(-1)  # back up
+        # Should have landed on the parent agent row, not the header.
+        assert panel.selected_subagent is None
+        assert panel.selected_agent_id == "a1"

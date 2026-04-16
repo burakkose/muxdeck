@@ -406,7 +406,27 @@ class AgentListPanel(Static, can_focus=True):
     def move_cursor(self, delta: int) -> str | None:
         if not self._rows:
             return None
-        self._selected_index = max(0, min(len(self._rows) - 1, self._selected_index + delta))
+        target = max(0, min(len(self._rows) - 1, self._selected_index + delta))
+        # Skip the "active sub-agents" header — it's a decorative label,
+        # not a selectable row. Advance in the same direction the user
+        # moved (falling back to the other direction if we're cornered
+        # at a boundary) until we land on a real row.
+        step = 1 if delta >= 0 else -1
+        if self._is_header_row(target):
+            probe = target + step
+            while 0 <= probe < len(self._rows) and self._is_header_row(probe):
+                probe += step
+            if 0 <= probe < len(self._rows):
+                target = probe
+            else:
+                # Cornered — try the opposite direction instead of
+                # leaving the cursor parked on the header.
+                back = target - step
+                while 0 <= back < len(self._rows) and self._is_header_row(back):
+                    back -= step
+                if 0 <= back < len(self._rows):
+                    target = back
+        self._selected_index = target
         with contextlib.suppress(NoActiveAppError):
             self.focus()
         self._refresh_table()

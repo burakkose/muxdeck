@@ -283,7 +283,15 @@ class CommanderApp(App[None]):
             dashboard_state = None
             sync_dashboard = self.runtime.sync_dashboard
             if sync_dashboard is not None:
-                screen = self.screen
+                # The sync worker can fire before the first screen is
+                # pushed (or during transitions when the stack is
+                # momentarily empty). Accessing ``self.screen`` raises
+                # ScreenStackError in that case — skip the dashboard
+                # build rather than crashing the worker.
+                try:
+                    screen = self.screen
+                except Exception:
+                    screen = None
                 if isinstance(screen, DashboardScreen):
                     with timed("sync.build_dashboard"):
                         dashboard_state = sync_dashboard.build_state(
