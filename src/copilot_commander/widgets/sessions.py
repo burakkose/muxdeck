@@ -61,9 +61,7 @@ class SessionListPanel(Static, can_focus=True):
         self._selected_session_id: str | None = None
         # Parallel to ``_items``: each entry is a 2-tuple of (unselected,
         # selected) row cells. Populated by ``_rebuild_row_cache``.
-        self._row_cache: tuple[
-            tuple[tuple[Text, ...], tuple[Text, ...]], ...
-        ] = ()
+        self._row_cache: tuple[tuple[tuple[Text, ...], tuple[Text, ...]], ...] = ()
         # Draw coalescing: rapid cursor moves merge into one paint per
         # Textual frame instead of one rebuild per keystroke.
         self._render_pending: bool = False
