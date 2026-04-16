@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -287,30 +289,43 @@ class CopilotSessionStore:
             _log.debug("session state dir does not exist: %s", root.path)
             return []
 
-        sessions: list[CopilotLocalSession] = []
         try:
-            entries = list(root.path.iterdir())
+            entries = [e for e in root.path.iterdir() if e.is_dir()]
         except OSError:
             _log.warning("failed to list session state dir: %s", root.path)
             return []
 
-        for entry in entries:
-            if not entry.is_dir():
-                continue
+        if not entries:
+            return []
+
+        def _parse_one(entry: Path) -> CopilotLocalSession | None:
             try:
-                session = _parse_session_dir(entry, origin=root.origin)
+                return _parse_session_dir(entry, origin=root.origin)
             except Exception:
                 _log.debug("failed to parse session dir: %s", entry.name, exc_info=True)
-                continue
-            if session is None:
-                continue
-            if (
-                cutoff is not None
-                and session.updated_at is not None
-                and session.updated_at < cutoff
-            ):
-                continue
-            sessions.append(session)
+                return None
+
+        # Parse entries in parallel. Each entry reads workspace.yaml and
+        # tails events.jsonl — I/O-bound work that benefits sharply from
+        # threading, especially on WSL's /mnt/c 9P mount where per-file
+        # latency dominates. Keep the worker count bounded so we don't
+        # swamp the filesystem or hold the GIL under contention.
+        max_workers = min(16, max(2, (os.cpu_count() or 4) * 2), len(entries))
+        sessions: list[CopilotLocalSession] = []
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="copilot-session-scan",
+        ) as pool:
+            for session in pool.map(_parse_one, entries):
+                if session is None:
+                    continue
+                if (
+                    cutoff is not None
+                    and session.updated_at is not None
+                    and session.updated_at < cutoff
+                ):
+                    continue
+                sessions.append(session)
         return sessions
 
 
