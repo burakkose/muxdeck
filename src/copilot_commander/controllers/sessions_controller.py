@@ -249,10 +249,17 @@ class SessionsController:
         *,
         live_session_ids: frozenset[str] = frozenset(),
     ) -> SessionDetailView | None:
-        """Build the detail view for a single session by ID."""
+        """Build the detail view for a single session by ID.
+
+        Called from the UI thread on every j/k cursor move, so it must
+        never trigger filesystem work. The store lookup uses
+        ``warm_only=True``: if the id is not in the in-memory index
+        we return None (the previous detail stays on-screen) rather
+        than blocking on a full rescan.
+        """
         if session_id is None:
             return None
-        raw = self._store.get_session(session_id)
+        raw = self._store.get_session(session_id, warm_only=True)
         if raw is None:
             return None
         status = _session_status(raw, live_session_ids)
