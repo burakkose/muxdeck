@@ -80,6 +80,11 @@ _LOG_SOURCE_STYLES: dict[str, str] = {
     "stdout": FG1,
     "stderr": f"bold {SEVERITY_ERROR}",
     "tmux": FG2,
+    "tmux_capture": FG2,
+    # Agent speech is the signal; user prompts are context around it.
+    "assistant": AQUA,
+    "user": f"bold {PURPLE}",
+    "system": FG4,
 }
 
 
@@ -970,7 +975,15 @@ class LogPreviewPanel(Static):
             self.update(result)
             return
         last_ts = ""
-        src_map = {"stdout": "out", "stderr": "err", "tmux": "tmx"}
+        src_map = {
+            "stdout": "out",
+            "stderr": "err",
+            "tmux": "tmx",
+            "tmux_capture": "tmx",
+            "assistant": "ai",
+            "user": "you",
+            "system": "sys",
+        }
         for line in agent.log_preview:
             ts = format_short_timestamp(line.captured_at)
             src = src_map.get(line.source, line.source[:3])

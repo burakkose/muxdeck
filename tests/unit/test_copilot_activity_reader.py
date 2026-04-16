@@ -264,3 +264,110 @@ def test_handles_partial_trailing_line(tmp_path: Path) -> None:
     assert act is not None
     assert act.tool_name == "edit"
     assert act.summary == "editing b.py"
+
+
+# ── transcript capture ────────────────────────────────────────────────────
+
+
+def _assistant_message(*, ts: str, content: str) -> dict:
+    return {
+        "type": "assistant.message",
+        "timestamp": ts,
+        "data": {"content": content},
+    }
+
+
+def _user_message(*, ts: str, content: str) -> dict:
+    return {
+        "type": "user.message",
+        "timestamp": ts,
+        "data": {"content": content},
+    }
+
+
+def test_transcript_captures_assistant_and_user_messages(tmp_path: Path) -> None:
+    events_path = tmp_path / "s-tx" / "events.jsonl"
+    _write(
+        events_path,
+        [
+            _user_message(ts="2026-01-01T00:00:00Z", content="hello, please do X"),
+            _assistant_message(
+                ts="2026-01-01T00:00:01Z",
+                content="Sure — first I'll look at the code.\nThen I'll run tests.",
+            ),
+        ],
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    lines = reader.read_transcript("s-tx", limit=10)
+    assert len(lines) == 3
+    assert lines[0].role == "user"
+    assert lines[0].content == "hello, please do X"
+    assert lines[1].role == "assistant"
+    assert lines[1].content == "Sure — first I'll look at the code."
+    assert lines[2].role == "assistant"
+    assert lines[2].content == "Then I'll run tests."
+
+
+def test_transcript_ignores_empty_and_tool_only_messages(tmp_path: Path) -> None:
+    """assistant.message with empty content (pure tool-request turn) is skipped."""
+    events_path = tmp_path / "s-empty" / "events.jsonl"
+    _write(
+        events_path,
+        [
+            _assistant_message(ts="2026-01-01T00:00:00Z", content=""),
+            _assistant_message(ts="2026-01-01T00:00:01Z", content="   \n   "),
+            _assistant_message(ts="2026-01-01T00:00:02Z", content="real output"),
+        ],
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    lines = reader.read_transcript("s-empty", limit=10)
+    assert len(lines) == 1
+    assert lines[0].content == "real output"
+
+
+def test_transcript_is_incremental_across_appends(tmp_path: Path) -> None:
+    """A message appended later must show up without losing earlier turns."""
+    events_path = tmp_path / "s-incr" / "events.jsonl"
+    _write(
+        events_path,
+        [_assistant_message(ts="2026-01-01T00:00:00Z", content="first")],
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    first = reader.read_transcript("s-incr", limit=10)
+    assert [ln.content for ln in first] == ["first"]
+
+    _append(events_path, [_assistant_message(ts="2026-01-01T00:00:05Z", content="second")])
+    second = reader.read_transcript("s-incr", limit=10)
+    assert [ln.content for ln in second] == ["first", "second"]
+    # Sequence numbers are monotonically increasing — so clients can
+    # de-dupe by seq across polls.
+    assert second[0].sequence_no < second[1].sequence_no
+
+
+def test_transcript_returns_empty_tuple_when_unknown(tmp_path: Path) -> None:
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    assert reader.read_transcript("does-not-exist", limit=10) == ()
+
+
+def test_transcript_clears_on_file_truncation(tmp_path: Path) -> None:
+    """When events.jsonl is truncated (size shrinks) the reader must reset
+    the transcript so stale prose doesn't persist into the new run."""
+    session_dir = tmp_path / "s-rot"
+    events_path = session_dir / "events.jsonl"
+    _write(
+        events_path,
+        [
+            _assistant_message(ts="2026-01-01T00:00:00Z", content="old one"),
+            _assistant_message(ts="2026-01-01T00:00:01Z", content="old two"),
+            _assistant_message(ts="2026-01-01T00:00:02Z", content="old three"),
+        ],
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    assert len(reader.read_transcript("s-rot", limit=10)) == 3
+
+    # Truncate in place with a single small event — size drops below the
+    # reader's recorded last_size, so the size-shrink branch of rotation
+    # detection fires regardless of inode / mtime quirks.
+    _write(events_path, [_assistant_message(ts="2026-01-02T00:00:00Z", content="fresh")])
+    lines = reader.read_transcript("s-rot", limit=10)
+    assert [ln.content for ln in lines] == ["fresh"]
