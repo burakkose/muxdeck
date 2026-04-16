@@ -315,13 +315,29 @@ class AgentListPanel(Static, can_focus=True):
         self._refresh_table()
         self._post_selection(self._selected_index)
 
-    def move_cursor(self, delta: int) -> None:
+    def move_cursor(self, delta: int) -> str | None:
         if not self._agents:
-            return
+            return None
         self._selected_index = max(0, min(len(self._agents) - 1, self._selected_index + delta))
         self.focus()
         self._refresh_table()
         self._post_selection(self._selected_index)
+        return self._agents[self._selected_index].agent_id
+
+    @property
+    def selected_agent_id(self) -> str | None:
+        """Return the id of the row currently highlighted in this widget.
+
+        The screen-level ``_selected_agent_id`` is updated via a message
+        and therefore lags a frame behind ``move_cursor``; when code
+        running on the same tick needs the live selection (e.g. an
+        in-flight refresh), it should read this instead.
+        """
+        if not self._agents:
+            return None
+        if self._selected_index >= len(self._agents):
+            return None
+        return self._agents[self._selected_index].agent_id
 
     def focus_list(self) -> None:
         self.focus()
