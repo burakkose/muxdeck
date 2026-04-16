@@ -720,7 +720,11 @@ class AgentDetailPanel(Static):
         result.append(item.name, style=f"bold {FG}")
         result.append("  ")
         result.append(operator_status.headline, style=status_style)
-        if item.task_title:
+        # The task_title is the high-level work ("Investigating cache
+        # bug"). Only render it on the header when it genuinely differs
+        # from the tool-level activity we show below — otherwise we
+        # duplicate the same text twice on consecutive lines.
+        if item.task_title and item.task_title != item.current_activity:
             result.append(f"  {item.task_title}", style=FG3)
         result.append("\n")
 
