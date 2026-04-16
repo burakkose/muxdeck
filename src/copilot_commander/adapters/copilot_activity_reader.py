@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from copilot_commander.adapters.copilot_session_store import SessionStoreRoot
 
@@ -33,6 +34,31 @@ _log = logging.getLogger(__name__)
 # current activity. 256 KB covers far more than any realistic batch of
 # pending tool calls.
 _FRESH_PARSE_TAIL_BYTES = 256 * 1024
+
+# How many transcript lines we hold per session. The widget typically
+# renders the last ~20, but we keep a larger buffer so tail-reads can
+# surface an older message if the newest ones are dense tool calls
+# with no prose. Bounded so long sessions can't grow state without
+# limit.
+_TRANSCRIPT_BUFFER_MAX = 200
+
+TranscriptRole = Literal["user", "assistant"]
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptLine:
+    """One line of real agent / operator speech extracted from events.jsonl.
+
+    The parent ``assistant.message`` / ``user.message`` events carry
+    markdown-ish prose in ``content``. We split on newlines and emit
+    one TranscriptLine per non-empty line so the log preview widget
+    can render them at its own granularity.
+    """
+
+    at: datetime
+    role: TranscriptRole
+    content: str
+    sequence_no: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +119,13 @@ class _SessionState:
     # A partial trailing line from a previous read we couldn't json-parse
     # yet — re-prepend on the next read.
     buffered_tail: str = ""
+    # Rolling transcript of the last N assistant / user messages.
+    # Bounded via ``deque(maxlen=...)`` so a long-running session with
+    # thousands of turns can't grow reader memory without limit.
+    transcript: deque[TranscriptLine] = field(
+        default_factory=lambda: deque(maxlen=_TRANSCRIPT_BUFFER_MAX)
+    )
+    _transcript_seq: int = 0
 
 
 class _SessionDirProvider(Protocol):
@@ -169,6 +202,8 @@ class CopilotActivityReader:
             state.latest_at = None
             state.buffered_tail = ""
             state.head_fingerprint = b""
+            state.transcript.clear()
+            state._transcript_seq = 0
 
         if st.st_size == state.last_size and not rotated:
             # Nothing new. Return cached snapshot.
@@ -272,6 +307,75 @@ class CopilotActivityReader:
                 state.pending.pop(tool_call_id, None)
             return
 
+        if event_type == "assistant.message":
+            self._record_transcript_content(
+                state,
+                role="assistant",
+                content=data.get("content"),
+                at=timestamp,
+            )
+            return
+
+        if event_type == "user.message":
+            self._record_transcript_content(
+                state,
+                role="user",
+                content=data.get("content"),
+                at=timestamp,
+            )
+            return
+
+    def _record_transcript_content(
+        self,
+        state: _SessionState,
+        *,
+        role: TranscriptRole,
+        content: object,
+        at: datetime | None,
+    ) -> None:
+        """Split a message's content on newlines and append non-empty
+        lines to the transcript deque.
+
+        The CLI writes conversational content as markdown prose in a
+        single ``content`` string. Splitting per line keeps the log
+        preview widget's line-oriented rendering happy without
+        changing its contract.
+        """
+        if at is None or not isinstance(content, str) or not content.strip():
+            return
+        for raw in content.splitlines():
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            state._transcript_seq += 1
+            state.transcript.append(
+                TranscriptLine(
+                    at=at,
+                    role=role,
+                    content=stripped,
+                    sequence_no=state._transcript_seq,
+                )
+            )
+
+    def read_transcript(self, session_id: str, *, limit: int = 40) -> tuple[TranscriptLine, ...]:
+        """Return the last ``limit`` transcript lines for a session.
+
+        Returns an empty tuple when the session is unknown or has no
+        conversational content yet. Callers should fall back to the
+        tmux log preview in that case.
+        """
+        # Force an ingest so the transcript reflects current disk state.
+        # ``read()`` already has all the rotation / offset logic we need.
+        self.read(session_id)
+        state = self._state.get(session_id)
+        if state is None or not state.transcript:
+            return ()
+        if limit <= 0:
+            return ()
+        # deque supports slicing via list(); it's O(N) but N is bounded
+        # by _TRANSCRIPT_BUFFER_MAX (200) so this is cheap.
+        return tuple(list(state.transcript)[-limit:])
+
     def _snapshot(self, state: _SessionState) -> AgentActivity:
         pending_tool: _PendingTool | None = None
         if state.pending:
@@ -367,6 +471,9 @@ def _as_str(value: object) -> str | None:
     if isinstance(value, str) and value:
         return value
     return None
+
+
+__all__ = ["AgentActivity", "CopilotActivityReader", "TranscriptLine"]
 
 
 def _read_head(path: Path, size: int = 128) -> bytes:

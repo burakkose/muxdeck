@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from copilot_commander.adapters.copilot_activity_reader import AgentActivity
+from copilot_commander.adapters.copilot_activity_reader import AgentActivity, TranscriptLine
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.events import Event, LogChunk
@@ -215,6 +215,10 @@ class CopilotActivityReaderPort(Protocol):
     """Resolve what an agent is doing right now from its events log."""
 
     def read(self, session_id: str) -> AgentActivity | None: ...
+
+    def read_transcript(
+        self, session_id: str, *, limit: int = 40
+    ) -> tuple[TranscriptLine, ...]: ...
 
 
 class CopilotSessionResolverPort(Protocol):
@@ -576,6 +580,20 @@ class DashboardController:
             if latest_session is not None
             else ()
         )
+        # The tmux pane capture is a noisy fallback: it picks up shell
+        # prompts, scrollback from before the agent started, and any
+        # other terminal chatter. When we have a Copilot session id
+        # we'd rather show the agent's actual speech from
+        # ``events.jsonl``, which is clean and attributable. Fall back
+        # to tmux only when no transcript is available yet.
+        log_preview = self._build_transcript_preview(
+            copilot_session_id=(
+                latest_session.copilot_session_id if latest_session is not None else None
+            ),
+            preview_line_limit=preview_line_limit,
+        )
+        if not log_preview:
+            log_preview = self._build_log_preview(logs, preview_line_limit=preview_line_limit)
         worktree_id = None
         if worktree is not None:
             worktree_id = worktree.id
@@ -593,8 +611,35 @@ class DashboardController:
             latest_event_kind=latest_event.kind if latest_event is not None else None,
             latest_event_severity=latest_event.severity if latest_event is not None else None,
             latest_event_at=latest_event.occurred_at if latest_event is not None else None,
-            log_preview=self._build_log_preview(logs, preview_line_limit=preview_line_limit),
+            log_preview=log_preview,
             recent_events=_extract_recent_events(logs),
+        )
+
+    def _build_transcript_preview(
+        self,
+        *,
+        copilot_session_id: str | None,
+        preview_line_limit: int,
+    ) -> tuple[DashboardLogLineView, ...]:
+        """Return agent speech as log preview lines, or empty tuple."""
+        if self._activity_reader is None or not copilot_session_id or preview_line_limit <= 0:
+            return ()
+        transcript = self._activity_reader.read_transcript(
+            copilot_session_id, limit=preview_line_limit
+        )
+        if not transcript:
+            return ()
+        return tuple(
+            DashboardLogLineView(
+                captured_at=line.at,
+                # Distinct source values so the widget can style
+                # agent vs operator speech differently and operators
+                # see at a glance which turn this line belongs to.
+                source="assistant" if line.role == "assistant" else "user",
+                sequence_no=line.sequence_no,
+                content=line.content,
+            )
+            for line in transcript
         )
 
     def _build_log_preview(
