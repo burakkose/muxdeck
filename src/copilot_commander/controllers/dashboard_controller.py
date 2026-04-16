@@ -186,6 +186,7 @@ class DashboardSubAgentView:
     task_name: str | None = None
     agent_type: str | None = None
     prompt: str | None = None
+    mode: str | None = None
     result_content: str | None = None
     success: bool | None = None
 
@@ -938,6 +939,7 @@ def _to_view(snapshot: SubAgentSnapshot) -> DashboardSubAgentView:
         task_name=snapshot.task_name,
         agent_type=snapshot.agent_type,
         prompt=snapshot.prompt,
+        mode=snapshot.mode,
         result_content=snapshot.result_content,
         success=snapshot.success,
     )

@@ -39,6 +39,7 @@ class SubAgentSnapshot:
     task_name: str | None = None
     agent_type: str | None = None
     prompt: str | None = None
+    mode: str | None = None
     result_content: str | None = None
     success: bool | None = None
 

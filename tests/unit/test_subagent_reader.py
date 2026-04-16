@@ -440,9 +440,11 @@ class TestTaskToolEnrichment:
             ),
             _started_event(tool_call_id="tc-2", timestamp="2026-01-01T00:00:01Z"),
             _completed_event(tool_call_id="tc-2", timestamp="2026-01-01T00:00:02Z"),
+            # Real CLI does NOT repeat ``toolName`` on tool.execution_complete.
+            # Matching must work off toolCallId alone.
             (
                 '{"type":"tool.execution_complete","timestamp":"2026-01-01T00:00:02Z",'
-                '"data":{"toolName":"task","toolCallId":"tc-2","success":true,'
+                '"data":{"toolCallId":"tc-2","success":true,'
                 '"result":{"content":"final answer"}}}'
             ),
         ]
@@ -458,3 +460,57 @@ class TestTaskToolEnrichment:
         assert snap.success is True
         assert snap.result_content == "final answer"
         assert snap.prompt == "p"
+
+    def test_reader_prefers_detailed_content_when_available(self, tmp_path: Path) -> None:
+        """``detailedContent`` carries the full agent output; ``content`` is a
+        summary. The UI wants the detailed version when present."""
+        session_dir = tmp_path / "sess-detailed"
+        events = [
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:00:00Z",'
+                '"data":{"toolName":"task","toolCallId":"tc-3","arguments":'
+                '{"name":"n","agent_type":"general-purpose","prompt":"p"}}}'
+            ),
+            _started_event(tool_call_id="tc-3", timestamp="2026-01-01T00:00:01Z"),
+            _completed_event(tool_call_id="tc-3", timestamp="2026-01-01T00:00:02Z"),
+            (
+                '{"type":"tool.execution_complete","timestamp":"2026-01-01T00:00:02Z",'
+                '"data":{"toolCallId":"tc-3","success":true,'
+                '"result":{"content":"short","detailedContent":"the full answer body"}}}'
+            ),
+        ]
+        _write_events(session_dir, events)
+        reader = SubAgentReader(store=_FakeStore(session_state_dir=tmp_path))  # type: ignore[arg-type]
+        tree = reader.read("sess-detailed")
+        assert tree is not None
+        snap = tree.recent[0]
+        assert snap.result_content == "the full answer body"
+
+    def test_reader_captures_background_mode(self, tmp_path: Path) -> None:
+        """Background-mode tasks are tagged so the UI can label the
+        parent's 'result' as a launch ack rather than real output."""
+        session_dir = tmp_path / "sess-bg"
+        events = [
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:00:00Z",'
+                '"data":{"toolName":"task","toolCallId":"tc-bg","arguments":'
+                '{"name":"bg-agent","agent_type":"general-purpose",'
+                '"mode":"background","prompt":"do stuff"}}}'
+            ),
+            _started_event(tool_call_id="tc-bg", timestamp="2026-01-01T00:00:01Z"),
+            (
+                '{"type":"tool.execution_complete","timestamp":"2026-01-01T00:00:02Z",'
+                '"data":{"toolCallId":"tc-bg","success":true,'
+                '"result":{"content":"Agent started in background with agent_id: bg-agent"}}}'
+            ),
+        ]
+        _write_events(session_dir, events)
+        reader = SubAgentReader(store=_FakeStore(session_state_dir=tmp_path))  # type: ignore[arg-type]
+        tree = reader.read("sess-bg")
+        assert tree is not None
+        # Background sub-agent is still "running" in the subagent-event sense
+        # until its own subagent.completed lands.
+        snap = tree.running[0]
+        assert snap.mode == "background"
+        assert snap.result_content is not None
+        assert "background" in snap.result_content.lower()

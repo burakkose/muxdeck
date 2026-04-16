@@ -270,7 +270,13 @@ class _TaskDetails:
     task_name: str | None = None
     agent_type: str | None = None
     prompt: str | None = None
+    mode: str | None = None
+    # For background tasks the parent's ``tool.execution_complete``
+    # only holds a launch ack; the real agent output lives in the
+    # sub-agent's own session log. Keep both so the UI can label them
+    # correctly instead of pretending the ack is the real result.
     result_content: str | None = None
+    result_detailed: str | None = None
     success: bool | None = None
 
 
@@ -295,14 +301,21 @@ def _apply_event(
             detail.task_name = _as_str(args.get("name"))
             detail.agent_type = _as_str(args.get("agent_type"))
             detail.prompt = _as_str(args.get("prompt"))
+            detail.mode = _as_str(args.get("mode"))
         return
-    if event_type == "tool.execution_complete" and _as_str(data.get("toolName")) == "task":
+    # ``tool.execution_complete`` does not carry ``toolName`` in the
+    # current CLI — match by ``toolCallId`` against the tasks we
+    # already recorded on ``tool.execution_start``. Without this
+    # lookup the result_content branch was dead code and the detail
+    # view never had any output to show.
+    if event_type == "tool.execution_complete":
         tcid = _as_str(data.get("toolCallId"))
-        if tcid:
-            detail = task_details.setdefault(tcid, _TaskDetails())
+        if tcid and tcid in task_details:
+            detail = task_details[tcid]
             result = data.get("result")
             if isinstance(result, dict):
                 detail.result_content = _as_str(result.get("content"))
+                detail.result_detailed = _as_str(result.get("detailedContent"))
             elif isinstance(result, str):
                 detail.result_content = result or None
             success = data.get("success")
@@ -375,7 +388,8 @@ def _enrich(snapshot: SubAgentSnapshot, task_details: dict[str, _TaskDetails]) -
         task_name=detail.task_name,
         agent_type=detail.agent_type,
         prompt=detail.prompt,
-        result_content=detail.result_content,
+        mode=detail.mode,
+        result_content=detail.result_detailed or detail.result_content,
         success=detail.success,
     )
 
