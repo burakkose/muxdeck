@@ -55,24 +55,51 @@ class _SessionDirProvider(Protocol):
 
 
 @dataclass(slots=True)
-class _CachedTree:
+class _StreamState:
+    """Incremental parse state for one session's events.jsonl.
+
+    The reader keeps a byte offset into the file and the currently
+    accumulated started/completed/task-detail maps. Each :meth:`read`
+    call stats the file, decides whether it was rotated/truncated
+    (inode change or size shrink) or just grew, and only consumes the
+    newly appended bytes. A trailing incomplete line — Copilot CLI
+    writes events.jsonl without fsync guarantees — is buffered in
+    ``partial`` and re-joined on the next pass.
+    """
+
+    inode: int
+    size: int
     mtime_ns: int
+    offset: int
+    partial: str
+    started: dict[str, SubAgentSnapshot]
+    completed: list[SubAgentSnapshot]
+    task_details: dict[str, _TaskDetails]
     tree: SubAgentTree
 
 
 @dataclass(slots=True)
 class SubAgentReader:
-    """Parse sub-agent activity for a given session id, with mtime cache.
+    """Parse sub-agent activity for a given session id incrementally.
 
     ``recent_limit`` caps how many completed sub-agents we keep per
     tree. The dashboard only renders a handful anyway and parent
     sessions that have delegated hundreds of tasks shouldn't force the
     UI to hold that whole list in memory.
+
+    Reads are O(new bytes) rather than O(file size): the reader
+    maintains a per-session byte offset and tails only what was
+    appended since the last call. A completely unchanged file returns
+    the last built tree without re-opening it.
     """
 
     store: _SessionDirProvider
     recent_limit: int = 20
-    _cache: dict[str, _CachedTree] = field(default_factory=dict, init=False, repr=False)
+    # Keep enough completed entries in memory to survive arbitrary
+    # reordering by completed_at when we sort for the `recent` slice,
+    # but bound it so pathological sessions don't grow without limit.
+    _completed_memory_factor: int = 8
+    _state: dict[str, _StreamState] = field(default_factory=dict, init=False, repr=False)
 
     def read(self, session_id: str) -> SubAgentTree | None:
         """Return the current sub-agent tree for ``session_id``.
@@ -86,26 +113,112 @@ class SubAgentReader:
         if events_path is None:
             return None
         try:
-            mtime_ns = events_path.stat().st_mtime_ns
+            stat = events_path.stat()
         except OSError:
             return None
-        cached = self._cache.get(session_id)
-        if cached is not None and cached.mtime_ns == mtime_ns:
-            return cached.tree
-        tree = _parse_events(
+
+        state = self._state.get(session_id)
+        rotated = state is not None and (stat.st_ino != state.inode or stat.st_size < state.offset)
+        if rotated:
+            state = None
+
+        if state is not None and stat.st_mtime_ns == state.mtime_ns and stat.st_size == state.size:
+            # Nothing new on disk — hand back the last tree. Identity
+            # preservation matters: callers compare `tree is prev` to
+            # decide whether to skip a repaint.
+            return state.tree
+
+        if state is None:
+            state = _StreamState(
+                inode=stat.st_ino,
+                size=0,
+                mtime_ns=0,
+                offset=0,
+                partial="",
+                started={},
+                completed=[],
+                task_details={},
+                tree=SubAgentTree(
+                    session_id=session_id,
+                    running=(),
+                    recent=(),
+                    scanned_at=datetime.now(UTC),
+                ),
+            )
+
+        self._consume_new_bytes(events_path, state)
+        state.size = stat.st_size
+        state.mtime_ns = stat.st_mtime_ns
+        state.inode = stat.st_ino
+
+        self._trim_completed(state)
+        state.tree = _build_tree(
             session_id,
-            events_path,
+            started=state.started,
+            completed=state.completed,
+            task_details=state.task_details,
             recent_limit=self.recent_limit,
         )
-        self._cache[session_id] = _CachedTree(mtime_ns=mtime_ns, tree=tree)
-        return tree
+        self._state[session_id] = state
+        return state.tree
 
     def invalidate(self, session_id: str | None = None) -> None:
-        """Drop cached trees so the next ``read`` reparses from disk."""
+        """Drop stream state so the next ``read`` reparses from scratch."""
         if session_id is None:
-            self._cache.clear()
+            self._state.clear()
         else:
-            self._cache.pop(session_id, None)
+            self._state.pop(session_id, None)
+
+    def _consume_new_bytes(self, events_path: Path, state: _StreamState) -> None:
+        """Read bytes from ``state.offset`` to EOF and apply events."""
+        try:
+            with events_path.open("r", encoding="utf-8", errors="replace") as fh:
+                if state.offset:
+                    fh.seek(state.offset)
+                chunk = fh.read()
+        except OSError as exc:
+            _log.debug("failed to tail subagent events from %s: %s", events_path, exc)
+            return
+
+        if not chunk and not state.partial:
+            return
+
+        buffer = state.partial + chunk
+        last_newline = buffer.rfind("\n")
+        if last_newline == -1:
+            # Entire buffer is one incomplete line; keep it for next tick.
+            state.partial = buffer
+            # offset intentionally unchanged — we'll re-read from the
+            # same spot next time to try again.
+            return
+
+        complete_text = buffer[: last_newline + 1]
+        state.partial = buffer[last_newline + 1 :]
+        # Advance offset so next read starts at the byte immediately
+        # after the last complete line we just consumed.
+        state.offset += len(chunk) - len(state.partial)
+
+        for raw_line in complete_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            _apply_event(
+                event,
+                started=state.started,
+                completed=state.completed,
+                task_details=state.task_details,
+            )
+
+    def _trim_completed(self, state: _StreamState) -> None:
+        cap = max(self.recent_limit * self._completed_memory_factor, self.recent_limit)
+        if len(state.completed) <= cap:
+            return
+        state.completed.sort(key=_completed_sort_key, reverse=True)
+        del state.completed[cap:]
 
     def _resolve_events_path(self, session_id: str) -> Path | None:
         # Copilot CLI stores each session as ``<root>/<session_id>/``.
@@ -120,46 +233,25 @@ class SubAgentReader:
         return None
 
 
-def _parse_events(
+def _build_tree(
     session_id: str,
-    events_path: Path,
     *,
+    started: dict[str, SubAgentSnapshot],
+    completed: list[SubAgentSnapshot],
+    task_details: dict[str, _TaskDetails],
     recent_limit: int,
 ) -> SubAgentTree:
-    """Stream-parse one events.jsonl into a sub-agent tree.
+    """Materialize a :class:`SubAgentTree` from current stream state.
 
-    We track started events by ``toolCallId`` in insertion order and
-    lift them into ``recent`` when the matching ``completed`` arrives.
+    Called on every :meth:`SubAgentReader.read` that observed new
+    bytes. Running sub-agents are returned newest-first (dict
+    insertion order reversed); completed are sorted by completed_at
+    and capped at ``recent_limit``.
+
     A session that dies mid-run leaves its last sub-agents in the
     running bucket, which is exactly what the dashboard should show:
     "these were in flight when we lost contact".
-
-    In a single pass we also pick up the matching ``task`` tool events
-    so the detail view can show prompt + result content without
-    re-reading the file.
     """
-    started: dict[str, SubAgentSnapshot] = {}
-    completed: list[SubAgentSnapshot] = []
-    task_details: dict[str, _TaskDetails] = {}
-    try:
-        with events_path.open("r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                _apply_event(
-                    event,
-                    started=started,
-                    completed=completed,
-                    task_details=task_details,
-                )
-    except OSError as exc:
-        _log.debug("failed to read subagent events from %s: %s", events_path, exc)
-
     running = tuple(_enrich(s, task_details) for s in reversed(started.values()))
     recent = tuple(
         _enrich(s, task_details)
