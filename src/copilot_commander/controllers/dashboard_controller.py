@@ -157,6 +157,7 @@ class DashboardSelectedAgentView:
     worktree_id: str | None
     session_count: int
     open_session_id: str | None
+    copilot_session_id: str | None
     latest_event_kind: str | None
     latest_event_severity: str | None
     latest_event_at: datetime | None
@@ -434,6 +435,9 @@ class DashboardController:
             worktree_id=worktree_id,
             session_count=session_count,
             open_session_id=open_session.id if open_session is not None else None,
+            copilot_session_id=(
+                latest_session.copilot_session_id if latest_session is not None else None
+            ),
             latest_event_kind=latest_event.kind if latest_event is not None else None,
             latest_event_severity=latest_event.severity if latest_event is not None else None,
             latest_event_at=latest_event.occurred_at if latest_event is not None else None,

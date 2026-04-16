@@ -79,6 +79,7 @@ def _selected_agent(
         worktree_id="wt-1",
         session_count=2,
         open_session_id="session-1",
+        copilot_session_id=None,
         latest_event_kind=latest_event_kind,
         latest_event_severity=latest_event_severity,
         latest_event_at=_TS,

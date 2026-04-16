@@ -119,6 +119,7 @@ class FakeDashboardController:
                 worktree_id="wt-1",
                 session_count=1,
                 open_session_id="session-1",
+                copilot_session_id=None,
                 latest_event_kind="agent.updated",
                 latest_event_severity="info",
                 latest_event_at=_TIMESTAMP,
