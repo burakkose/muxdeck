@@ -244,12 +244,8 @@ class CopilotSessionStore:
 
     _cache: list[CopilotLocalSession] = field(default_factory=list, init=False, repr=False)
     _cache_time: float = field(default=0.0, init=False, repr=False)
-    _entry_cache: dict[Path, _CachedEntry] = field(
-        default_factory=dict, init=False, repr=False
-    )
-    _by_id: dict[str, CopilotLocalSession] = field(
-        default_factory=dict, init=False, repr=False
-    )
+    _entry_cache: dict[Path, _CachedEntry] = field(default_factory=dict, init=False, repr=False)
+    _by_id: dict[str, CopilotLocalSession] = field(default_factory=dict, init=False, repr=False)
 
     def discover(self, *, force: bool = False) -> list[CopilotLocalSession]:
         """Return all local sessions, using cache if fresh."""
