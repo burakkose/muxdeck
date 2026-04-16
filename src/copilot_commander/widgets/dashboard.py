@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import contextlib
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from rich.table import Table
 from rich.text import Text
+from textual._context import NoActiveAppError
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.message import Message
@@ -273,14 +276,39 @@ class FilterBar(Vertical):
         self.query_one(Input).focus()
 
 
+@dataclass(frozen=True, slots=True)
+class _AgentRow:
+    agent: DashboardAgentListItemView
+
+    @property
+    def parent_agent_id(self) -> str:
+        return self.agent.agent_id
+
+
+@dataclass(frozen=True, slots=True)
+class _SubAgentHeaderRow:
+    parent_agent_id: str
+    count: int = 0
+    loading: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _SubAgentRow:
+    parent_agent_id: str
+    subagent: DashboardSubAgentView
+
+
+_Row = _AgentRow | _SubAgentHeaderRow | _SubAgentRow
+
+
 class AgentListPanel(Static, can_focus=True):
     """Compact agent list — clean selection, status glyphs, activity hint.
 
-    Supports per-row expand/collapse for showing a parent agent's sub-
-    agent tree. Expansion is purely a widget concern: child rows are
-    interleaved with parent rows visually but the cursor still moves
-    parent-to-parent, so the operator's mental model of "select an
-    agent" stays intact.
+    Supports per-row expand/collapse for showing a parent agent's
+    **active** sub-agent tree. Sub-agent rows are fully navigable:
+    the cursor steps over them, and the right-hand pane still shows
+    the owning parent agent's detail (sub-agents have no pane of their
+    own).
     """
 
     class AgentSelected(Message):
@@ -303,14 +331,14 @@ class AgentListPanel(Static, can_focus=True):
     def __init__(self, *, widget_id: str | None = None, classes: str | None = None) -> None:
         super().__init__(id=widget_id, classes=classes)
         self._agents: tuple[DashboardAgentListItemView, ...] = ()
+        # ``_selected_index`` indexes into ``_rows`` (all visible rows,
+        # including sub-agent child rows), not into ``_agents``. The
+        # parent agent id is derived via :attr:`selected_agent_id`.
         self._selected_index = 0
-        # Expansion is keyed on agent_id so it survives set_agents()
-        # across refreshes. The sub-agent cache likewise sticks around
-        # between refreshes — the screen invalidates it by calling
-        # set_subagents() again when new data arrives.
         self._expanded: set[str] = set()
         self._subagents: dict[str, DashboardSubAgentTreeView] = {}
         self._loading: set[str] = set()
+        self._rows: tuple[_Row, ...] = ()
 
     def on_mount(self) -> None:
         pass
@@ -322,8 +350,6 @@ class AgentListPanel(Static, can_focus=True):
         selected_agent_id: str | None,
     ) -> None:
         self._agents = tuple(agents)
-        # Drop expansion state for agents that no longer exist so the
-        # sets don't grow without bound across reaps.
         live_ids = {agent.agent_id for agent in self._agents}
         self._expanded &= live_ids
         self._loading &= live_ids
@@ -332,6 +358,7 @@ class AgentListPanel(Static, can_focus=True):
 
         if not self._agents:
             self._selected_index = 0
+            self._rows = ()
             empty = Text()
             empty.append("\n  no agents found\n", style=f"bold {FG3}")
             empty.append("  press ", style=FG4)
@@ -339,53 +366,54 @@ class AgentListPanel(Static, can_focus=True):
             empty.append(" to scan", style=FG4)
             self.update(empty)
             return
-        selected_index = next(
-            (
-                index
-                for index, agent in enumerate(self._agents)
-                if agent.agent_id == selected_agent_id
-            ),
-            min(self._selected_index, len(self._agents) - 1),
-        )
-        self._selected_index = selected_index
+        self._rebuild_rows()
+        # Prefer an explicit selection from the caller; otherwise keep
+        # the cursor on the same parent agent across refreshes.
+        target_parent = selected_agent_id or self._parent_agent_id_at(self._selected_index)
+        self._selected_index = self._row_index_for_agent(target_parent)
         self._refresh_table()
         self._post_selection(self._selected_index)
 
     def move_cursor(self, delta: int) -> str | None:
-        if not self._agents:
+        if not self._rows:
             return None
-        self._selected_index = max(0, min(len(self._agents) - 1, self._selected_index + delta))
-        self.focus()
+        self._selected_index = max(0, min(len(self._rows) - 1, self._selected_index + delta))
+        with contextlib.suppress(NoActiveAppError):
+            self.focus()
         self._refresh_table()
         self._post_selection(self._selected_index)
-        return self._agents[self._selected_index].agent_id
+        return self._parent_agent_id_at(self._selected_index)
 
     @property
     def selected_agent_id(self) -> str | None:
-        """Return the id of the row currently highlighted in this widget.
+        """Return the id of the parent agent owning the highlighted row.
 
-        The screen-level ``_selected_agent_id`` is updated via a message
-        and therefore lags a frame behind ``move_cursor``; when code
-        running on the same tick needs the live selection (e.g. an
-        in-flight refresh), it should read this instead.
+        Sub-agent rows still resolve to their parent agent so that the
+        right-hand pane keeps showing useful context (sub-agents don't
+        have their own tmux pane to talk about).
         """
-        if not self._agents:
+        if not self._rows or self._selected_index >= len(self._rows):
             return None
-        if self._selected_index >= len(self._agents):
+        return self._parent_agent_id_at(self._selected_index)
+
+    @property
+    def selected_subagent(self) -> DashboardSubAgentView | None:
+        """The sub-agent under the cursor, or ``None`` when on a parent row."""
+        if not self._rows or self._selected_index >= len(self._rows):
             return None
-        return self._agents[self._selected_index].agent_id
+        row = self._rows[self._selected_index]
+        return row.subagent if isinstance(row, _SubAgentRow) else None
 
     def focus_list(self) -> None:
         self.focus()
 
     def toggle_expand(self) -> str | None:
-        """Expand or collapse the currently-selected agent.
+        """Expand or collapse the parent agent of the selected row.
 
-        Returns the agent id whose state changed, or ``None`` when no
-        agent is selected. When expanding an agent whose sub-agent
-        tree hasn't been loaded yet, emits :class:`ExpandRequested`
-        so the screen can kick off a worker; the UI enters a
-        "loading…" state until :meth:`set_subagents` arrives.
+        Works whether the cursor is on the parent row itself or on one
+        of its sub-agent children. Collapsing from within a sub-agent
+        row snaps the cursor back to the parent so the user doesn't
+        end up on an invisible index.
         """
         agent_id = self.selected_agent_id
         if agent_id is None:
@@ -393,35 +421,77 @@ class AgentListPanel(Static, can_focus=True):
         if agent_id in self._expanded:
             self._expanded.discard(agent_id)
             self._loading.discard(agent_id)
+            self._rebuild_rows()
+            self._selected_index = self._row_index_for_agent(agent_id)
             self._refresh_table()
             return agent_id
         self._expanded.add(agent_id)
         if agent_id not in self._subagents:
             self._loading.add(agent_id)
             self.post_message(self.ExpandRequested(agent_id))
+        self._rebuild_rows()
         self._refresh_table()
         return agent_id
 
     def set_subagents(self, agent_id: str, tree: DashboardSubAgentTreeView) -> None:
-        """Feed a loaded sub-agent tree back into the widget.
-
-        Safe to call even when the user has already collapsed the row
-        — we just cache the result and show it next time. Marked as
-        loaded (removed from ``_loading``) either way.
-        """
+        """Feed a loaded sub-agent tree back into the widget."""
         self._subagents[agent_id] = tree
         self._loading.discard(agent_id)
+        self._rebuild_rows()
+        # Clamp cursor — if the tree shrank, the previous index may now
+        # point past the last row.
+        if self._rows:
+            self._selected_index = min(self._selected_index, len(self._rows) - 1)
         self._refresh_table()
 
     def _post_selection(self, index: int | None) -> None:
-        if index is None or index >= len(self._agents):
+        if index is None or index >= len(self._rows):
             return
-        self.post_message(self.AgentSelected(self._agents[index].agent_id))
+        agent_id = self._parent_agent_id_at(index)
+        if agent_id is not None:
+            self.post_message(self.AgentSelected(agent_id))
+
+    def _parent_agent_id_at(self, index: int) -> str | None:
+        if not self._rows or index >= len(self._rows):
+            return None
+        row = self._rows[index]
+        return row.parent_agent_id
+
+    def _row_index_for_agent(self, agent_id: str | None) -> int:
+        if agent_id is None:
+            return 0
+        for idx, row in enumerate(self._rows):
+            if isinstance(row, _AgentRow) and row.agent.agent_id == agent_id:
+                return idx
+        return 0
+
+    def _rebuild_rows(self) -> None:
+        rows: list[_Row] = []
+        for agent in self._agents:
+            rows.append(_AgentRow(agent=agent))
+            if agent.agent_id not in self._expanded:
+                continue
+            tree = self._subagents.get(agent.agent_id)
+            is_loading = agent.agent_id in self._loading
+            if is_loading:
+                rows.append(_SubAgentHeaderRow(parent_agent_id=agent.agent_id, loading=True))
+                continue
+            running = tuple(tree.running) if tree is not None else ()
+            rows.append(_SubAgentHeaderRow(parent_agent_id=agent.agent_id, count=len(running)))
+            for sub in running:
+                rows.append(_SubAgentRow(parent_agent_id=agent.agent_id, subagent=sub))
+        self._rows = tuple(rows)
 
     def _refresh_table(self) -> None:
         self.update(self._build_table())
 
     def _build_table(self) -> Table:
+        # Keep rows in sync with ``_agents`` defensively — some legacy
+        # tests poke ``_agents`` directly without going through
+        # :meth:`set_agents`, and we don't want to silently render an
+        # empty table in that case.
+        if not self._rows and self._agents:
+            self._rebuild_rows()
         table = Table(
             expand=True,
             box=None,
@@ -437,74 +507,77 @@ class AgentListPanel(Static, can_focus=True):
         table.add_column("status", width=10, no_wrap=True)
         table.add_column("idle", width=5, no_wrap=True, justify="right")
         table.add_column("branch", min_width=8, no_wrap=True, ratio=2, overflow="ellipsis")
-        for index, agent in enumerate(self._agents):
+        for index, row in enumerate(self._rows):
             is_selected = index == self._selected_index
-            row_style = _row_style(agent, selected=is_selected)
-            base_name = _display_name(agent, self._agents)
-            expand_glyph = _expand_glyph(agent.agent_id, self._expanded)
-            display_name = f"{expand_glyph}{base_name}"
-            status_text, status_style = _status_display(agent)
             indicator = Text("▎ ", style=f"bold {BLUE}") if is_selected else Text("  ")
-            br_style = PURPLE if is_selected else FG4
-            table.add_row(
-                indicator,
-                Text(display_name, style=f"bold {FG}" if is_selected else FG2),
-                Text(status_text, style=status_style),
-                Text(_format_idle(agent.idle_seconds), style=FG4),
-                Text(agent.branch or "─", style=br_style, overflow="ellipsis"),
-                style=row_style,
-            )
-            if agent.agent_id in self._expanded:
-                self._append_subagent_rows(table, agent.agent_id)
+            if isinstance(row, _AgentRow):
+                agent = row.agent
+                row_style = _row_style(agent, selected=is_selected)
+                base_name = _display_name(agent, self._agents)
+                running_count = self._running_subagent_count(agent.agent_id)
+                display_name = _agent_display(
+                    base_name,
+                    expanded=agent.agent_id in self._expanded,
+                    running_count=running_count,
+                )
+                status_text, status_style = _status_display(agent)
+                br_style = PURPLE if is_selected else FG4
+                table.add_row(
+                    indicator,
+                    Text(display_name, style=f"bold {FG}" if is_selected else FG2),
+                    Text(status_text, style=status_style),
+                    Text(_format_idle(agent.idle_seconds), style=FG4),
+                    Text(agent.branch or "─", style=br_style, overflow="ellipsis"),
+                    style=row_style,
+                )
+            elif isinstance(row, _SubAgentHeaderRow):
+                table.add_row(*_render_subagent_header_row(row, is_selected=is_selected))
+            else:
+                table.add_row(*_render_subagent_row(row.subagent, is_selected=is_selected))
         return table
 
-    def _append_subagent_rows(self, table: Table, agent_id: str) -> None:
+    def _running_subagent_count(self, agent_id: str) -> int | None:
+        if agent_id not in self._expanded:
+            return None
         if agent_id in self._loading:
-            table.add_row(
-                Text("  "),
-                Text("    loading sub-agents…", style=FG4),
-                Text("", style=FG4),
-                Text("", style=FG4),
-                Text("", style=FG4),
-            )
-            return
+            return None
         tree = self._subagents.get(agent_id)
-        if tree is None or tree.is_empty:
-            table.add_row(
-                Text("  "),
-                Text("    no sub-agents", style=FG4),
-                Text("", style=FG4),
-                Text("", style=FG4),
-                Text("", style=FG4),
-            )
-            return
-        for subagent in tree.running:
-            table.add_row(*_render_subagent_row(subagent))
-        # Cap recent rendering — the tree already bounds the count but
-        # when operators have many agents expanded the total can still
-        # dominate the panel. 5 recent entries is enough to see "what
-        # just finished" without crowding out the live agents.
-        for subagent in tree.recent[:5]:
-            table.add_row(*_render_subagent_row(subagent))
+        return 0 if tree is None else len(tree.running)
 
 
-def _expand_glyph(agent_id: str, expanded: set[str]) -> str:
-    return "▾ " if agent_id in expanded else "▸ "
+def _agent_display(base_name: str, *, expanded: bool, running_count: int | None) -> str:
+    glyph = "▾ " if expanded else "▸ "
+    if running_count is not None and running_count > 0:
+        return f"{glyph}{base_name}  ·{running_count}"
+    return f"{glyph}{base_name}"
+
+
+def _render_subagent_header_row(
+    row: _SubAgentHeaderRow, *, is_selected: bool
+) -> tuple[Text, Text, Text, Text, Text]:
+    indicator = Text("▎ ", style=f"bold {BLUE}") if is_selected else Text("  ")
+    if row.loading:
+        label = Text("    loading active sub-agents…", style=FG4)
+        return (indicator, label, Text(""), Text(""), Text(""))
+    if row.count == 0:
+        label = Text("    no active sub-agents", style=FG4)
+        return (indicator, label, Text(""), Text(""), Text(""))
+    label = Text()
+    label.append("    ", style=FG4)
+    label.append("active sub-agents ", style=f"bold {FG3}")
+    label.append(f"({row.count})", style=FG4)
+    return (indicator, label, Text(""), Text(""), Text(""))
 
 
 def _render_subagent_row(
-    subagent: DashboardSubAgentView,
+    subagent: DashboardSubAgentView, *, is_selected: bool
 ) -> tuple[Text, Text, Text, Text, Text]:
-    if subagent.is_running:
-        status_label = "running"
-        status_style = GREEN
-        glyph = "↳"
-        glyph_color = AQUA
-    else:
-        status_label = "done"
-        status_style = FG4
-        glyph = "✓"
-        glyph_color = FG3
+    # Only active sub-agents are rendered — completed ones are
+    # filtered out upstream in :meth:`AgentListPanel._rebuild_rows`.
+    status_label = "running"
+    status_style = GREEN
+    glyph = "↳"
+    glyph_color = AQUA
     duration = _format_subagent_duration(subagent)
     label = Text()
     label.append("    ", style=FG4)
@@ -513,8 +586,9 @@ def _render_subagent_row(
     call_suffix = _shorten_tool_call_id(subagent.tool_call_id)
     if call_suffix:
         label.append(f"  {call_suffix}", style=FG4)
+    indicator = Text("▎ ", style=f"bold {BLUE}") if is_selected else Text("  ")
     return (
-        Text("  "),
+        indicator,
         label,
         Text(status_label, style=status_style),
         Text(duration, style=FG4),
