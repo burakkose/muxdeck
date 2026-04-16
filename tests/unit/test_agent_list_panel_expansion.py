@@ -227,3 +227,87 @@ class TestAgentListPanelSubAgentNavigation:
         )
         # count on the parent row.
         assert panel._running_subagent_count("a1") == 3
+
+    def test_cursor_stays_on_subagent_across_set_agents_refresh(self) -> None:
+        """Periodic refresh calls set_agents(..., selected_agent_id=parent).
+
+        Before the fix, that would snap the cursor back up to the
+        parent row, making it impossible to hover a sub-agent while
+        the dashboard was polling.
+        """
+        panel = AgentListPanel()
+        panel.set_agents([_agent("a1"), _agent("a2")], selected_agent_id="a1")
+        panel.toggle_expand()
+        panel.set_subagents(
+            "a1",
+            DashboardSubAgentTreeView(
+                agent_id="a1",
+                session_id="s",
+                running=(_subagent_view("call_r1"), _subagent_view("call_r2")),
+                recent=(),
+            ),
+        )
+        panel.move_cursor(2)  # onto call_r1
+        assert panel.selected_subagent is not None
+        assert panel.selected_subagent.tool_call_id == "call_r1"
+        # Simulate a periodic refresh: same agents, same selected parent.
+        panel.set_agents(
+            [_agent("a1", name="Renamed"), _agent("a2")],
+            selected_agent_id="a1",
+        )
+        assert panel.selected_subagent is not None
+        assert panel.selected_subagent.tool_call_id == "call_r1"
+
+    def test_cursor_stays_on_subagent_across_set_subagents_refresh(self) -> None:
+        panel = AgentListPanel()
+        panel.set_agents([_agent("a1")], selected_agent_id="a1")
+        panel.toggle_expand()
+        panel.set_subagents(
+            "a1",
+            DashboardSubAgentTreeView(
+                agent_id="a1",
+                session_id="s",
+                running=(_subagent_view("call_r1"), _subagent_view("call_r2")),
+                recent=(),
+            ),
+        )
+        panel.move_cursor(3)  # onto call_r2
+        assert panel.selected_subagent is not None
+        assert panel.selected_subagent.tool_call_id == "call_r2"
+        # Same tree delivered again (polling) — cursor must stay put.
+        panel.set_subagents(
+            "a1",
+            DashboardSubAgentTreeView(
+                agent_id="a1",
+                session_id="s",
+                running=(_subagent_view("call_r1"), _subagent_view("call_r2")),
+                recent=(),
+            ),
+        )
+        assert panel.selected_subagent is not None
+        assert panel.selected_subagent.tool_call_id == "call_r2"
+
+    def test_cursor_falls_back_to_parent_when_subagent_vanishes(self) -> None:
+        panel = AgentListPanel()
+        panel.set_agents([_agent("a1")], selected_agent_id="a1")
+        panel.toggle_expand()
+        panel.set_subagents(
+            "a1",
+            DashboardSubAgentTreeView(
+                agent_id="a1",
+                session_id="s",
+                running=(_subagent_view("call_gone"),),
+                recent=(),
+            ),
+        )
+        panel.move_cursor(2)
+        assert panel.selected_subagent is not None
+        # Tree updates — the sub-agent finished and dropped out.
+        panel.set_subagents(
+            "a1",
+            DashboardSubAgentTreeView(agent_id="a1", session_id="s", running=(), recent=()),
+        )
+        # No sub-agent to hover — cursor should land on the parent,
+        # not off the end of the list.
+        assert panel.selected_subagent is None
+        assert panel.selected_agent_id == "a1"
