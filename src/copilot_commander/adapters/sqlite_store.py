@@ -13,9 +13,10 @@ from typing import Literal, cast
 
 from copilot_commander.config import AppConfig
 from copilot_commander.constants import DEFAULT_DATABASE_FILE_NAME as _DEFAULT_DATABASE_FILE_NAME
-from copilot_commander.domain.enums import AgentStatus
+from copilot_commander.domain.enums import AgentStatus, TaskPriority, TaskStatus
 from copilot_commander.domain.events import Event, LogChunk
 from copilot_commander.domain.models import Agent, Session, Worktree
+from copilot_commander.domain.task_models import Task
 from copilot_commander.domain.value_objects import (
     ensure_aware_datetime,
     ensure_non_empty_text,
@@ -82,6 +83,21 @@ _WORKTREE_COLUMNS = (
     "assigned_agent_id",
     "created_at",
     "last_seen_at",
+)
+_TASK_COLUMNS = (
+    "id",
+    "title",
+    "summary",
+    "description",
+    "repo_root",
+    "priority",
+    "status",
+    "assigned_agent_id",
+    "assigned_worktree_id",
+    "created_at",
+    "started_at",
+    "completed_at",
+    "notes",
 )
 _SESSION_COLUMNS = (
     "id",
@@ -224,6 +240,24 @@ UPDATE worktrees SET
 WHERE path = :path
 """
 
+_UPSERT_TASK_SQL = f"""
+INSERT INTO tasks ({", ".join(_TASK_COLUMNS)})
+VALUES ({_placeholders(_TASK_COLUMNS)})
+ON CONFLICT(id) DO UPDATE SET
+    title = excluded.title,
+    summary = excluded.summary,
+    description = excluded.description,
+    repo_root = excluded.repo_root,
+    priority = excluded.priority,
+    status = excluded.status,
+    assigned_agent_id = excluded.assigned_agent_id,
+    assigned_worktree_id = excluded.assigned_worktree_id,
+    created_at = excluded.created_at,
+    started_at = excluded.started_at,
+    completed_at = excluded.completed_at,
+    notes = excluded.notes
+"""
+
 _UPSERT_SESSION_SQL = f"""
 INSERT INTO sessions ({", ".join(_SESSION_COLUMNS)})
 VALUES ({_placeholders(_SESSION_COLUMNS)})
@@ -277,6 +311,7 @@ ON CONFLICT(session_id) DO UPDATE SET
 
 _SELECT_AGENT_SQL = f"SELECT {', '.join(_AGENT_COLUMNS)} FROM agents"
 _SELECT_WORKTREE_SQL = f"SELECT {', '.join(_WORKTREE_COLUMNS)} FROM worktrees"
+_SELECT_TASK_SQL = f"SELECT {', '.join(_TASK_COLUMNS)} FROM tasks"
 _SELECT_SESSION_SQL = (
     "SELECT "
     + ", ".join(f"sessions.{column} AS {column}" for column in _SESSION_COLUMNS)
@@ -507,12 +542,64 @@ class SQLiteStore:
 
     def delete_worktree(self, worktree_id: str, /) -> bool:
         """Delete a worktree record by ID. Returns True if a row was deleted."""
-        self._execute_write(
+        return self._execute_delete(
             "DELETE FROM worktrees WHERE id = ?",
             (worktree_id,),
             operation="delete worktree",
         )
-        return True
+
+    def upsert_task(self, task: Task, /) -> None:
+        self._execute_write(
+            _UPSERT_TASK_SQL,
+            self._task_params(task),
+            operation="upsert task",
+        )
+
+    def list_tasks(
+        self,
+        /,
+        *,
+        status: TaskStatus | None = None,
+        assigned_agent_id: str | None = None,
+        assigned_worktree_id: str | None = None,
+        repo_root: str | None = None,
+    ) -> tuple[Task, ...]:
+        clauses: list[str] = []
+        params: list[object] = []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status.value)
+        if assigned_agent_id is not None:
+            clauses.append("assigned_agent_id = ?")
+            params.append(assigned_agent_id)
+        if assigned_worktree_id is not None:
+            clauses.append("assigned_worktree_id = ?")
+            params.append(assigned_worktree_id)
+        if repo_root is not None:
+            clauses.append("repo_root = ?")
+            params.append(repo_root)
+        where_clause = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._fetch_all(
+            f"{_SELECT_TASK_SQL}{where_clause} ORDER BY created_at DESC, id DESC",
+            tuple(params),
+            operation="list tasks",
+        )
+        return tuple(_row_to_task(row) for row in rows)
+
+    def get_task(self, task_id: str, /) -> Task | None:
+        row = self._fetch_one(
+            f"{_SELECT_TASK_SQL} WHERE id = ?",
+            (task_id,),
+            operation="get task",
+        )
+        return None if row is None else _row_to_task(row)
+
+    def delete_task(self, task_id: str, /) -> bool:
+        return self._execute_delete(
+            "DELETE FROM tasks WHERE id = ?",
+            (task_id,),
+            operation="delete task",
+        )
 
     def upsert_session(self, session: Session, /) -> None:
         self._execute_write(
@@ -1094,6 +1181,23 @@ class SQLiteStore:
             "last_seen_at": _serialize_datetime(worktree.last_seen_at),
         }
 
+    def _task_params(self, task: Task) -> dict[str, object]:
+        return {
+            "id": task.id,
+            "title": task.title,
+            "summary": task.summary,
+            "description": task.description,
+            "repo_root": task.repo_root,
+            "priority": task.priority.value,
+            "status": task.status.value,
+            "assigned_agent_id": task.assigned_agent_id,
+            "assigned_worktree_id": task.assigned_worktree_id,
+            "created_at": _serialize_datetime(task.created_at),
+            "started_at": _serialize_optional_datetime(task.started_at),
+            "completed_at": _serialize_optional_datetime(task.completed_at),
+            "notes": task.notes,
+        }
+
     def _session_params(self, session: Session) -> dict[str, object]:
         return {
             "id": session.id,
@@ -1251,6 +1355,32 @@ def _row_to_worktree(row: sqlite3.Row) -> Worktree:
         )
     except DomainValidationError as exc:
         msg = f"invalid worktree row for {worktree_id!r}: {exc}"
+        raise PersistenceError(msg) from exc
+
+
+def _row_to_task(row: sqlite3.Row) -> Task:
+    task_id = _require_text(row, "id")
+    try:
+        return Task(
+            id=task_id,
+            title=_require_text(row, "title"),
+            summary=_optional_text(row, "summary"),
+            description=_optional_text(row, "description"),
+            repo_root=_optional_text(row, "repo_root"),
+            priority=TaskPriority(_require_text(row, "priority")),
+            status=TaskStatus(_require_text(row, "status")),
+            assigned_agent_id=_optional_text(row, "assigned_agent_id"),
+            assigned_worktree_id=_optional_text(row, "assigned_worktree_id"),
+            created_at=_require_datetime(row, "created_at"),
+            started_at=_optional_datetime(row, "started_at"),
+            completed_at=_optional_datetime(row, "completed_at"),
+            notes=_optional_text(row, "notes"),
+        )
+    except ValueError as exc:
+        msg = f"invalid task enum in row {task_id!r}"
+        raise PersistenceError(msg) from exc
+    except DomainValidationError as exc:
+        msg = f"invalid task row for {task_id!r}: {exc}"
         raise PersistenceError(msg) from exc
 
 
