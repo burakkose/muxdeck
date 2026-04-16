@@ -83,6 +83,8 @@ class CommanderRuntime:
     agents: AgentController
     actions: TmuxActionService | None = None
     synchronizer: RuntimeSynchronizer | None = None
+    # Thread-safe replay controller for worker-thread usage (replay screen).
+    replay_worker: ReplayController | None = None
     sync_store: SQLiteStore | None = None
     sessions_ctrl: SessionsController | None = None
     sync_dashboard: DashboardController | None = None
@@ -321,6 +323,9 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     copilot_adapter = CopilotAdapter(process_adapter)
     sessions = SessionService(store=store)
     replay_service = ReplayService(store=store, sessions=sessions)
+    # Thread-safe replay service for worker-thread usage (replay screen).
+    sync_sessions = SessionService(store=sync_store)
+    sync_replay_service = ReplayService(store=sync_store, sessions=sync_sessions)
     sync_agent_service = AgentService(
         sync_store,
         sync_store,
@@ -385,6 +390,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         dashboard=dashboard,
         worktrees=WorktreeController(worktree_service, store),
         replay=ReplayController(replay_service),
+        replay_worker=ReplayController(sync_replay_service),
         agents=agent_controller,
         actions=action_service,
         synchronizer=RuntimeSynchronizer(

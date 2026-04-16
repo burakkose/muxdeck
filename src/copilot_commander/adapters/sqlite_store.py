@@ -505,6 +505,15 @@ class SQLiteStore:
     def list_worktrees_by_repo(self, repo_root: str, /) -> tuple[Worktree, ...]:
         return self.list_worktrees(repo_root=repo_root)
 
+    def delete_worktree(self, worktree_id: str, /) -> bool:
+        """Delete a worktree record by ID. Returns True if a row was deleted."""
+        self._execute_write(
+            "DELETE FROM worktrees WHERE id = ?",
+            (worktree_id,),
+            operation="delete worktree",
+        )
+        return True
+
     def upsert_session(self, session: Session, /) -> None:
         self._execute_write(
             _UPSERT_SESSION_SQL,

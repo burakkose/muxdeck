@@ -96,7 +96,9 @@ class ReplayScreen(ShellScreen):
         follow_latest = self._follow_latest
 
         def _load() -> ReplayStateView:
-            return self.runtime.replay.load_state(
+            # Use thread-safe replay controller for worker thread access
+            replay = self.runtime.replay_worker or self.runtime.replay
+            return replay.load_state(
                 session_id=session_id,
                 selected_index=selected_index,
                 filter_text=filter_text,

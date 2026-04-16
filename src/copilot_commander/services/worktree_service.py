@@ -65,6 +65,8 @@ class WorktreeStorePort(Protocol):
 
     def get_worktree_by_path(self, path: str, /) -> Worktree | None: ...
 
+    def delete_worktree(self, worktree_id: str, /) -> bool: ...
+
     def list_worktrees(
         self,
         /,
@@ -309,6 +311,9 @@ class WorktreeService:
                 msg = f"worktree {existing.path} still has cached session context"
                 raise DomainValidationError(msg)
         outcome = self._git.remove_worktree(target_path, force=force)
+        # Remove the worktree from the DB so the list stays in sync
+        if existing is not None:
+            self._worktrees.delete_worktree(existing.id)
         conflicts = self.detect_orphan_conflicts(repo_root)
         return WorktreeRemoveResult(path=target_path, git_outcome=outcome, conflicts=conflicts)
 
@@ -333,6 +338,11 @@ class WorktreeService:
             )
         else:
             pruned_paths = tuple(sorted(before_paths - after_paths, key=str))
+            # Remove pruned worktrees from the DB so the list stays in sync
+            for pruned_path in pruned_paths:
+                db_wt = self._worktrees.get_worktree_by_path(str(pruned_path))
+                if db_wt is not None:
+                    self._worktrees.delete_worktree(db_wt.id)
         conflicts = self.detect_orphan_conflicts(repo_root)
         return WorktreePruneReport(
             repo_root=repo_root,
