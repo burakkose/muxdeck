@@ -7,7 +7,7 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import Screen
 
-from copilot_commander.bindings import GLOBAL_HINTS, KeyHint
+from copilot_commander.bindings import KeyHint
 from copilot_commander.widgets.common import KeyHintFooter, TabBar
 
 if TYPE_CHECKING:
@@ -42,7 +42,8 @@ class ShellScreen(Screen[None]):
         yield Static()
 
     def footer_hints(self) -> tuple[KeyHint, ...]:
-        return (*GLOBAL_HINTS, *self.FOOTER_HINTS)
+        # Only screen-specific hints; global nav is in the tab bar.
+        return (*self.FOOTER_HINTS, KeyHint("r", "refresh"), KeyHint("q", "quit"))
 
     def set_status(self, message: str) -> None:
         self._status = message

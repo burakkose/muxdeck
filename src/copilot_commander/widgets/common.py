@@ -13,8 +13,8 @@ from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.theme import (
     AQUA,
     BLUE,
+    BLUE_DIM,
     FG,
-    FG2,
     FG3,
     FG4,
     GREEN,
@@ -54,6 +54,11 @@ def status_glyph_char(status: AgentStatus) -> str:
     return char
 
 
+def status_glyph_parts(status: AgentStatus) -> tuple[str, str]:
+    """Return (char, color) for a status — for inline text building."""
+    return _STATUS_GLYPHS.get(status, ("?", FG3))
+
+
 # ── formatting helpers ──────────────────────────────────────────────
 
 
@@ -81,17 +86,17 @@ def join_lines(lines: Iterable[str]) -> str:
 # ── TabBar ──────────────────────────────────────────────────────────
 
 _TAB_ITEMS: Final[tuple[tuple[str, str], ...]] = (
-    ("1", "Dashboard"),
-    ("2", "Worktrees"),
-    ("3", "Replay"),
-    ("4", "Sessions"),
-    ("5", "Setup"),
-    ("?", "Help"),
+    ("1", "dashboard"),
+    ("2", "worktrees"),
+    ("3", "replay"),
+    ("4", "sessions"),
+    ("5", "setup"),
+    ("?", "help"),
 )
 
 
 class TabBar(Static):
-    """Single-line tab bar — clean modern branding."""
+    """Single-line tab bar — modern minimal branding."""
 
     active_tab = reactive("dashboard")
 
@@ -102,16 +107,14 @@ class TabBar(Static):
     def render(self) -> Text:
         bar = Text()
         bar.append(" ◆ ", style=f"bold {BLUE}")
-        bar.append("commander", style=f"bold {FG}")
-        bar.append("  ", style=FG4)
+        bar.append("commander ", style=f"bold {FG}")
+        bar.append("│ ", style=FG4)
         for key, label in _TAB_ITEMS:
             is_active = label.lower() == self.active_tab.lower()
             if is_active:
-                bar.append(f" {key}·", style=f"bold {BLUE}")
-                bar.append(f"{label} ", style=f"bold {FG}")
+                bar.append(f" {label} ", style=f"bold {FG} on {BLUE_DIM}")
             else:
-                bar.append(f" {key}·", style=FG4)
-                bar.append(f"{label} ", style=FG4)
+                bar.append(f" {key}·{label} ", style=FG4)
         return bar
 
 
@@ -135,13 +138,11 @@ class KeyHintFooter(Static):
 
     def render(self) -> Text:
         footer = Text()
-        footer.append(f" {self.status} ", style=f"bold {FG2}")
-        footer.append(" │ ", style=FG4)
-        for i, hint in enumerate(self.hints):
-            if i:
-                footer.append("  ")
-            footer.append(f"{hint.key}", style=f"bold {BLUE}")
-            footer.append(f" {hint.label}", style=FG3)
+        footer.append(f" {self.status}", style=FG3)
+        footer.append("  │", style=FG4)
+        for hint in self.hints:
+            footer.append(f"  {hint.key}", style=f"bold {BLUE}")
+            footer.append(f" {hint.label}", style=FG4)
         return footer
 
 
@@ -154,4 +155,5 @@ __all__ = [
     "join_lines",
     "status_glyph",
     "status_glyph_char",
+    "status_glyph_parts",
 ]
