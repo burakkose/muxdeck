@@ -858,9 +858,20 @@ class AgentDetailPanel(Static):
             for line in snippet.splitlines() or [snippet]:
                 result.append(f"  {line}\n", style=FG2)
 
-        if not is_running and subagent.result_content:
+        if subagent.result_content:
             result.append("\n")
-            result.append("  output\n", style=f"bold {FG4}")
+            # For background agents the parent's "result" is only a
+            # launch acknowledgement — the real agent output lives in
+            # the sub-agent's own session. Label it so operators don't
+            # mistake the ack for the actual result.
+            is_background = (subagent.mode or "").lower() == "background"
+            if is_background and is_running:
+                header = "  launch ack (background — output lives in sub-session)\n"
+            elif is_background:
+                header = "  launch ack\n"
+            else:
+                header = "  output\n"
+            result.append(header, style=f"bold {FG4}")
             snippet = _truncate(subagent.result_content, 1200)
             for line in snippet.splitlines() or [snippet]:
                 result.append(f"  {line}\n", style=FG1)
