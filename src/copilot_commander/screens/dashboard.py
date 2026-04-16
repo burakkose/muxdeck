@@ -185,6 +185,10 @@ class DashboardScreen(ShellScreen):
         self.query_one(FilterBar).focus_input()
         self.set_status("filter agents")
 
+    def action_escape_filter(self) -> None:
+        """Return focus to the agent list (ESC from filter or anywhere)."""
+        self.query_one(AgentListPanel).focus_list()
+
     def action_toggle_attention(self) -> None:
         self._filters = DashboardFilterState(
             statuses=self._filters.statuses,

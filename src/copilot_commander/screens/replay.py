@@ -146,6 +146,10 @@ class ReplayScreen(ShellScreen):
         self.query_one(ReplayFilterBar).focus_input()
         self.set_status("filter transcript")
 
+    def action_escape_filter(self) -> None:
+        """Return focus to the active list (ESC from filter)."""
+        self._active_list().focus_list()
+
     def action_focus_markers(self) -> None:
         self.query_one(ReplayMarkerListPanel).focus_list()
         self.set_status("marker focus")
