@@ -17,6 +17,8 @@ from copilot_commander.controllers import (
     DashboardHealthSummary,
     DashboardMetricView,
     DashboardSelectedAgentView,
+    DashboardSubAgentTreeView,
+    DashboardSubAgentView,
 )
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.services.operator_status_service import (
@@ -272,9 +274,28 @@ class FilterBar(Vertical):
 
 
 class AgentListPanel(Static, can_focus=True):
-    """Compact agent list — clean selection, status glyphs, activity hint."""
+    """Compact agent list — clean selection, status glyphs, activity hint.
+
+    Supports per-row expand/collapse for showing a parent agent's sub-
+    agent tree. Expansion is purely a widget concern: child rows are
+    interleaved with parent rows visually but the cursor still moves
+    parent-to-parent, so the operator's mental model of "select an
+    agent" stays intact.
+    """
 
     class AgentSelected(Message):
+        def __init__(self, agent_id: str) -> None:
+            super().__init__()
+            self.agent_id = agent_id
+
+    class ExpandRequested(Message):
+        """Emitted when the user expands a row whose sub-agent tree
+
+        hasn't been loaded yet. The screen is responsible for kicking
+        off a worker-thread load and feeding the result back via
+        :meth:`set_subagents`.
+        """
+
         def __init__(self, agent_id: str) -> None:
             super().__init__()
             self.agent_id = agent_id
@@ -283,6 +304,13 @@ class AgentListPanel(Static, can_focus=True):
         super().__init__(id=widget_id, classes=classes)
         self._agents: tuple[DashboardAgentListItemView, ...] = ()
         self._selected_index = 0
+        # Expansion is keyed on agent_id so it survives set_agents()
+        # across refreshes. The sub-agent cache likewise sticks around
+        # between refreshes — the screen invalidates it by calling
+        # set_subagents() again when new data arrives.
+        self._expanded: set[str] = set()
+        self._subagents: dict[str, DashboardSubAgentTreeView] = {}
+        self._loading: set[str] = set()
 
     def on_mount(self) -> None:
         pass
@@ -294,6 +322,14 @@ class AgentListPanel(Static, can_focus=True):
         selected_agent_id: str | None,
     ) -> None:
         self._agents = tuple(agents)
+        # Drop expansion state for agents that no longer exist so the
+        # sets don't grow without bound across reaps.
+        live_ids = {agent.agent_id for agent in self._agents}
+        self._expanded &= live_ids
+        self._loading &= live_ids
+        for stale in set(self._subagents) - live_ids:
+            self._subagents.pop(stale, None)
+
         if not self._agents:
             self._selected_index = 0
             empty = Text()
@@ -342,6 +378,41 @@ class AgentListPanel(Static, can_focus=True):
     def focus_list(self) -> None:
         self.focus()
 
+    def toggle_expand(self) -> str | None:
+        """Expand or collapse the currently-selected agent.
+
+        Returns the agent id whose state changed, or ``None`` when no
+        agent is selected. When expanding an agent whose sub-agent
+        tree hasn't been loaded yet, emits :class:`ExpandRequested`
+        so the screen can kick off a worker; the UI enters a
+        "loading…" state until :meth:`set_subagents` arrives.
+        """
+        agent_id = self.selected_agent_id
+        if agent_id is None:
+            return None
+        if agent_id in self._expanded:
+            self._expanded.discard(agent_id)
+            self._loading.discard(agent_id)
+            self._refresh_table()
+            return agent_id
+        self._expanded.add(agent_id)
+        if agent_id not in self._subagents:
+            self._loading.add(agent_id)
+            self.post_message(self.ExpandRequested(agent_id))
+        self._refresh_table()
+        return agent_id
+
+    def set_subagents(self, agent_id: str, tree: DashboardSubAgentTreeView) -> None:
+        """Feed a loaded sub-agent tree back into the widget.
+
+        Safe to call even when the user has already collapsed the row
+        — we just cache the result and show it next time. Marked as
+        loaded (removed from ``_loading``) either way.
+        """
+        self._subagents[agent_id] = tree
+        self._loading.discard(agent_id)
+        self._refresh_table()
+
     def _post_selection(self, index: int | None) -> None:
         if index is None or index >= len(self._agents):
             return
@@ -369,9 +440,10 @@ class AgentListPanel(Static, can_focus=True):
         for index, agent in enumerate(self._agents):
             is_selected = index == self._selected_index
             row_style = _row_style(agent, selected=is_selected)
-            display_name = _display_name(agent, self._agents)
+            base_name = _display_name(agent, self._agents)
+            expand_glyph = _expand_glyph(agent.agent_id, self._expanded)
+            display_name = f"{expand_glyph}{base_name}"
             status_text, status_style = _status_display(agent)
-            # Selection indicator: ▎ bar on left
             indicator = Text("▎ ", style=f"bold {BLUE}") if is_selected else Text("  ")
             br_style = PURPLE if is_selected else FG4
             table.add_row(
@@ -382,7 +454,99 @@ class AgentListPanel(Static, can_focus=True):
                 Text(agent.branch or "─", style=br_style, overflow="ellipsis"),
                 style=row_style,
             )
+            if agent.agent_id in self._expanded:
+                self._append_subagent_rows(table, agent.agent_id)
         return table
+
+    def _append_subagent_rows(self, table: Table, agent_id: str) -> None:
+        if agent_id in self._loading:
+            table.add_row(
+                Text("  "),
+                Text("    loading sub-agents…", style=FG4),
+                Text("", style=FG4),
+                Text("", style=FG4),
+                Text("", style=FG4),
+            )
+            return
+        tree = self._subagents.get(agent_id)
+        if tree is None or tree.is_empty:
+            table.add_row(
+                Text("  "),
+                Text("    no sub-agents", style=FG4),
+                Text("", style=FG4),
+                Text("", style=FG4),
+                Text("", style=FG4),
+            )
+            return
+        for subagent in tree.running:
+            table.add_row(*_render_subagent_row(subagent))
+        # Cap recent rendering — the tree already bounds the count but
+        # when operators have many agents expanded the total can still
+        # dominate the panel. 5 recent entries is enough to see "what
+        # just finished" without crowding out the live agents.
+        for subagent in tree.recent[:5]:
+            table.add_row(*_render_subagent_row(subagent))
+
+
+def _expand_glyph(agent_id: str, expanded: set[str]) -> str:
+    return "▾ " if agent_id in expanded else "▸ "
+
+
+def _render_subagent_row(
+    subagent: DashboardSubAgentView,
+) -> tuple[Text, Text, Text, Text, Text]:
+    if subagent.is_running:
+        status_label = "running"
+        status_style = GREEN
+        glyph = "↳"
+        glyph_color = AQUA
+    else:
+        status_label = "done"
+        status_style = FG4
+        glyph = "✓"
+        glyph_color = FG3
+    duration = _format_subagent_duration(subagent)
+    label = Text()
+    label.append("    ", style=FG4)
+    label.append(f"{glyph} ", style=f"bold {glyph_color}")
+    label.append(subagent.display_name, style=FG2 if subagent.is_running else FG3)
+    call_suffix = _shorten_tool_call_id(subagent.tool_call_id)
+    if call_suffix:
+        label.append(f"  {call_suffix}", style=FG4)
+    return (
+        Text("  "),
+        label,
+        Text(status_label, style=status_style),
+        Text(duration, style=FG4),
+        Text("", style=FG4),
+    )
+
+
+def _shorten_tool_call_id(tool_call_id: str) -> str:
+    # Copilot CLI ids look like ``call_xx3xSlNrWPvwRsjbTuFv5cN1``.
+    # The prefix is noise in the dashboard; trim to the last 6 chars.
+    if not tool_call_id:
+        return ""
+    tail = tool_call_id.rsplit("_", 1)[-1] if "_" in tool_call_id else tool_call_id
+    return f"#{tail[-6:]}"
+
+
+def _format_subagent_duration(subagent: DashboardSubAgentView) -> str:
+    if subagent.completed_at is not None:
+        elapsed = (subagent.completed_at - subagent.started_at).total_seconds()
+    else:
+        now = datetime.now(UTC)
+        started = subagent.started_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=UTC)
+        elapsed = (now - started).total_seconds()
+    if elapsed < 0:
+        elapsed = 0
+    if elapsed < 60:
+        return f"{int(elapsed)}s"
+    if elapsed < 3600:
+        return f"{int(elapsed // 60)}m"
+    return f"{int(elapsed // 3600)}h"
 
 
 class AgentDetailPanel(Static):

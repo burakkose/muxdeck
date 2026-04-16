@@ -25,6 +25,9 @@ from copilot_commander.controllers.dashboard_controller import (
     DashboardSort,
     DashboardSortField,
     DashboardState,
+    DashboardSubAgentTreeView,
+    DashboardSubAgentView,
+    SubAgentReaderPort,
 )
 from copilot_commander.controllers.fleet_controller import (
     FleetAgentSummaryView,
@@ -95,6 +98,8 @@ __all__ = [
     "DashboardSort",
     "DashboardSortField",
     "DashboardState",
+    "DashboardSubAgentTreeView",
+    "DashboardSubAgentView",
     "FleetAgentSummaryView",
     "FleetController",
     "FleetFilterState",
@@ -124,6 +129,7 @@ __all__ = [
     "SessionListItemView",
     "SessionsController",
     "SessionsState",
+    "SubAgentReaderPort",
     "WorktreeActionView",
     "WorktreeConflictView",
     "WorktreeController",

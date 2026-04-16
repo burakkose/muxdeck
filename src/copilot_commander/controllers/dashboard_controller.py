@@ -12,6 +12,7 @@ from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.events import Event, LogChunk
 from copilot_commander.domain.models import Agent, Session, Worktree
+from copilot_commander.domain.subagents import SubAgentSnapshot, SubAgentTree
 from copilot_commander.domain.value_objects import utc_now
 from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
 from copilot_commander.perf import timed
@@ -166,6 +167,44 @@ class DashboardSelectedAgentView:
 
 
 @dataclass(frozen=True, slots=True)
+class DashboardSubAgentView:
+    """Presentation shape for one sub-agent row under a parent agent.
+
+    ``tool_call_id`` is the stable identity the widget uses to diff
+    rows across refreshes. Duration is pre-formatted so the widget
+    doesn't have to know about seconds/minutes math.
+    """
+
+    tool_call_id: str
+    agent_name: str
+    display_name: str
+    description: str | None
+    started_at: datetime
+    completed_at: datetime | None
+    is_running: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardSubAgentTreeView:
+    """The full expanded view for one agent's sub-agent tree."""
+
+    agent_id: str
+    session_id: str | None
+    running: tuple[DashboardSubAgentView, ...]
+    recent: tuple[DashboardSubAgentView, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.running and not self.recent
+
+
+class SubAgentReaderPort(Protocol):
+    """The subset of ``SubAgentReader`` the controller needs."""
+
+    def read(self, session_id: str) -> SubAgentTree | None: ...
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardState:
     generated_at: datetime
     metrics: tuple[DashboardMetricView, ...]
@@ -186,11 +225,64 @@ class DashboardController:
         clock: Clock = utc_now,
         max_cost_usd: Decimal | None = None,
         max_runtime_minutes: int | None = None,
+        subagent_reader: SubAgentReaderPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
         self._max_cost_usd = max_cost_usd
         self._max_runtime_minutes = max_runtime_minutes
+        self._subagent_reader = subagent_reader
+
+    def load_subagents(self, agent_id: str) -> DashboardSubAgentTreeView:
+        """Lazy-load the sub-agent tree for one agent.
+
+        Deliberately *not* called from :meth:`build_state` — the point
+        is that rendering the dashboard list stays cheap even when the
+        user has dozens of agents, and the parent-events parse only
+        runs for rows the operator has explicitly expanded.
+
+        Returns an empty tree (with ``session_id=None``) when the
+        agent has no known ``copilot_session_id``, no reader was
+        configured, or the session directory can't be resolved to any
+        of the reader's roots. The widget uses this shape to render a
+        friendly "no sub-agents" placeholder instead of hiding the
+        toggle.
+        """
+        agent = next(
+            (a for a in self._store.list_agents() if a.id == agent_id),
+            None,
+        )
+        if agent is None or self._subagent_reader is None:
+            return DashboardSubAgentTreeView(
+                agent_id=agent_id, session_id=None, running=(), recent=()
+            )
+        session_id = self._resolve_copilot_session_id(agent)
+        if session_id is None:
+            return DashboardSubAgentTreeView(
+                agent_id=agent_id, session_id=None, running=(), recent=()
+            )
+        tree = self._subagent_reader.read(session_id)
+        if tree is None:
+            return DashboardSubAgentTreeView(
+                agent_id=agent_id, session_id=session_id, running=(), recent=()
+            )
+        return DashboardSubAgentTreeView(
+            agent_id=agent_id,
+            session_id=session_id,
+            running=tuple(_to_view(snapshot) for snapshot in tree.running),
+            recent=tuple(_to_view(snapshot) for snapshot in tree.recent),
+        )
+
+    def _resolve_copilot_session_id(self, agent: Agent) -> str | None:
+        if agent.copilot_session_id:
+            return agent.copilot_session_id
+        # Fall back to the latest session linked to this agent in the
+        # sqlite store — some agents only record their copilot session
+        # id on the Session row, not the Agent row itself.
+        latest = self._store.get_latest_session_for_agent(agent.id)
+        if latest is not None and latest.copilot_session_id:
+            return latest.copilot_session_id
+        return None
 
     def build_state(
         self,
@@ -775,6 +867,18 @@ def _check_stale_output(
     return stale_seconds > _STALE_THRESHOLD_SECONDS
 
 
+def _to_view(snapshot: SubAgentSnapshot) -> DashboardSubAgentView:
+    return DashboardSubAgentView(
+        tool_call_id=snapshot.tool_call_id,
+        agent_name=snapshot.agent_name,
+        display_name=snapshot.display_name,
+        description=snapshot.description,
+        started_at=snapshot.started_at,
+        completed_at=snapshot.completed_at,
+        is_running=snapshot.is_running,
+    )
+
+
 __all__ = [
     "DashboardAgentListItemView",
     "DashboardAlertView",
@@ -786,6 +890,9 @@ __all__ = [
     "DashboardSelectedAgentView",
     "DashboardSort",
     "DashboardState",
+    "DashboardSubAgentTreeView",
+    "DashboardSubAgentView",
+    "SubAgentReaderPort",
     "_build_sparkline",
     "_check_stale_output",
 ]
