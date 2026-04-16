@@ -11,9 +11,10 @@ import unittest
 
 from copilot_commander.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
 from copilot_commander.config import AppConfig, PathsConfig
-from copilot_commander.domain.enums import AgentStatus
+from copilot_commander.domain.enums import AgentStatus, TaskPriority, TaskStatus
 from copilot_commander.domain.events import Event, LogChunk
 from copilot_commander.domain.models import Agent, Session, Worktree
+from copilot_commander.domain.task_models import Task
 from copilot_commander.exceptions import PersistenceError
 
 
@@ -100,12 +101,30 @@ class SQLiteStoreTests(unittest.TestCase):
             exit_reason="completed",
         )
 
+    def _make_task(self) -> Task:
+        return Task(
+            id="task-123",
+            title="SQLite store task",
+            summary="Persist commander state",
+            description="Create a first-class task record",
+            repo_root="/repo",
+            priority=TaskPriority.HIGH,
+            status=TaskStatus.ASSIGNED,
+            assigned_agent_id="agent-123",
+            assigned_worktree_id="worktree-123",
+            created_at=datetime(2025, 1, 1, 11, 55, tzinfo=UTC),
+            notes="ready for launch",
+        )
+
     def test_bootstraps_schema_migrations_and_pragmas(self) -> None:
         self.assertEqual(
             self.store.database_path,
             self.config.paths.database_path.resolve(),
         )
-        self.assertEqual(self.store.applied_migrations(), ("0001_initial.sql",))
+        self.assertEqual(
+            self.store.applied_migrations(),
+            ("0001_initial.sql", "0002_add_tasks.sql"),
+        )
         self.assertEqual(self.store.journal_mode, "wal")
         self.assertTrue(self.store.foreign_keys_enabled)
 
@@ -128,11 +147,15 @@ class SQLiteStoreTests(unittest.TestCase):
                 "sessions",
                 "events",
                 "log_chunks",
+                "tasks",
                 "settings",
                 "cache_entries",
             }.issubset(table_names)
         )
-        self.assertEqual(applied_migrations, [("0001_initial.sql",)])
+        self.assertEqual(
+            applied_migrations,
+            [("0001_initial.sql",), ("0002_add_tasks.sql",)],
+        )
         self.assertEqual(journal_mode, ("wal",))
 
     def test_upsert_and_query_helpers_round_trip_psd_models(self) -> None:
@@ -170,6 +193,23 @@ class SQLiteStoreTests(unittest.TestCase):
 
         self.store.upsert_worktree(self._make_worktree())
         self.store.upsert_session(self._make_session())
+        task = self._make_task()
+        updated_task = Task(
+            id=task.id,
+            title=task.title,
+            summary=task.summary,
+            description=task.description,
+            repo_root=task.repo_root,
+            priority=task.priority,
+            status=TaskStatus.RUNNING,
+            assigned_agent_id=task.assigned_agent_id,
+            assigned_worktree_id=task.assigned_worktree_id,
+            created_at=task.created_at,
+            started_at=task.created_at + timedelta(minutes=10),
+            notes="running in worktree",
+        )
+        self.store.upsert_task(task)
+        self.store.upsert_task(updated_task)
         self.store.set_setting("ui.theme", {"mode": "dark"})
         self.store.set_cache_entry(
             "git-status",
@@ -191,6 +231,15 @@ class SQLiteStoreTests(unittest.TestCase):
             self._make_worktree(),
         )
         self.assertEqual(self.store.list_worktrees_by_repo("/repo"), (self._make_worktree(),))
+        self.assertEqual(self.store.list_tasks(), (updated_task,))
+        self.assertEqual(self.store.list_tasks(status=TaskStatus.RUNNING), (updated_task,))
+        self.assertEqual(self.store.list_tasks(assigned_agent_id="agent-123"), (updated_task,))
+        self.assertEqual(
+            self.store.list_tasks(assigned_worktree_id="worktree-123"),
+            (updated_task,),
+        )
+        self.assertEqual(self.store.list_tasks(repo_root="/repo"), (updated_task,))
+        self.assertEqual(self.store.get_task("task-123"), updated_task)
         self.assertEqual(self.store.get_session("session-123"), self._make_session())
         self.assertEqual(
             self.store.get_session_by_copilot_session_id("copilot-123"),
@@ -201,8 +250,10 @@ class SQLiteStoreTests(unittest.TestCase):
         self.assertEqual(self.store.get_cache_entry("git-status", "repo"), {"dirty": True})
         self.assertTrue(self.store.delete_setting("ui.theme"))
         self.assertTrue(self.store.delete_cache_entry("git-status", "repo"))
+        self.assertTrue(self.store.delete_task("task-123"))
         self.assertIsNone(self.store.get_setting("ui.theme"))
         self.assertIsNone(self.store.get_cache_entry("git-status", "repo"))
+        self.assertIsNone(self.store.get_task("task-123"))
 
     def test_upserts_reconcile_agent_pane_and_worktree_path_uniqueness(self) -> None:
         first_agent = self._make_agent(pane_id="%9")
@@ -439,6 +490,15 @@ class SQLiteStoreTests(unittest.TestCase):
     def test_foreign_keys_reject_orphaned_rows(self) -> None:
         with self.assertRaises(PersistenceError):
             self.store.upsert_session(self._make_session())
+        with self.assertRaises(PersistenceError):
+            self.store.upsert_task(
+                Task(
+                    id="task-404",
+                    title="Missing assignment target",
+                    status=TaskStatus.ASSIGNED,
+                    assigned_agent_id="agent-missing",
+                )
+            )
 
     def test_count_sessions_for_agent(self) -> None:
         self.store.upsert_agent(self._make_agent())
