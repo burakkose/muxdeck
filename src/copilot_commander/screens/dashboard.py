@@ -147,7 +147,11 @@ class DashboardScreen(ShellScreen):
         if effective_selected is not None and self._state.selected_agent_id != effective_selected:
             self._update_selected_detail()
         else:
-            self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
+            panel = self.query_one(AgentListPanel)
+            if panel.selected_subagent is not None:
+                self.query_one(AgentDetailPanel).set_subagent(panel.selected_subagent)
+            else:
+                self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
             self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
         attention_controller = getattr(self.runtime, "attention", None)
@@ -184,6 +188,22 @@ class DashboardScreen(ShellScreen):
         if self._detail_timer is not None:
             self._detail_timer.stop()
         self._detail_timer = self.set_timer(0.05, self._update_selected_detail)
+
+    def on_agent_list_panel_sub_agent_highlighted(
+        self,
+        message: AgentListPanel.SubAgentHighlighted,
+    ) -> None:
+        # Fast path: rendering a sub-agent needs no DB work — the view
+        # carries prompt/result/type already. We still want the parent
+        # agent's detail in the cache for when the cursor moves back up,
+        # so we don't cancel the debounced `_update_selected_detail`.
+        detail_panel = self.query_one(AgentDetailPanel)
+        if message.subagent is None:
+            # Reset to the parent agent's detail (if we already have it).
+            if self._state is not None and self._state.selected_agent is not None:
+                detail_panel.set_agent(self._state.selected_agent)
+            return
+        detail_panel.set_subagent(message.subagent)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "dashboard-filter-input":
@@ -472,7 +492,13 @@ class DashboardScreen(ShellScreen):
                 selected_agent_id=item.agent_id,
                 selected_agent=selected_view,
             )
-        self.query_one(AgentDetailPanel).set_agent(selected_view)
+        # Don't clobber a sub-agent detail view if the cursor is currently
+        # parked on a sub-agent row under this parent.
+        panel = self.query_one(AgentListPanel)
+        if panel.selected_subagent is not None:
+            self.query_one(AgentDetailPanel).set_subagent(panel.selected_subagent)
+        else:
+            self.query_one(AgentDetailPanel).set_agent(selected_view)
         self.query_one(LogPreviewPanel).set_logs(selected_view)
 
     def _preview_line_limit(self) -> int:

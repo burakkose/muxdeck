@@ -311,3 +311,28 @@ class TestAgentListPanelSubAgentNavigation:
         # not off the end of the list.
         assert panel.selected_subagent is None
         assert panel.selected_agent_id == "a1"
+
+    def test_sub_agent_highlighted_message_fires_on_subagent_row(self) -> None:
+        """Cursor on a sub-agent row should emit SubAgentHighlighted with the view."""
+        panel = AgentListPanel()
+        panel.set_agents([_agent("a1")], selected_agent_id="a1")
+        panel.toggle_expand()
+        panel.set_subagents(
+            "a1",
+            DashboardSubAgentTreeView(
+                agent_id="a1",
+                session_id="s",
+                running=(_subagent_view("call_r1"),),
+                recent=(),
+            ),
+        )
+        posted: list[object] = []
+        panel.post_message = posted.append  # type: ignore[assignment,method-assign]
+        # Move to header then onto sub-agent row.
+        panel.move_cursor(2)
+        # The most recent SubAgentHighlighted should carry the sub view.
+        highlights = [m for m in posted if isinstance(m, AgentListPanel.SubAgentHighlighted)]
+        assert highlights, f"expected SubAgentHighlighted, got {posted!r}"
+        last = highlights[-1]
+        assert last.subagent is not None
+        assert last.subagent.tool_call_id == "call_r1"

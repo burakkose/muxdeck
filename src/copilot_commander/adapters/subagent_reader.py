@@ -133,11 +133,14 @@ def _parse_events(
     A session that dies mid-run leaves its last sub-agents in the
     running bucket, which is exactly what the dashboard should show:
     "these were in flight when we lost contact".
+
+    In a single pass we also pick up the matching ``task`` tool events
+    so the detail view can show prompt + result content without
+    re-reading the file.
     """
-    # Insertion-ordered dicts preserve start order, so the UI can show
-    # "oldest start first" inside the running group without re-sorting.
     started: dict[str, SubAgentSnapshot] = {}
     completed: list[SubAgentSnapshot] = []
+    task_details: dict[str, _TaskDetails] = {}
     try:
         with events_path.open("r", encoding="utf-8", errors="replace") as fh:
             for line in fh:
@@ -148,17 +151,20 @@ def _parse_events(
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                _apply_event(event, started=started, completed=completed)
+                _apply_event(
+                    event,
+                    started=started,
+                    completed=completed,
+                    task_details=task_details,
+                )
     except OSError as exc:
         _log.debug("failed to read subagent events from %s: %s", events_path, exc)
-        # Return what we've parsed so far rather than None — a partial
-        # read is more useful than nothing and the mtime cache will
-        # re-read next time anyway.
 
-    # Newest-first; `started` was in arrival order so reverse it. Same
-    # for completed so the most recent completion is at index 0.
-    running = tuple(reversed(started.values()))
-    recent = tuple(sorted(completed, key=_completed_sort_key, reverse=True)[:recent_limit])
+    running = tuple(_enrich(s, task_details) for s in reversed(started.values()))
+    recent = tuple(
+        _enrich(s, task_details)
+        for s in sorted(completed, key=_completed_sort_key, reverse=True)[:recent_limit]
+    )
     return SubAgentTree(
         session_id=session_id,
         running=running,
@@ -167,17 +173,52 @@ def _parse_events(
     )
 
 
+@dataclass(slots=True)
+class _TaskDetails:
+    task_name: str | None = None
+    agent_type: str | None = None
+    prompt: str | None = None
+    result_content: str | None = None
+    success: bool | None = None
+
+
 def _apply_event(
     event: dict[str, object],
     *,
     started: dict[str, SubAgentSnapshot],
     completed: list[SubAgentSnapshot],
+    task_details: dict[str, _TaskDetails],
 ) -> None:
     event_type = event.get("type")
-    if event_type not in ("subagent.started", "subagent.completed"):
-        return
     data = event.get("data")
     if not isinstance(data, dict):
+        return
+    # Enrichment side-channel: capture task tool prompt/result so the
+    # sub-agent detail view has meaningful input and output.
+    if event_type == "tool.execution_start" and _as_str(data.get("toolName")) == "task":
+        tcid = _as_str(data.get("toolCallId"))
+        args = data.get("arguments")
+        if tcid and isinstance(args, dict):
+            detail = task_details.setdefault(tcid, _TaskDetails())
+            detail.task_name = _as_str(args.get("name"))
+            detail.agent_type = _as_str(args.get("agent_type"))
+            detail.prompt = _as_str(args.get("prompt"))
+        return
+    if event_type == "tool.execution_complete" and _as_str(data.get("toolName")) == "task":
+        tcid = _as_str(data.get("toolCallId"))
+        if tcid:
+            detail = task_details.setdefault(tcid, _TaskDetails())
+            result = data.get("result")
+            if isinstance(result, dict):
+                detail.result_content = _as_str(result.get("content"))
+            elif isinstance(result, str):
+                detail.result_content = result or None
+            success = data.get("success")
+            if isinstance(success, bool):
+                detail.success = success
+        return
+
+    if event_type not in ("subagent.started", "subagent.completed"):
         return
     tool_call_id = data.get("toolCallId")
     if not isinstance(tool_call_id, str) or not tool_call_id:
@@ -203,9 +244,6 @@ def _apply_event(
     # subagent.completed
     existing = started.pop(tool_call_id, None)
     if existing is None:
-        # Completion without a matching start (truncated log, or the
-        # start was in a segment we couldn't parse). Synthesize a
-        # minimal snapshot so the event isn't silently dropped.
         agent_name = _as_str(data.get("agentName")) or "unknown"
         display_name = _as_str(data.get("agentDisplayName")) or agent_name
         completed.append(
@@ -228,6 +266,25 @@ def _apply_event(
             started_at=existing.started_at,
             completed_at=timestamp,
         )
+    )
+
+
+def _enrich(snapshot: SubAgentSnapshot, task_details: dict[str, _TaskDetails]) -> SubAgentSnapshot:
+    detail = task_details.get(snapshot.tool_call_id)
+    if detail is None:
+        return snapshot
+    return SubAgentSnapshot(
+        tool_call_id=snapshot.tool_call_id,
+        agent_name=snapshot.agent_name,
+        display_name=snapshot.display_name,
+        description=snapshot.description,
+        started_at=snapshot.started_at,
+        completed_at=snapshot.completed_at,
+        task_name=detail.task_name,
+        agent_type=detail.agent_type,
+        prompt=detail.prompt,
+        result_content=detail.result_content,
+        success=detail.success,
     )
 
 
