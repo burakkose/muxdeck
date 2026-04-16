@@ -67,6 +67,15 @@ class RuntimeAgentStore(Protocol):
         """Update an existing agent record."""
 
 
+@runtime_checkable
+class RuntimeWorktreeSyncPort(Protocol):
+    def sync_worktrees_from_git(
+        self,
+        repo_roots: Sequence[Path],
+    ) -> object:
+        """Discover and upsert worktrees from git for the given repo roots."""
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeSyncWarning:
     message: str
@@ -115,6 +124,7 @@ class RuntimeSynchronizer:
         git: RuntimeGitPort,
         *,
         agent_store: RuntimeAgentStore | None = None,
+        worktree_sync: RuntimeWorktreeSyncPort | None = None,
         dead_grace_period_sec: int = 10,
         clock: Clock = utc_now,
     ) -> None:
@@ -122,6 +132,7 @@ class RuntimeSynchronizer:
         self._monitoring = monitoring
         self._git = git
         self._agent_store = agent_store
+        self._worktree_sync = worktree_sync
         self._dead_grace_period_sec = dead_grace_period_sec
         self._clock = clock
 
@@ -161,6 +172,7 @@ class RuntimeSynchronizer:
                 cast(Sequence[MonitoringDiscovery], refreshed_report.panes)
             )
         self._reap_stale_agents(refreshed_report, warnings=warnings)
+        self._sync_worktrees(git_context_cache, warnings=warnings)
         return RuntimeSyncReport(
             discovery_report=refreshed_report,
             monitoring_report=monitoring_report,
@@ -226,6 +238,28 @@ class RuntimeSynchronizer:
                         pane_id=agent.tmux_pane_id,
                     )
                 )
+
+    def _sync_worktrees(
+        self,
+        git_context_cache: dict[str, _GitContext | None],
+        *,
+        warnings: list[RuntimeSyncWarning],
+    ) -> None:
+        """Sync git worktrees into the store from discovered repo roots."""
+        if self._worktree_sync is None:
+            return
+        repo_roots: list[Path] = []
+        for ctx in git_context_cache.values():
+            if ctx is not None:
+                repo_roots.append(Path(ctx.repo_root))
+        if not repo_roots:
+            return
+        try:
+            with timed("sync.worktrees"):
+                self._worktree_sync.sync_worktrees_from_git(repo_roots)
+        except Exception:
+            _log.exception("worktree sync failed")
+            warnings.append(RuntimeSyncWarning(message="worktree sync failed"))
 
     def _enrich_discovery(
         self,

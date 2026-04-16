@@ -346,6 +346,14 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         agents=store,
         session_contexts=store,
     )
+    # Separate worktree service for sync worker thread (uses sync_store)
+    sync_worktree_service = WorktreeService(
+        config=resolved_config,
+        git=git_adapter,
+        worktrees=sync_store,
+        agents=sync_store,
+        session_contexts=sync_store,
+    )
     copilot_session_store = CopilotSessionStore()
     sessions_ctrl = SessionsController(copilot_session_store)
     dashboard = DashboardController(store)
@@ -372,6 +380,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
             monitoring,
             git_adapter,
             agent_store=sync_store,
+            worktree_sync=sync_worktree_service,
             dead_grace_period_sec=resolved_config.general.dead_grace_period_sec,
         ),
         sync_store=sync_store,

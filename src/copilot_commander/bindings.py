@@ -76,6 +76,7 @@ DASHBOARD_BINDINGS: Final[list[BindingSpec]] = [
     Binding("p", "open_pane", "Focus console", show=False),
     Binding("w", "open_worktree", "Worktree", show=False),
     Binding("m", "send_message", "Send message", show=False),
+    Binding("l", "view_logs", "View logs", show=False),
     Binding("S", "stop_all", "Stop all", show=False),
     Binding("A", "open_attention_inbox", "Attention inbox", show=False),
 ]
@@ -84,15 +85,13 @@ DASHBOARD_HINTS = (
     KeyHint("j/k", "move"),
     KeyHint("/", "filter"),
     KeyHint("a", "attention"),
-    KeyHint("x", "completed"),
     KeyHint("s", "sort"),
     KeyHint("c", "complete"),
     KeyHint("i", "interrupt"),
     KeyHint("p", "console"),
-    KeyHint("w", "worktree"),
     KeyHint("m", "message"),
+    KeyHint("l", "logs"),
     KeyHint("S", "stop all"),
-    KeyHint("A", "inbox"),
 )
 
 ATTENTION_BINDINGS: Final[list[BindingSpec]] = [
@@ -116,13 +115,16 @@ WORKTREE_BINDINGS: Final[list[BindingSpec]] = [
     Binding("enter", "preview_start_agent", "Start intent", show=False),
     Binding("s", "preview_start_agent", "Start intent", show=False),
     Binding("x", "execute_start", "Execute start", show=False),
+    Binding("d", "delete_worktree", "Delete", show=False),
+    Binding("P", "prune_worktrees", "Prune stale", show=False),
 ]
 
 WORKTREE_HINTS = (
     KeyHint("j/k", "move"),
     KeyHint("s", "start intent"),
-    KeyHint("enter", "preview"),
     KeyHint("x", "execute"),
+    KeyHint("d", "delete"),
+    KeyHint("P", "prune"),
 )
 
 REPLAY_BINDINGS: Final[list[BindingSpec]] = [

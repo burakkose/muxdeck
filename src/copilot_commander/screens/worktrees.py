@@ -12,6 +12,7 @@ from copilot_commander.controllers import (
     WorktreeSummaryView,
 )
 from copilot_commander.screens.base import ShellScreen
+from copilot_commander.screens.confirm_dialog import ConfirmScreen
 from copilot_commander.widgets.worktrees import (
     ConflictPanel,
     StartIntentPanel,
@@ -131,3 +132,80 @@ class WorktreesScreen(ShellScreen):
             f"✓ launch intent ready: {cmd} in {cwd} (session={session} window={window})"
         )
         self._start_intent = None
+
+    def action_delete_worktree(self) -> None:
+        """Delete the selected worktree after confirmation."""
+        if self._selected_worktree_id is None:
+            self.set_status("no worktree selected")
+            return
+        if self._detail is None:
+            self.set_status("no worktree detail loaded")
+            return
+        name = self._detail.summary.path or self._selected_worktree_id
+        if self._detail.summary.is_main_worktree:
+            self.set_status("✗ cannot delete the main worktree")
+            return
+        self.app.push_screen(
+            ConfirmScreen(
+                message=f"Delete worktree {name}?",
+                title="Delete Worktree",
+            ),
+            callback=self._on_delete_confirmed,
+        )
+
+    def _on_delete_confirmed(self, confirmed: bool | None) -> None:
+        if not confirmed:
+            self.set_status("delete cancelled")
+            return
+        if self._selected_worktree_id is None:
+            return
+        try:
+            action_view = self.runtime.worktrees.remove_worktree(
+                self._selected_worktree_id,
+                force=False,
+            )
+            self.set_status(f"✓ {action_view.message}")
+        except Exception as exc:
+            self.set_status(f"✗ delete failed: {exc}")
+            return
+        self._selected_worktree_id = None
+        self.refresh_data()
+
+    def action_prune_worktrees(self) -> None:
+        """Prune stale worktrees after confirmation."""
+        if not self._worktrees:
+            self.set_status("no worktrees to prune")
+            return
+        # Use first worktree's repo root as the prune target
+        first_detail = self._detail
+        if first_detail is None:
+            self.set_status("no worktree detail loaded")
+            return
+        self.app.push_screen(
+            ConfirmScreen(
+                message=(
+                    "Prune all stale worktrees?"
+                    " This removes worktrees whose directories no longer exist."
+                ),
+                title="Prune Worktrees",
+            ),
+            callback=self._on_prune_confirmed,
+        )
+
+    def _on_prune_confirmed(self, confirmed: bool | None) -> None:
+        if not confirmed:
+            self.set_status("prune cancelled")
+            return
+        if self._detail is None:
+            return
+        try:
+            action_view = self.runtime.worktrees.prune_worktrees(
+                self._detail.summary.repo_root,
+                dry_run=False,
+            )
+            count = len(action_view.pruned_paths)
+            self.set_status(f"✓ pruned {count} stale worktree(s)")
+        except Exception as exc:
+            self.set_status(f"✗ prune failed: {exc}")
+            return
+        self.refresh_data()
