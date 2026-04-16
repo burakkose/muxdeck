@@ -17,6 +17,22 @@ from datetime import datetime
 
 
 @dataclass(frozen=True, slots=True)
+class ReadAgentInteraction:
+    """One ``read_agent`` tool call observed in the parent's event log.
+
+    Background sub-agents don't have their own session directory: their
+    output streams back into the parent as a series of ``read_agent``
+    tool calls whose ``agent_id`` argument matches the background
+    agent's task name. Capturing these interactions gives the detail
+    view something concrete to show instead of just the launch ack.
+    """
+
+    timestamp: datetime
+    arguments_summary: str
+    result_content: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class SubAgentSnapshot:
     """A single sub-agent invocation within a parent session.
 
@@ -42,6 +58,15 @@ class SubAgentSnapshot:
     mode: str | None = None
     result_content: str | None = None
     success: bool | None = None
+    # Metrics harvested from ``subagent.completed`` / ``subagent.failed``
+    # and ``read_agent`` correlation. Default to empty so unrelated call
+    # sites can keep constructing snapshots with just the identity fields.
+    read_interactions: tuple[ReadAgentInteraction, ...] = ()
+    total_tokens: int | None = None
+    duration_ms: int | None = None
+    total_tool_calls: int | None = None
+    model: str | None = None
+    error_message: str | None = None
 
     @property
     def is_running(self) -> bool:
@@ -81,4 +106,4 @@ class SubAgentTree:
         return self.total_count == 0
 
 
-__all__ = ["SubAgentSnapshot", "SubAgentTree"]
+__all__ = ["ReadAgentInteraction", "SubAgentSnapshot", "SubAgentTree"]

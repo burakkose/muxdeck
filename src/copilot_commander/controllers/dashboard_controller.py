@@ -13,7 +13,11 @@ from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.events import Event, LogChunk
 from copilot_commander.domain.models import Agent, Session, Worktree
-from copilot_commander.domain.subagents import SubAgentSnapshot, SubAgentTree
+from copilot_commander.domain.subagents import (
+    ReadAgentInteraction,
+    SubAgentSnapshot,
+    SubAgentTree,
+)
 from copilot_commander.domain.value_objects import utc_now
 from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
 from copilot_commander.perf import timed
@@ -189,6 +193,12 @@ class DashboardSubAgentView:
     mode: str | None = None
     result_content: str | None = None
     success: bool | None = None
+    read_interactions: tuple[ReadAgentInteraction, ...] = ()
+    total_tokens: int | None = None
+    duration_ms: int | None = None
+    total_tool_calls: int | None = None
+    model: str | None = None
+    error_message: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -987,6 +997,12 @@ def _to_view(snapshot: SubAgentSnapshot) -> DashboardSubAgentView:
         mode=snapshot.mode,
         result_content=snapshot.result_content,
         success=snapshot.success,
+        read_interactions=snapshot.read_interactions,
+        total_tokens=snapshot.total_tokens,
+        duration_ms=snapshot.duration_ms,
+        total_tool_calls=snapshot.total_tool_calls,
+        model=snapshot.model,
+        error_message=snapshot.error_message,
     )
 
 

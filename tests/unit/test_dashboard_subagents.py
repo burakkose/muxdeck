@@ -10,7 +10,7 @@ from copilot_commander.controllers.dashboard_controller import DashboardControll
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.events import Event, LogChunk
 from copilot_commander.domain.models import Agent, Session, Worktree
-from copilot_commander.domain.subagents import SubAgentSnapshot, SubAgentTree
+from copilot_commander.domain.subagents import ReadAgentInteraction, SubAgentSnapshot, SubAgentTree
 
 
 @dataclass
@@ -200,3 +200,50 @@ class TestLoadSubagents:
         assert tree.recent[0].tool_call_id == "call_done"
         assert tree.recent[0].is_running is False
         assert tree.recent[0].completed_at is not None
+
+    def test_view_propagates_read_interactions_and_metrics(self) -> None:
+        agent = _make_agent("a1", copilot_session_id="sess-k")
+        store = _SingleAgentStore(agent=agent)
+        interaction = ReadAgentInteraction(
+            timestamp=datetime(2026, 1, 1, 0, 1, tzinfo=UTC),
+            arguments_summary='agent_id="risk-reviewer", wait=true',
+            result_content="progress update",
+        )
+        snapshot = SubAgentSnapshot(
+            tool_call_id="call_bg",
+            agent_name="general-purpose",
+            display_name="General Purpose Agent",
+            description=None,
+            started_at=datetime(2026, 1, 1, tzinfo=UTC),
+            completed_at=datetime(2026, 1, 1, 0, 2, 4, tzinfo=UTC),
+            task_name="risk-reviewer",
+            mode="background",
+            read_interactions=(interaction,),
+            total_tokens=133463,
+            duration_ms=124335,
+            total_tool_calls=18,
+            model="claude-sonnet-4.5",
+            error_message="AbortError",
+        )
+        reader = _FakeReader(
+            trees={
+                "sess-k": SubAgentTree(
+                    session_id="sess-k",
+                    running=(),
+                    recent=(snapshot,),
+                    scanned_at=datetime(2026, 1, 1, 1, tzinfo=UTC),
+                )
+            }
+        )
+        controller = DashboardController(store, subagent_reader=reader)
+        tree = controller.load_subagents("a1")
+        assert len(tree.recent) == 1
+        view = tree.recent[0]
+        assert view.read_interactions == (interaction,)
+        assert view.total_tokens == 133463
+        assert view.duration_ms == 124335
+        assert view.total_tool_calls == 18
+        assert view.model == "claude-sonnet-4.5"
+        assert view.error_message == "AbortError"
+        assert view.mode == "background"
+        assert view.task_name == "risk-reviewer"
