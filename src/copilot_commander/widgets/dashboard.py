@@ -316,6 +316,19 @@ class AgentListPanel(Static, can_focus=True):
             super().__init__()
             self.agent_id = agent_id
 
+    class SubAgentHighlighted(Message):
+        """Emitted when the cursor lands on (or leaves) a sub-agent row.
+
+        ``subagent`` is ``None`` when the cursor is on a non-subagent
+        row — the screen should show the regular agent detail in that
+        case. When present, the screen should render the sub-agent
+        detail (prompt, result, etc.) instead.
+        """
+
+        def __init__(self, subagent: DashboardSubAgentView | None) -> None:
+            super().__init__()
+            self.subagent = subagent
+
     class ExpandRequested(Message):
         """Emitted when the user expands a row whose sub-agent tree
 
@@ -474,6 +487,7 @@ class AgentListPanel(Static, can_focus=True):
         agent_id = self._parent_agent_id_at(index)
         if agent_id is not None:
             self.post_message(self.AgentSelected(agent_id))
+        self.post_message(self.SubAgentHighlighted(self.selected_subagent))
 
     def _parent_agent_id_at(self, index: int) -> str | None:
         if not self._rows or index >= len(self._rows):
@@ -779,6 +793,56 @@ class AgentDetailPanel(Static):
 
         self.update(result)
 
+    def set_subagent(self, subagent: DashboardSubAgentView | None) -> None:
+        """Render sub-agent focus: prompt (input) + result (output)."""
+        result = Text()
+        _section_header(result, "sub-agent detail")
+        if subagent is None:
+            result.append("  no sub-agent selected\n", style=FG4)
+            self.update(result)
+            return
+
+        is_running = subagent.is_running
+        is_failure = subagent.success is False
+        glyph = "▶" if is_running else ("✗" if is_failure else "✓")
+        glyph_color = AQUA if is_running else (SEVERITY_ERROR if is_failure else GREEN)
+        status_label = "running" if is_running else ("failed" if is_failure else "completed")
+        status_style = glyph_color
+
+        result.append(f"  {glyph} ", style=f"bold {glyph_color}")
+        name = subagent.task_name or subagent.display_name
+        result.append(name, style=f"bold {FG}")
+        result.append("  ")
+        result.append(status_label, style=status_style)
+        result.append("\n")
+
+        if subagent.description:
+            result.append("  ")
+            result.append("» ", style=f"bold {AQUA}")
+            result.append(subagent.description, style=FG1)
+            result.append("\n")
+
+        result.append("\n")
+        _field_row(result, "type", subagent.agent_type or subagent.agent_name, PURPLE)
+        _field_row(result, "id", subagent.tool_call_id[:16], FG4)
+        _field_row(result, "duration", _format_subagent_duration(subagent), FG2)
+
+        if subagent.prompt:
+            result.append("\n")
+            result.append("  input\n", style=f"bold {FG4}")
+            snippet = _truncate(subagent.prompt, 800)
+            for line in snippet.splitlines() or [snippet]:
+                result.append(f"  {line}\n", style=FG2)
+
+        if not is_running and subagent.result_content:
+            result.append("\n")
+            result.append("  output\n", style=f"bold {FG4}")
+            snippet = _truncate(subagent.result_content, 1200)
+            for line in snippet.splitlines() or [snippet]:
+                result.append(f"  {line}\n", style=FG1)
+
+        self.update(result)
+
 
 def _field_row(text: Text, label: str, value: str | None, style: str) -> None:
     """Render a single labeled field row. Skip if value is empty."""
@@ -786,6 +850,12 @@ def _field_row(text: Text, label: str, value: str | None, style: str) -> None:
         return
     text.append(f"  {label:<10}", style=FG4)
     text.append(f"{value}\n", style=style)
+
+
+def _truncate(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: limit - 1].rstrip() + "…"
 
 
 class FleetHealthPanel(Static):

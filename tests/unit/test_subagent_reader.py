@@ -294,3 +294,61 @@ class TestSubAgentSnapshot:
         assert tree.running_count == 1
         assert tree.total_count == 2
         assert tree.is_empty() is False
+
+
+class TestTaskToolEnrichment:
+    def test_reader_merges_task_prompt_and_result(self, tmp_path: Path) -> None:
+        session_dir = tmp_path / "sess-xyz"
+        events = [
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:00:00Z",'
+                '"data":{"toolName":"task","toolCallId":"tc-1","arguments":'
+                '{"name":"math-helper","agent_type":"general-purpose",'
+                '"description":"help with math","prompt":"solve 2+2"}}}'
+            ),
+            _started_event(tool_call_id="tc-1", timestamp="2026-01-01T00:00:01Z"),
+        ]
+        _write_events(session_dir, events)
+        store = _FakeStore(session_state_dir=tmp_path)
+        reader = SubAgentReader(store=store)  # type: ignore[arg-type]
+
+        tree = reader.read("sess-xyz")
+
+        assert tree is not None
+        assert len(tree.running) == 1
+        snap = tree.running[0]
+        assert snap.task_name == "math-helper"
+        assert snap.agent_type == "general-purpose"
+        assert snap.prompt == "solve 2+2"
+        # Still running → no result yet.
+        assert snap.result_content is None
+        assert snap.success is None
+
+    def test_reader_captures_success_and_result(self, tmp_path: Path) -> None:
+        session_dir = tmp_path / "sess-done"
+        events = [
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:00:00Z",'
+                '"data":{"toolName":"task","toolCallId":"tc-2","arguments":'
+                '{"name":"n","agent_type":"explore","prompt":"p"}}}'
+            ),
+            _started_event(tool_call_id="tc-2", timestamp="2026-01-01T00:00:01Z"),
+            _completed_event(tool_call_id="tc-2", timestamp="2026-01-01T00:00:02Z"),
+            (
+                '{"type":"tool.execution_complete","timestamp":"2026-01-01T00:00:02Z",'
+                '"data":{"toolName":"task","toolCallId":"tc-2","success":true,'
+                '"result":{"content":"final answer"}}}'
+            ),
+        ]
+        _write_events(session_dir, events)
+        store = _FakeStore(session_state_dir=tmp_path)
+        reader = SubAgentReader(store=store)  # type: ignore[arg-type]
+
+        tree = reader.read("sess-done")
+
+        assert tree is not None
+        assert len(tree.recent) == 1
+        snap = tree.recent[0]
+        assert snap.success is True
+        assert snap.result_content == "final answer"
+        assert snap.prompt == "p"

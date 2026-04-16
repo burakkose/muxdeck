@@ -182,6 +182,11 @@ class DashboardSubAgentView:
     started_at: datetime
     completed_at: datetime | None
     is_running: bool
+    task_name: str | None = None
+    agent_type: str | None = None
+    prompt: str | None = None
+    result_content: str | None = None
+    success: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -891,6 +896,11 @@ def _to_view(snapshot: SubAgentSnapshot) -> DashboardSubAgentView:
         started_at=snapshot.started_at,
         completed_at=snapshot.completed_at,
         is_running=snapshot.is_running,
+        task_name=snapshot.task_name,
+        agent_type=snapshot.agent_type,
+        prompt=snapshot.prompt,
+        result_content=snapshot.result_content,
+        success=snapshot.success,
     )
 
 

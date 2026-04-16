@@ -32,6 +32,15 @@ class SubAgentSnapshot:
     description: str | None
     started_at: datetime
     completed_at: datetime | None = None
+    # Enriched from the matching ``tool.execution_start``/``_complete``
+    # pair for the underlying ``task`` tool call. These are optional
+    # because a session that was truncated / corrupted may only have
+    # one side of the pair, or neither.
+    task_name: str | None = None
+    agent_type: str | None = None
+    prompt: str | None = None
+    result_content: str | None = None
+    success: bool | None = None
 
     @property
     def is_running(self) -> bool:
