@@ -204,6 +204,12 @@ class SubAgentReaderPort(Protocol):
     def read(self, session_id: str) -> SubAgentTree | None: ...
 
 
+class CopilotSessionResolverPort(Protocol):
+    """Resolve a tmux pane's pid to a live Copilot session id."""
+
+    def resolve_for_pid(self, pane_pid: int | None) -> str | None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class DashboardState:
     generated_at: datetime
@@ -226,12 +232,14 @@ class DashboardController:
         max_cost_usd: Decimal | None = None,
         max_runtime_minutes: int | None = None,
         subagent_reader: SubAgentReaderPort | None = None,
+        session_resolver: CopilotSessionResolverPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
         self._max_cost_usd = max_cost_usd
         self._max_runtime_minutes = max_runtime_minutes
         self._subagent_reader = subagent_reader
+        self._session_resolver = session_resolver
 
     def load_subagents(self, agent_id: str) -> DashboardSubAgentTreeView:
         """Lazy-load the sub-agent tree for one agent.
@@ -282,6 +290,13 @@ class DashboardController:
         latest = self._store.get_latest_session_for_agent(agent.id)
         if latest is not None and latest.copilot_session_id:
             return latest.copilot_session_id
+        # Last resort: scan Copilot's ``inuse.<pid>.lock`` files and
+        # match against the pane's pid chain. Agent discovery does not
+        # always populate ``copilot_session_id`` (e.g. when the agent
+        # was adopted from a tmux pane that was already running), so
+        # the resolver fills that gap at read time.
+        if self._session_resolver is not None:
+            return self._session_resolver.resolve_for_pid(agent.pid)
         return None
 
     def build_state(

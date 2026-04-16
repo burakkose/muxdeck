@@ -17,6 +17,7 @@ from copilot_commander.adapters import (
     SQLiteStore,
     TmuxAdapter,
 )
+from copilot_commander.adapters.copilot_session_resolver import InuseLockResolver
 from copilot_commander.adapters.copilot_session_store import (
     CopilotSessionStore,
     SessionStoreRoot,
@@ -415,7 +416,12 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         )
     sessions_ctrl = SessionsController(copilot_session_store)
     subagent_reader = SubAgentReader(copilot_session_store)
-    dashboard = DashboardController(store, subagent_reader=subagent_reader)
+    session_resolver = InuseLockResolver(copilot_session_store)
+    dashboard = DashboardController(
+        store,
+        subagent_reader=subagent_reader,
+        session_resolver=session_resolver,
+    )
     agent_controller = AgentController(store, sessions)
     attention = AttentionController(dashboard, AttentionInboxService())
     operations = OperationsController(
@@ -425,7 +431,11 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         actions=action_service,
     )
     fleet = FleetController(store, local_sessions=copilot_session_store)
-    sync_dashboard = DashboardController(sync_store, subagent_reader=subagent_reader)
+    sync_dashboard = DashboardController(
+        sync_store,
+        subagent_reader=subagent_reader,
+        session_resolver=session_resolver,
+    )
     return CommanderRuntime(
         config=resolved_config,
         store=store,
