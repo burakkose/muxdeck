@@ -44,6 +44,28 @@ def _session_status(session: CopilotLocalSession, live_session_ids: frozenset[st
     return "completed"
 
 
+def _summary_for(session: CopilotLocalSession) -> str:
+    """Pick a human-useful summary for a local Copilot session row.
+
+    Copilot CLI does not always write a ``summary`` into ``workspace.yaml``,
+    so the old "(no summary)" placeholder dominated the list and made it
+    impossible to tell rows apart. Fall back to cheaper signals already
+    parsed from disk: the repository slug, the cwd tail, and finally a
+    short form of the session id so every row still renders distinctly.
+    """
+    if session.summary:
+        return session.summary
+    if session.repository and session.branch:
+        return f"{session.repository} · {session.branch}"
+    if session.repository:
+        return session.repository
+    if session.cwd is not None:
+        tail = session.cwd.name or str(session.cwd)
+        if tail:
+            return tail
+    return f"session {session.session_id[:8]}"
+
+
 def _status_glyph(status: str) -> str:
     return {
         "active": "🟢",
@@ -148,7 +170,7 @@ class SessionsController:
             items.append(
                 SessionListItemView(
                     session_id=s.session_id,
-                    summary=s.summary or "(no summary)",
+                    summary=_summary_for(s),
                     repository=s.repository or "—",
                     branch=s.branch or "—",
                     status=status,
@@ -170,7 +192,7 @@ class SessionsController:
                 status = _session_status(raw, live_session_ids)
                 selected = SessionDetailView(
                     session_id=raw.session_id,
-                    summary=raw.summary or "(no summary)",
+                    summary=_summary_for(raw),
                     repository=raw.repository or "—",
                     branch=raw.branch or "—",
                     cwd=str(raw.cwd) if raw.cwd else "—",
@@ -210,7 +232,7 @@ class SessionsController:
         status = _session_status(raw, live_session_ids)
         return SessionDetailView(
             session_id=raw.session_id,
-            summary=raw.summary or "(no summary)",
+            summary=_summary_for(raw),
             repository=raw.repository or "—",
             branch=raw.branch or "—",
             cwd=str(raw.cwd) if raw.cwd else "—",

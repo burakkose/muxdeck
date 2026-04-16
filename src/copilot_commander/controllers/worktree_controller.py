@@ -106,9 +106,22 @@ class WorktreeController:
 
     def list_worktrees(self, *, repo_root: str | None = None) -> tuple[WorktreeSummaryView, ...]:
         worktrees = tuple(self._store.list_worktrees(repo_root=repo_root))
-        conflict_map = self._conflict_map(worktrees)
+        if not worktrees:
+            return ()
+        # Hoist the agent lookup so we don't re-query for every row. On a
+        # busy machine this was the dominant cost of `_build_summary`.
+        agents_by_id = {agent.id: agent for agent in self._store.list_agents()}
+        # Conflict detection runs multiple git subprocesses per repo root
+        # and is what makes the worktree screen feel sluggish. The list
+        # view doesn't need per-row conflict rendering — detail view
+        # computes it for the selected worktree. We skip here and keep
+        # `has_conflicts=False` for list rows until the user drills in.
         return tuple(
-            self._build_summary(worktree, conflict_map.get(worktree.path, ()))
+            self._build_summary(
+                worktree,
+                conflicts=(),
+                agents_by_id=agents_by_id,
+            )
             for worktree in worktrees
         )
 
@@ -228,7 +241,7 @@ class WorktreeController:
         contexts = tuple(self._store.list_session_contexts_for_worktree(worktree.id))
         sessions = tuple(self._store.list_sessions_for_worktree(worktree.id))
         return WorktreeDetailView(
-            summary=self._build_summary(worktree, conflicts),
+            summary=self._build_summary(worktree, conflicts=conflicts),
             conflicts=self._render_conflicts(conflicts),
             active_session_ids=tuple(
                 session.id for session in sessions if session.ended_at is None
@@ -241,12 +254,15 @@ class WorktreeController:
     def _build_summary(
         self,
         worktree: Worktree,
-        conflicts: Sequence[WorktreeOrphanConflict],
+        *,
+        conflicts: Sequence[WorktreeOrphanConflict] = (),
+        agents_by_id: dict[str, Agent] | None = None,
     ) -> WorktreeSummaryView:
-        agents = {agent.id: agent for agent in self._store.list_agents()}
+        if agents_by_id is None:
+            agents_by_id = {agent.id: agent for agent in self._store.list_agents()}
         assigned_agent = None
         if worktree.assigned_agent_id is not None:
-            assigned_agent = agents.get(worktree.assigned_agent_id)
+            assigned_agent = agents_by_id.get(worktree.assigned_agent_id)
         sessions = tuple(self._store.list_sessions_for_worktree(worktree.id))
         contexts = tuple(self._store.list_session_contexts_for_worktree(worktree.id))
         return WorktreeSummaryView(
@@ -266,17 +282,6 @@ class WorktreeController:
             context_count=len(contexts),
             has_conflicts=bool(conflicts),
         )
-
-    def _conflict_map(
-        self,
-        worktrees: Sequence[Worktree],
-    ) -> dict[str, tuple[WorktreeOrphanConflict, ...]]:
-        grouped: dict[str, list[WorktreeOrphanConflict]] = {}
-        repo_roots = {worktree.repo_root for worktree in worktrees}
-        for repo_root in repo_roots:
-            for conflict in self._service.detect_orphan_conflicts(repo_root):
-                grouped.setdefault(str(conflict.path), []).append(conflict)
-        return {path: tuple(conflicts) for path, conflicts in grouped.items()}
 
     def _conflicts_for_worktree(self, worktree: Worktree) -> tuple[WorktreeOrphanConflict, ...]:
         return tuple(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -18,6 +19,12 @@ class TmuxOperations(Protocol):
     """Minimal protocol for tmux operations needed by the action service."""
 
     def select_pane(self, target_pane: str, /) -> CommandResult: ...
+
+    def select_window(self, target_window: str, /) -> CommandResult: ...
+
+    def switch_client(self, target: str, /) -> CommandResult: ...
+
+    def has_attached_client(self) -> bool: ...
 
     def send_keys(
         self,
@@ -68,18 +75,70 @@ class TmuxActionService:
     def __init__(self, tmux: TmuxOperations) -> None:
         self._tmux = tmux
 
-    def focus_pane(self, pane_id: str) -> ActionResult:
-        """Switch tmux focus to the agent's pane."""
+    def focus_pane(
+        self,
+        pane_id: str,
+        *,
+        window_id: str | None = None,
+        session_name: str | None = None,
+    ) -> ActionResult:
+        """Switch tmux focus to the agent's pane.
+
+        ``select-pane`` alone only flips the active pane **within the pane's
+        window**. If the agent's pane is in a different window (or session)
+        than the currently attached tmux client, the user's view won't move
+        unless we also point the window at it and hand the client over with
+        ``switch-client``. We do all three, best-effort, and report back
+        which hop succeeded so the dashboard can say something useful.
+        """
         if not self._tmux.pane_exists(pane_id):
             return ActionResult(
                 success=False,
                 message=f"pane {pane_id} does not exist",
                 pane_id=pane_id,
             )
+
+        # Always flip the active pane within its window — cheap and needed
+        # even when the client is already on that window.
         self._tmux.select_pane(pane_id)
+
+        # Point the window to the pane; harmless if it's already current.
+        if window_id:
+            with contextlib.suppress(Exception):
+                self._tmux.select_window(window_id)
+
+        # Hand the attached client over. When commander runs on a socket
+        # with no attached clients (e.g. the user is on a different tmux
+        # server), this is a genuine no-op and we say so rather than
+        # pretending we moved focus.
+        moved_client = False
+        if self._tmux.has_attached_client():
+            switch_target = pane_id
+            try:
+                self._tmux.switch_client(switch_target)
+                moved_client = True
+            except Exception:
+                # Some tmux versions reject pane targets for switch-client
+                # when the window isn't current; fall back to the window
+                # or session target if we have one.
+                fallback = window_id or session_name
+                if fallback is not None:
+                    try:
+                        self._tmux.switch_client(fallback)
+                        moved_client = True
+                    except Exception:
+                        moved_client = False
+
+        if moved_client:
+            message = f"focused pane {pane_id}"
+        else:
+            message = (
+                f"selected pane {pane_id} — no attached tmux client on this "
+                "socket, run `tmux attach` or press `a` to jump over"
+            )
         return ActionResult(
             success=True,
-            message=f"focused pane {pane_id}",
+            message=message,
             pane_id=pane_id,
         )
 
@@ -130,7 +189,13 @@ class TmuxActionService:
 
         if kind == "open_pane":
             pane_target = meta.get("pane_target", intent.agent.pane_target)
-            return self.focus_pane(pane_target)
+            window_target = meta.get("window_target") or intent.agent.tmux_window_id
+            session_target = meta.get("session_target") or intent.agent.tmux_session_name
+            return self.focus_pane(
+                pane_target,
+                window_id=window_target,
+                session_name=session_target,
+            )
 
         if kind == "interrupt":
             pane_target = meta.get("pane_target", intent.agent.pane_target)

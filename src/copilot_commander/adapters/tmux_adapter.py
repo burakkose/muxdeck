@@ -275,6 +275,31 @@ class TmuxAdapter:
     def select_pane(self, target_pane: str, /) -> CommandResult:
         return self._run_tmux("select-pane", "-t", target_pane)
 
+    def select_window(self, target_window: str, /) -> CommandResult:
+        return self._run_tmux("select-window", "-t", target_window)
+
+    def switch_client(self, target: str, /) -> CommandResult:
+        """Move the calling tmux client to ``target`` (session/window/pane).
+
+        Useful when commander is attached inside tmux and needs to move the
+        user's active client to the agent's pane rather than only flipping
+        the window's active pane in the background.
+        """
+        return self._run_tmux("switch-client", "-t", target)
+
+    def has_attached_client(self) -> bool:
+        """Return True when at least one tmux client is attached.
+
+        ``switch-client`` is a no-op when there is no attached client on
+        the configured socket, which is the cross-server failure mode we
+        need to distinguish from a real focus switch.
+        """
+        try:
+            result = self._run_tmux("list-clients", "-F", "#{client_name}")
+        except TmuxCommandError:
+            return False
+        return bool(result.stdout.strip())
+
     def pane_exists(self, target_pane: str, /) -> bool:
         return self.get_pane_metadata(target_pane) is not None
 

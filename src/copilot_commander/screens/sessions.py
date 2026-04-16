@@ -192,9 +192,13 @@ class SessionsScreen(ShellScreen):
                 if (
                     agent.copilot_session_id == self._selected_session_id
                     and self.runtime.actions
-                    and agent.pane_id
+                    and agent.tmux_pane_id
                 ):
-                    result = self.runtime.actions.focus_pane(agent.pane_id)
+                    result = self.runtime.actions.focus_pane(
+                        agent.tmux_pane_id,
+                        window_id=agent.tmux_window_id or None,
+                        session_name=agent.tmux_session_name or None,
+                    )
                     msg = f"✓ {result.message}" if result.success else f"✗ {result.message}"
                     self.set_status(msg)
                     return

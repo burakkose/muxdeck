@@ -401,6 +401,18 @@ class AgentDetailPanel(Static):
             result.append(activity, style=FG1)
             result.append("\n")
 
+        # ── attention line — always visible when the agent needs it ──
+        # The activity line above may be populated (e.g. "Reviewing layout"),
+        # which used to mask the operator-visible reason ("waiting for
+        # confirmation", "merge conflict", "runaway cost"). Surface the
+        # reason on its own line so the user can act without scrolling
+        # through the recent events list.
+        if item.needs_attention and item.attention_reason and item.attention_reason != activity:
+            result.append("  ")
+            result.append("! ", style=f"bold {status_style}")
+            result.append(item.attention_reason, style=status_style)
+            result.append("\n")
+
         result.append("\n")
 
         # ── identity fields ──
