@@ -476,8 +476,18 @@ class DashboardController:
         limit: int,
     ) -> tuple[DashboardAlertView, ...]:
         alerts: list[DashboardAlertView] = []
+        # Terminal-status agents (DEAD/COMPLETED) are historical
+        # records, not actionable signals. A dead pane that was reaped
+        # minutes or days ago should not keep lighting up the
+        # dashboard with "tmux pane no longer exists" — the user has
+        # already moved on, and the alert has no remedy. We keep the
+        # row in the agent list (so the history is visible) but
+        # suppress the alert itself.
+        terminal_statuses = {AgentStatus.DEAD, AgentStatus.COMPLETED}
         for agent in agents:
             if not agent.needs_attention:
+                continue
+            if agent.status in terminal_statuses:
                 continue
             operator_status = agent.operator_status
             if operator_status is None:
