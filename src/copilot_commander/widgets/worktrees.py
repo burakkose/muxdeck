@@ -74,6 +74,7 @@ class WorktreeListPanel(Static, can_focus=True):
         worktrees: Sequence[WorktreeSummaryView],
         *,
         selected_worktree_id: str | None,
+        notify: bool = True,
     ) -> None:
         self._worktrees = tuple(worktrees)
         if not self._worktrees:
@@ -95,7 +96,8 @@ class WorktreeListPanel(Static, can_focus=True):
         )
         self._selected_index = selected_index
         self._refresh_list()
-        self._post_selection(self._selected_index)
+        if notify:
+            self._post_selection(self._selected_index)
 
     def move_cursor(self, delta: int) -> None:
         if not self._worktrees:
@@ -121,6 +123,22 @@ class WorktreeListPanel(Static, can_focus=True):
     def _refresh_list(self) -> None:
         self.update(self._build_list())
 
+    def _visible_window(self) -> tuple[int, int]:
+        """Compute the slice of items to render, keeping selected in view."""
+        # Use the parent container's height as the viewport, since
+        # Static widget's own height equals content height (auto).
+        parent = self.parent
+        viewport = (parent.size.height if parent else self.size.height) - 2
+        visible = max(viewport, 5)
+        total = len(self._worktrees)
+        if total <= visible:
+            return 0, total
+        # Keep selected item roughly centered, clamped to edges
+        half = visible // 2
+        start = self._selected_index - half
+        start = max(0, min(start, total - visible))
+        return start, start + visible
+
     def _build_list(self) -> Text:
         result = Text()
         # Count branch name occurrences for disambiguation
@@ -128,7 +146,14 @@ class WorktreeListPanel(Static, can_focus=True):
         for wt in self._worktrees:
             branch_counts[wt.branch] = branch_counts.get(wt.branch, 0) + 1
 
-        for index, wt in enumerate(self._worktrees):
+        win_start, win_end = self._visible_window()
+
+        # Scroll position indicator at top
+        if win_start > 0:
+            result.append(f"  ↑ {win_start} more\n", style=FG4)
+
+        for index in range(win_start, win_end):
+            wt = self._worktrees[index]
             is_selected = index == self._selected_index
             row_bg = f" on {SELECTED_ROW_BG}" if is_selected else ""
 
@@ -173,6 +198,11 @@ class WorktreeListPanel(Static, can_focus=True):
                     result.append(" ", style=row_bg)
 
             result.append("\n")
+
+        # Scroll position indicator at bottom
+        remaining = len(self._worktrees) - win_end
+        if remaining > 0:
+            result.append(f"  ↓ {remaining} more\n", style=FG4)
 
         return result
 
