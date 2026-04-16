@@ -114,6 +114,13 @@ class FakeWorktreeStore:
             w for w in self._worktrees.values() if w.repo_root == repo_root
         ]
 
+    def delete_worktree(self, worktree_id: str, /) -> bool:
+        wt = self._worktrees.pop(worktree_id, None)
+        if wt is not None:
+            self._by_path.pop(wt.path, None)
+            return True
+        return False
+
 
 class FakeAgentStore:
     """In-memory agent store."""

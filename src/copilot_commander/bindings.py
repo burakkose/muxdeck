@@ -65,8 +65,8 @@ GLOBAL_HINTS = (
 )
 
 DASHBOARD_BINDINGS: Final[list[BindingSpec]] = [
-    Binding("j", "cursor_down", "Next agent", show=False),
-    Binding("k", "cursor_up", "Prev agent", show=False),
+    Binding("j,down", "cursor_down", "Next agent", show=False),
+    Binding("k,up", "cursor_up", "Prev agent", show=False),
     Binding("slash", "focus_filter", "Filter", show=False),
     Binding("escape", "escape_filter", "Back to list", show=False, priority=True),
     Binding("a", "toggle_attention", "Attention only", show=False),
@@ -83,7 +83,7 @@ DASHBOARD_BINDINGS: Final[list[BindingSpec]] = [
 ]
 
 DASHBOARD_HINTS = (
-    KeyHint("j/k", "move"),
+    KeyHint("j/k/↑↓", "move"),
     KeyHint("/", "filter"),
     KeyHint("a", "attention"),
     KeyHint("s", "sort"),
@@ -96,23 +96,23 @@ DASHBOARD_HINTS = (
 )
 
 ATTENTION_BINDINGS: Final[list[BindingSpec]] = [
-    Binding("j", "cursor_down", "Next item", show=False),
-    Binding("k", "cursor_up", "Prev item", show=False),
+    Binding("j,down", "cursor_down", "Next item", show=False),
+    Binding("k,up", "cursor_up", "Prev item", show=False),
     Binding("u", "toggle_unread", "Unread only", show=False),
     Binding("enter", "mark_selected_read", "Mark read", show=False),
     Binding("x", "mark_all_read", "Mark all read", show=False),
 ]
 
 ATTENTION_HINTS = (
-    KeyHint("j/k", "move"),
+    KeyHint("j/k/↑↓", "move"),
     KeyHint("u", "unread"),
     KeyHint("enter", "mark read"),
     KeyHint("x", "mark all"),
 )
 
 WORKTREE_BINDINGS: Final[list[BindingSpec]] = [
-    Binding("j", "cursor_down", "Next worktree", show=False),
-    Binding("k", "cursor_up", "Prev worktree", show=False),
+    Binding("j,down", "cursor_down", "Next worktree", show=False),
+    Binding("k,up", "cursor_up", "Prev worktree", show=False),
     Binding("enter", "preview_start_agent", "Start intent", show=False),
     Binding("s", "preview_start_agent", "Start intent", show=False),
     Binding("x", "execute_start", "Execute start", show=False),
@@ -121,7 +121,7 @@ WORKTREE_BINDINGS: Final[list[BindingSpec]] = [
 ]
 
 WORKTREE_HINTS = (
-    KeyHint("j/k", "move"),
+    KeyHint("j/k/↑↓", "move"),
     KeyHint("s", "start intent"),
     KeyHint("x", "execute"),
     KeyHint("d", "delete"),
@@ -129,8 +129,8 @@ WORKTREE_HINTS = (
 )
 
 REPLAY_BINDINGS: Final[list[BindingSpec]] = [
-    Binding("j", "cursor_down", "Next entry", show=False),
-    Binding("k", "cursor_up", "Prev entry", show=False),
+    Binding("j,down", "cursor_down", "Next entry", show=False),
+    Binding("k,up", "cursor_up", "Prev entry", show=False),
     Binding("slash", "focus_filter", "Filter", show=False),
     Binding("escape", "escape_filter", "Back to list", show=False, priority=True),
     Binding("m", "focus_markers", "Markers", show=False),
@@ -146,7 +146,7 @@ REPLAY_BINDINGS: Final[list[BindingSpec]] = [
 ]
 
 REPLAY_HINTS = (
-    KeyHint("j/k", "move"),
+    KeyHint("j/k/↑↓", "move"),
     KeyHint("/", "filter"),
     KeyHint("m", "markers"),
     KeyHint("t", "transcript"),
@@ -160,8 +160,8 @@ REPLAY_HINTS = (
 )
 
 SESSIONS_BINDINGS: Final[list[BindingSpec]] = [
-    Binding("j", "cursor_down", "Next session", show=False),
-    Binding("k", "cursor_up", "Prev session", show=False),
+    Binding("j,down", "cursor_down", "Next session", show=False),
+    Binding("k,up", "cursor_up", "Prev session", show=False),
     Binding("slash", "focus_filter", "Filter", show=False),
     Binding("escape", "escape_filter", "Back to list", show=False, priority=True),
     Binding("R", "resume_session", "Resume", show=False),
@@ -171,7 +171,7 @@ SESSIONS_BINDINGS: Final[list[BindingSpec]] = [
 ]
 
 SESSIONS_HINTS = (
-    KeyHint("j/k", "move"),
+    KeyHint("j/k/↑↓", "move"),
     KeyHint("/", "filter"),
     KeyHint("R", "resume"),
     KeyHint("x", "completed"),
@@ -180,14 +180,14 @@ SESSIONS_HINTS = (
 )
 
 SETUP_BINDINGS: Final[list[BindingSpec]] = [
-    Binding("j", "cursor_down", "Next socket", show=False),
-    Binding("k", "cursor_up", "Prev socket", show=False),
+    Binding("j,down", "cursor_down", "Next socket", show=False),
+    Binding("k,up", "cursor_up", "Prev socket", show=False),
     Binding("enter", "apply_socket", "Use socket", show=False),
     Binding("c", "clear_socket", "Auto socket", show=False),
 ]
 
 SETUP_HINTS = (
-    KeyHint("j/k", "move"),
+    KeyHint("j/k/↑↓", "move"),
     KeyHint("enter", "apply"),
     KeyHint("c", "auto"),
 )
