@@ -214,6 +214,40 @@ class TmuxActionService:
                 message=f"failed to resume: {exc}",
             )
 
+    def start_agent(
+        self,
+        *,
+        cwd: Path,
+        model: str | None = None,
+        window_name: str | None = None,
+    ) -> ActionResult:
+        """Start a new Copilot CLI agent in a tmux window.
+
+        Creates a detached window and runs ``copilot`` (optionally with
+        ``--model``) so the agent appears alongside existing panes.
+        """
+        cmd = "copilot"
+        if model:
+            cmd += f" --model {model}"
+        name = window_name or "copilot"
+        try:
+            meta = self._tmux.new_window(
+                window_name=name,
+                start_directory=cwd,
+                detached=True,
+            )
+            self._tmux.send_keys(meta.pane_id, [cmd], literal=True, append_enter=True)
+            return ActionResult(
+                success=True,
+                message=f"started agent in {meta.pane_id} ({name})",
+                pane_id=meta.pane_id,
+            )
+        except Exception as exc:
+            return ActionResult(
+                success=False,
+                message=f"failed to start agent: {exc}",
+            )
+
     def stop_all_agents(
         self,
         pane_ids: Sequence[str],

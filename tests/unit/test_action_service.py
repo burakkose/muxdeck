@@ -39,6 +39,7 @@ class FakeTmux:
     select_pane_calls: list[str] = field(default_factory=list)
     send_keys_calls: list[SendKeysCall] = field(default_factory=list)
     capture_calls: list[tuple[str, int | None]] = field(default_factory=list)
+    new_window_pane_id: str = "%10"
 
     def pane_exists(self, target_pane: str, /) -> bool:
         return target_pane in self.existing_panes
@@ -68,6 +69,21 @@ class FakeTmux:
     ) -> str:
         self.capture_calls.append((target_pane, start_line))
         return self.captured_text
+
+    def new_window(
+        self,
+        target_session: str | None = None,
+        /,
+        *,
+        window_name: str | None = None,
+        start_directory: object | None = None,
+        shell_command: Sequence[str] | None = None,
+        detached: bool = False,
+    ) -> object:
+        @dataclass
+        class FakePaneMeta:
+            pane_id: str
+        return FakePaneMeta(pane_id=self.new_window_pane_id)
 
 
 # ---------------------------------------------------------------------------
@@ -378,3 +394,46 @@ class TestActionResult:
         result = ActionResult(success=True, message="ok", pane_id="%1")
         with pytest.raises(AttributeError):
             result.success = False  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# start_agent
+# ---------------------------------------------------------------------------
+
+
+class TestStartAgent:
+    def test_starts_copilot_in_new_window(self) -> None:
+        tmux = FakeTmux()
+        svc = TmuxActionService(tmux)
+        from pathlib import Path
+
+        result = svc.start_agent(cwd=Path("/repo/worktree"))
+
+        assert result.success is True
+        assert result.pane_id == "%10"
+        assert len(tmux.send_keys_calls) == 1
+        call = tmux.send_keys_calls[0]
+        assert list(call.keys) == ["copilot"]
+        assert call.literal is True
+        assert call.append_enter is True
+
+    def test_start_with_model(self) -> None:
+        tmux = FakeTmux()
+        svc = TmuxActionService(tmux)
+        from pathlib import Path
+
+        result = svc.start_agent(cwd=Path("/repo"), model="gpt-5.4")
+
+        assert result.success is True
+        call = tmux.send_keys_calls[0]
+        assert "gpt-5.4" in next(iter(call.keys))
+
+    def test_start_with_window_name(self) -> None:
+        tmux = FakeTmux()
+        svc = TmuxActionService(tmux)
+        from pathlib import Path
+
+        result = svc.start_agent(cwd=Path("/repo"), window_name="my-agent")
+
+        assert result.success is True
+        assert "my-agent" in result.message

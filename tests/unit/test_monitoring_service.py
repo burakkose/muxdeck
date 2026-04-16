@@ -112,6 +112,34 @@ class MonitoringServiceTests(unittest.TestCase):
         assert running.status is AgentStatus.RUNNING
         assert running.last_activity_at == now
 
+    def test_compute_status_heuristics_completed_agent_dead_pane(self) -> None:
+        """Dead pane + marked_complete exit reason → COMPLETED, not DEAD."""
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        completed = compute_status_heuristics(
+            StatusHeuristicInput(
+                started_at=now - timedelta(minutes=5),
+                observed_at=now,
+                pane_dead=True,
+                session_exit_reason="marked_complete",
+            )
+        )
+        assert completed.status is AgentStatus.COMPLETED
+        assert completed.needs_attention is False
+
+    def test_compute_status_heuristics_dead_pane_no_exit_reason(self) -> None:
+        """Dead pane without exit reason → DEAD + needs attention."""
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        dead = compute_status_heuristics(
+            StatusHeuristicInput(
+                started_at=now - timedelta(minutes=5),
+                observed_at=now,
+                pane_dead=True,
+                session_exit_reason=None,
+            )
+        )
+        assert dead.status is AgentStatus.DEAD
+        assert dead.needs_attention is True
+
     def test_monitor_discoveries_builds_persistable_agent_facts(self) -> None:
         now = datetime(2025, 1, 1, 12, tzinfo=UTC)
         recorder = FakeRecorder(recorded=[])

@@ -113,6 +113,7 @@ class StatusHeuristicInput:
     activity_observed: bool = False
     blocking_issue_kinds: tuple[str, ...] = ()
     error_messages: tuple[str, ...] = ()
+    session_exit_reason: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -205,6 +206,12 @@ class MonitoringService:
                     tuple(getattr(session_evidence, "error_messages", ()))
                     if session_evidence is not None
                     else ()
+                ),
+                session_exit_reason=(
+                    "marked_complete"
+                    if existing_agent is not None
+                    and existing_agent.status == AgentStatus.COMPLETED
+                    else None
                 ),
             )
             evaluation = self.evaluate(heuristic_input)
@@ -313,6 +320,14 @@ def compute_status_heuristics(
     idle_seconds = max(0, int((payload.observed_at - idle_reference).total_seconds()))
 
     if payload.pane_dead:
+        if payload.session_exit_reason == "marked_complete":
+            return StatusHeuristicResult(
+                status=AgentStatus.COMPLETED,
+                idle_seconds=idle_seconds,
+                last_activity_at=last_activity_at,
+                needs_attention=False,
+                attention_reason=None,
+            )
         return StatusHeuristicResult(
             status=AgentStatus.DEAD,
             idle_seconds=idle_seconds,

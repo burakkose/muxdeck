@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
@@ -123,7 +124,6 @@ class WorktreesScreen(ShellScreen):
             return
         self._start_intent = self.runtime.worktrees.start_agent_intent(
             self._selected_worktree_id,
-            model="gpt-5.4",
         )
         self.query_one(StartIntentPanel).set_intent(self._start_intent)
         self.set_status(
@@ -133,7 +133,7 @@ class WorktreesScreen(ShellScreen):
         )
 
     def action_execute_start(self) -> None:
-        """Execute the previewed start agent intent."""
+        """Execute the previewed start agent intent via tmux."""
         if self._start_intent is None:
             self.set_status("no start intent — press s first")
             return
@@ -141,15 +141,17 @@ class WorktreesScreen(ShellScreen):
             self.set_status("✗ action service unavailable")
             return
         intent = self._start_intent
-        session = intent.suggested_session_name
-        window = intent.suggested_window_name
-        cwd = intent.worktree_path
-        model_flag = f" --model {intent.model}" if intent.model else ""
-        cmd = f"copilot{model_flag}"
-        self.set_status(
-            f"✓ launch intent ready: {cmd} in {cwd} (session={session} window={window})"
+
+        result = self.runtime.actions.start_agent(
+            cwd=Path(intent.worktree_path),
+            model=intent.model,
+            window_name=intent.suggested_window_name,
         )
-        self._start_intent = None
+        if result.success:
+            self.set_status(f"✓ {result.message}")
+            self._start_intent = None
+        else:
+            self.set_status(f"✗ {result.message}")
 
     def action_delete_worktree(self) -> None:
         """Delete the selected worktree after confirmation."""

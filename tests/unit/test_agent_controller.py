@@ -28,6 +28,9 @@ class FakeAgentStore:
     def get_agent(self, agent_id: str, /) -> Agent | None:
         return self.agent if self.agent.id == agent_id else None
 
+    def upsert_agent(self, agent: Agent, /) -> None:
+        self.agent = agent
+
     def list_sessions(self, agent_id: str | None = None, /) -> tuple[Session, ...]:
         sessions = tuple(
             sorted(
