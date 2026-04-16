@@ -21,6 +21,7 @@ from copilot_commander.adapters.copilot_session_store import (
     CopilotSessionStore,
     SessionStoreRoot,
 )
+from copilot_commander.adapters.subagent_reader import SubAgentReader
 from copilot_commander.adapters.windows_host import WindowsHostInfo, detect_windows_host
 from copilot_commander.bindings import GLOBAL_BINDINGS
 from copilot_commander.config import AppConfig, load_config
@@ -413,7 +414,8 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
             [SessionStoreRoot(windows_host.session_state_dir, "windows")]
         )
     sessions_ctrl = SessionsController(copilot_session_store)
-    dashboard = DashboardController(store)
+    subagent_reader = SubAgentReader(copilot_session_store)
+    dashboard = DashboardController(store, subagent_reader=subagent_reader)
     agent_controller = AgentController(store, sessions)
     attention = AttentionController(dashboard, AttentionInboxService())
     operations = OperationsController(
@@ -423,7 +425,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         actions=action_service,
     )
     fleet = FleetController(store, local_sessions=copilot_session_store)
-    sync_dashboard = DashboardController(sync_store)
+    sync_dashboard = DashboardController(sync_store, subagent_reader=subagent_reader)
     return CommanderRuntime(
         config=resolved_config,
         store=store,

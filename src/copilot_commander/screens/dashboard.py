@@ -16,6 +16,7 @@ from copilot_commander.controllers import (
     DashboardSort,
     DashboardSortField,
     DashboardState,
+    DashboardSubAgentTreeView,
 )
 from copilot_commander.screens.base import ShellScreen
 from copilot_commander.screens.confirm_dialog import ConfirmScreen
@@ -143,10 +144,7 @@ class DashboardScreen(ShellScreen):
         # cached ``selected_agent`` view is for the wrong agent. Rebuild
         # the detail panels from the (fast) single-agent path so the
         # sidebar stays consistent with the highlighted row.
-        if (
-            effective_selected is not None
-            and self._state.selected_agent_id != effective_selected
-        ):
+        if effective_selected is not None and self._state.selected_agent_id != effective_selected:
             self._update_selected_detail()
         else:
             self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
@@ -203,6 +201,43 @@ class DashboardScreen(ShellScreen):
 
     def action_cursor_up(self) -> None:
         self.query_one(AgentListPanel).move_cursor(-1)
+
+    def action_toggle_expand(self) -> None:
+        """Expand or collapse the selected agent's sub-agent tree.
+
+        The widget tracks expansion state; the screen's only job is
+        to react to an ``ExpandRequested`` message by loading the
+        tree on a worker and feeding it back. That keeps the keystroke
+        itself cheap (no DB or filesystem work on the UI thread).
+        """
+        self.query_one(AgentListPanel).toggle_expand()
+
+    def on_agent_list_panel_expand_requested(
+        self,
+        message: AgentListPanel.ExpandRequested,
+    ) -> None:
+        agent_id = message.agent_id
+        # Exclusive per agent id so rapid expand/collapse/expand of the
+        # same row doesn't start overlapping loads.
+        self.run_worker(
+            lambda agent_id=agent_id: self._load_subagents_sync(agent_id),
+            thread=True,
+            exclusive=True,
+            name=f"subagents:{agent_id}",
+        )
+
+    def _load_subagents_sync(self, agent_id: str) -> DashboardSubAgentTreeView:
+        tree = self.runtime.dashboard.load_subagents(agent_id)
+        # Hop back to the main thread to mutate the widget.
+        self.app.call_from_thread(self._apply_subagents, agent_id, tree)
+        return tree
+
+    def _apply_subagents(self, agent_id: str, tree: DashboardSubAgentTreeView) -> None:
+        try:
+            panel = self.query_one(AgentListPanel)
+        except Exception:
+            return
+        panel.set_subagents(agent_id, tree)
 
     def action_focus_filter(self) -> None:
         self.query_one(FilterBar).focus_input()
