@@ -227,7 +227,13 @@ class DashboardScreen(ShellScreen):
         )
 
     def _load_subagents_sync(self, agent_id: str) -> DashboardSubAgentTreeView:
-        tree = self.runtime.dashboard.load_subagents(agent_id)
+        # This runs on a Textual worker thread, so we must use the
+        # thread-safe sqlite connection (``sync_dashboard``). The
+        # default ``runtime.dashboard`` is bound to a connection that
+        # lives on the main thread and will raise
+        # ``sqlite3.ProgrammingError`` when touched from here.
+        dashboard = self.runtime.sync_dashboard or self.runtime.dashboard
+        tree = dashboard.load_subagents(agent_id)
         # Hop back to the main thread to mutate the widget.
         self.app.call_from_thread(self._apply_subagents, agent_id, tree)
         return tree
