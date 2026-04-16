@@ -88,12 +88,12 @@ Screen {
 #dashboard-status-bar {
     height: 1;
     background: #151921;
-    padding: 0 2;
+    padding: 0 1;
 }
 
 #dashboard-filter-row {
     height: 1;
-    padding: 0 2;
+    padding: 0 1;
 }
 
 #dashboard-main {
@@ -101,56 +101,32 @@ Screen {
 }
 
 #dashboard-agents {
-    width: 38%;
+    width: 36%;
+    min-width: 30;
 }
 
 #dashboard-sidebar {
-    width: 62%;
+    width: 64%;
     height: 1fr;
     layout: vertical;
-}
-
-#dashboard-top {
-    height: auto;
-    min-height: 12;
-    max-height: 16;
-}
-
-#dashboard-bottom {
-    height: 1fr;
-    border-top: solid #272c36;
 }
 
 #dashboard-detail {
-    width: 62%;
-    height: 1fr;
+    height: auto;
     min-height: 8;
-}
-
-#dashboard-health {
-    width: 38%;
-    min-width: 24;
+    max-height: 20;
 }
 
 #dashboard-log {
-    width: 68%;
     height: 1fr;
-}
-
-#dashboard-sidepanels {
-    width: 32%;
-    height: 1fr;
-    layout: vertical;
-}
-
-#dashboard-activity {
-    height: 1fr;
-    min-height: 10;
+    min-height: 6;
+    border-top: solid #272c36;
 }
 
 #dashboard-alerts {
     height: auto;
-    max-height: 8;
+    max-height: 6;
+    border-top: solid #272c36;
 }
 
 /* ── attention ───────────────────────────────────────────────────── */

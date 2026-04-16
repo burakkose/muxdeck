@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
@@ -34,6 +35,7 @@ from copilot_commander.theme import (
     FG4,
     GREEN,
     ORANGE,
+    PURPLE,
     SELECTED_ROW_BG,
     SEVERITY_ERROR,
     SEVERITY_INFO,
@@ -43,7 +45,19 @@ from copilot_commander.theme import (
     TONE_WARNING_FG,
     YELLOW,
 )
-from copilot_commander.widgets.common import format_short_timestamp, format_timestamp, status_glyph
+from copilot_commander.widgets.common import (
+    format_short_timestamp,
+    format_timestamp,
+    status_glyph_parts,
+)
+
+# ── ANSI escape stripper ────────────────────────────────────────────
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
 
 _SEVERITY_STYLES: dict[str, str] = {
     "info": f"bold {SEVERITY_INFO}",
@@ -52,14 +66,15 @@ _SEVERITY_STYLES: dict[str, str] = {
 }
 
 _HEALTH_TONE_STYLES: dict[str, tuple[str, str]] = {
-    "healthy": ("healthy", TONE_HEALTHY_FG),
-    "warning": ("review", TONE_WARNING_FG),
-    "critical": ("critical", TONE_CRITICAL_FG),
+    "healthy": ("▲ healthy", TONE_HEALTHY_FG),
+    "warning": ("▬ review", TONE_WARNING_FG),
+    "critical": ("▼ critical", TONE_CRITICAL_FG),
 }
 
 _LOG_SOURCE_STYLES: dict[str, str] = {
     "stdout": FG1,
     "stderr": f"bold {SEVERITY_ERROR}",
+    "tmux": FG2,
 }
 
 
@@ -76,8 +91,11 @@ def _event_color(event: str) -> str:
     return FG
 
 
-def _append_section_title(text: Text, title: str) -> None:
-    text.append(f" {title}\n", style=f"bold {BLUE}")
+def _section_header(text: Text, title: str) -> None:
+    """Render a clean section header with box-drawing decoration."""
+    text.append(" ── ", style=FG4)
+    text.append(title.upper(), style=f"bold {FG3}")
+    text.append(" ──────────────────────────────────────\n", style=FG4)
 
 
 _SHORT_STATUS: dict[AgentStatus, str] = {
@@ -207,7 +225,7 @@ def _row_style(agent: DashboardAgentListItemView, *, selected: bool) -> str:
 
 
 class StatusBar(Static):
-    """Compact 1-line dashboard summary with explicit health counts."""
+    """Compact 1-line dashboard summary — btop-inspired health strip."""
 
     def set_state(
         self,
@@ -217,26 +235,27 @@ class StatusBar(Static):
         metric_lookup = {metric.key: metric.value for metric in metrics}
         tone_label, tone_color = _HEALTH_TONE_STYLES[health.tone]
         line = Text()
-        line.append(" health ", style=FG4)
+        line.append(" ", style=FG4)
         line.append(tone_label, style=f"bold {tone_color}")
-        line.append(f" {health.message}", style=FG2)
-        summary_items = (
-            ("agents", metric_lookup.get("agents", health.total_agents), FG1),
-            ("active", metric_lookup.get("active", health.active_agents), FG1),
-            ("attention", health.attention_agents, ORANGE),
-            ("waiting", health.waiting_input_agents, ORANGE),
-            ("blocked", health.blocked_agents, SEVERITY_ERROR),
-            ("errors", health.error_agents, SEVERITY_ERROR),
-        )
-        for label, value, style in summary_items:
-            if label not in {"agents", "active"} and value == 0:
-                continue
-            line.append("  │  ", style=FG4)
-            line.append(f"{label} ", style=FG3)
+        counters: list[tuple[str, int | str, str]] = [
+            ("agents", health.total_agents, FG1),
+            ("active", health.active_agents, GREEN),
+        ]
+        if health.attention_agents:
+            counters.append(("attn", health.attention_agents, ORANGE))
+        if health.waiting_input_agents:
+            counters.append(("wait", health.waiting_input_agents, ORANGE))
+        if health.error_agents:
+            counters.append(("err", health.error_agents, SEVERITY_ERROR))
+        if health.blocked_agents:
+            counters.append(("block", health.blocked_agents, SEVERITY_ERROR))
+        for label, value, style in counters:
+            line.append("  ", style=FG4)
+            line.append(f"{label}:", style=FG4)
             line.append(str(value), style=f"bold {style}")
         if "tokens" in metric_lookup:
-            line.append("  │  ", style=FG4)
-            line.append("tokens ", style=FG3)
+            line.append("  ", style=FG4)
+            line.append("tok:", style=FG4)
             line.append(str(metric_lookup["tokens"]), style=f"bold {AQUA}")
         self.update(line)
 
@@ -253,7 +272,7 @@ class FilterBar(Vertical):
 
 
 class AgentListPanel(Static, can_focus=True):
-    """Compact agent table with clear state, idle time, and branch columns."""
+    """Compact agent list — clean selection, status glyphs, activity hint."""
 
     class AgentSelected(Message):
         def __init__(self, agent_id: str) -> None:
@@ -277,7 +296,12 @@ class AgentListPanel(Static, can_focus=True):
         self._agents = tuple(agents)
         if not self._agents:
             self._selected_index = 0
-            self.update(Text(" no agents found · press r to scan", style=FG4))
+            empty = Text()
+            empty.append("\n  no agents found\n", style=f"bold {FG3}")
+            empty.append("  press ", style=FG4)
+            empty.append("r", style=f"bold {BLUE}")
+            empty.append(" to scan", style=FG4)
+            self.update(empty)
             return
         selected_index = next(
             (
@@ -314,82 +338,129 @@ class AgentListPanel(Static, can_focus=True):
         table = Table(
             expand=True,
             box=None,
-            header_style=f"bold {FG3}",
+            header_style=f"bold {FG4}",
             border_style=FG4,
             pad_edge=False,
             show_edge=False,
             show_header=True,
             padding=(0, 1, 0, 0),
         )
-        table.add_column("", width=1, no_wrap=True)
-        table.add_column("name", min_width=8, no_wrap=True, ratio=2)
-        table.add_column("state", width=8, no_wrap=True)
-        table.add_column("idle", width=6, no_wrap=True)
-        table.add_column("branch", min_width=6, no_wrap=True, ratio=2, overflow="ellipsis")
+        table.add_column("", width=2, no_wrap=True)
+        table.add_column("agent", min_width=10, no_wrap=True, ratio=3)
+        table.add_column("status", width=10, no_wrap=True)
+        table.add_column("idle", width=5, no_wrap=True, justify="right")
+        table.add_column("branch", min_width=8, no_wrap=True, ratio=2, overflow="ellipsis")
         for index, agent in enumerate(self._agents):
             is_selected = index == self._selected_index
             row_style = _row_style(agent, selected=is_selected)
             display_name = _display_name(agent, self._agents)
             status_text, status_style = _status_display(agent)
+            # Selection indicator: ▎ bar on left
+            indicator = Text("▎ ", style=f"bold {BLUE}") if is_selected else Text("  ")
+            br_style = PURPLE if is_selected else FG4
             table.add_row(
-                status_glyph(agent.status, selected=is_selected),
-                Text(display_name, style=f"bold {FG}" if is_selected else FG),
+                indicator,
+                Text(display_name, style=f"bold {FG}" if is_selected else FG2),
                 Text(status_text, style=status_style),
-                Text(_format_idle(agent.idle_seconds), style=FG2),
-                Text(agent.branch or "-", style=FG1, overflow="ellipsis"),
+                Text(_format_idle(agent.idle_seconds), style=FG4),
+                Text(agent.branch or "─", style=br_style, overflow="ellipsis"),
                 style=row_style,
             )
         return table
 
 
 class AgentDetailPanel(Static):
-    """Selected-agent focus section."""
+    """Selected-agent focus section — grouped fields, compact header."""
 
     def set_agent(self, agent: DashboardSelectedAgentView | None) -> None:
         result = Text()
-        _append_section_title(result, "focus")
+        _section_header(result, "agent detail")
         if agent is None:
-            result.append(" no agent selected", style=FG4)
+            result.append("  no agent selected\n", style=FG4)
             self.update(result)
             return
         item = agent.item
         operator_status = _resolved_operator_status(item)
         _, status_style = _status_display(item)
-        result.append(f" {item.name}", style=f"bold {FG}")
+
+        # ── header: name + status on one line ──
+        glyph_char, glyph_color = status_glyph_parts(item.status)
+        result.append(f"  {glyph_char} ", style=f"bold {glyph_color}")
+        result.append(item.name, style=f"bold {FG}")
         result.append("  ")
         result.append(operator_status.headline, style=status_style)
-        result.append("\n")
         if item.task_title:
-            result.append(f" {item.task_title}\n", style=FG2)
-        fields: list[tuple[str, str, str]] = [
-            ("reason", operator_status.reason, status_style),
-            ("activity", item.current_activity or "", FG1),
-            ("branch", item.branch or "", FG1),
-            ("repo", item.repo_name or "", FG2),
-            ("worktree", item.worktree_name or "", FG2),
-            ("window", item.window_name or "", FG2),
-            ("pane", item.pane_id, BLUE),
-            ("session", _format_session(agent), FG4),
-            ("copilot", agent.copilot_session_id or "", FG4),
-            ("duration", _format_duration(item.started_at), FG2),
-            ("idle", _format_idle(item.idle_seconds), FG2),
-            ("pulse", item.sparkline if item.sparkline.strip() else "-", AQUA),
-            ("seen", format_timestamp(item.last_seen_at), FG4),
-            ("event", _humanize_event_kind(agent.latest_event_kind), FG4),
-            ("level", agent.latest_event_severity or "", FG4),
-            ("cost", _format_cost(item.estimated_cost_usd), FG2),
-            ("tokens", str(item.token_total) if item.token_total is not None else "", FG2),
-        ]
-        for label, value, style in fields:
-            if not value or value == "-":
-                continue
-            result.append(f" {label:<9}", style=FG4)
-            result.append(f"{value}\n", style=style)
+            result.append(f"  {item.task_title}", style=FG3)
+        result.append("\n")
+
+        # ── activity line (pulled from former ActivityPanel) ──
+        activity = item.current_activity or operator_status.reason
+        if activity:
+            result.append("  ")
+            result.append("» ", style=f"bold {AQUA}")
+            result.append(activity, style=FG1)
+            result.append("\n")
+
+        result.append("\n")
+
+        # ── identity fields ──
+        _field_row(result, "branch", item.branch, PURPLE)
+        _field_row(result, "repo", item.repo_name, FG2)
+        _field_row(result, "worktree", item.worktree_name, FG2)
+
+        # ── session fields ──
+        session_display = _format_session(agent)
+        if len(session_display) > 24:
+            session_display = session_display[:20] + "…"
+        _field_row(result, "session", session_display, FG4)
+        copilot_id = agent.copilot_session_id or ""
+        if copilot_id and len(copilot_id) > 16:
+            copilot_id = copilot_id[:12] + "…"
+        _field_row(result, "copilot", copilot_id, FG4)
+
+        # ── timing fields ──
+        _field_row(result, "uptime", _format_duration(item.started_at), FG2)
+        _field_row(result, "idle", _format_idle(item.idle_seconds), FG2)
+
+        # ── cost/tokens ──
+        cost = _format_cost(item.estimated_cost_usd)
+        if cost != "-":
+            _field_row(result, "cost", cost, GREEN)
+        if item.token_total is not None:
+            _field_row(result, "tokens", str(item.token_total), AQUA)
+
+        # ── sparkline ──
+        pulse = item.sparkline if item.sparkline.strip() else ""
+        if pulse:
+            _field_row(result, "pulse", pulse, AQUA)
+
+        # ── recent parsed events (deduplicated) ──
+        if agent.recent_events:
+            seen: set[str] = set()
+            unique: list[str] = []
+            for event in agent.recent_events:
+                if event not in seen:
+                    seen.add(event)
+                    unique.append(event)
+            result.append("\n")
+            for event in unique[-3:]:
+                result.append("  ")
+                result.append(event, style=_event_color(event))
+                result.append("\n")
+
         self.update(result)
 
 
+def _field_row(text: Text, label: str, value: str | None, style: str) -> None:
+    """Render a single labeled field row. Skip if value is empty."""
+    if not value or value == "-":
+        return
+    text.append(f"  {label:<10}", style=FG4)
+    text.append(f"{value}\n", style=style)
+
+
 class FleetHealthPanel(Static):
-    """Fleet-level counts, similar to a small btop summary box."""
+    """Fleet-level counts — used by operations screen."""
 
     def set_state(
         self,
@@ -397,10 +468,10 @@ class FleetHealthPanel(Static):
         selected: DashboardSelectedAgentView | None,
     ) -> None:
         result = Text()
-        _append_section_title(result, "fleet")
+        _section_header(result, "fleet")
         tone_label, tone_color = _HEALTH_TONE_STYLES[health.tone]
-        result.append(" health   ", style=FG4)
-        result.append(f"{tone_label} {health.message}\n", style=f"bold {tone_color}")
+        result.append("  health   ", style=FG4)
+        result.append(f"{tone_label}\n", style=f"bold {tone_color}")
         for label, value, style in (
             ("agents", f"{health.total_agents} total / {health.active_agents} active", FG1),
             ("attention", str(health.attention_agents), ORANGE),
@@ -408,14 +479,11 @@ class FleetHealthPanel(Static):
             ("blocked", str(health.blocked_agents), SEVERITY_ERROR),
             ("errors", str(health.error_agents), SEVERITY_ERROR),
         ):
-            result.append(f" {label:<9}", style=FG4)
-            if label == "agents":
-                result.append(f"{value}\n", style=style)
-            else:
-                result.append(f"{value}\n", style=f"bold {style}")
+            result.append(f"  {label:<9}", style=FG4)
+            result.append(f"{value}\n", style=f"bold {style}" if label != "agents" else style)
         if selected is not None:
             status_label, status_style = _status_display(selected.item)
-            result.append(" selected ", style=FG4)
+            result.append("  selected ", style=FG4)
             result.append(selected.item.name, style=f"bold {FG}")
             result.append("  ")
             result.append(status_label, style=status_style)
@@ -423,13 +491,13 @@ class FleetHealthPanel(Static):
 
 
 class ActivityPanel(Static):
-    """Selected-agent activity and parsed recent markers."""
+    """Selected-agent activity — used by operations screen."""
 
     def set_agent(self, agent: DashboardSelectedAgentView | None) -> None:
         result = Text()
-        _append_section_title(result, "activity")
+        _section_header(result, "activity")
         if agent is None:
-            result.append(" no activity available", style=FG4)
+            result.append("  no activity available", style=FG4)
             self.update(result)
             return
         item = agent.item
@@ -443,62 +511,85 @@ class ActivityPanel(Static):
         ):
             if not value or value == "-":
                 continue
-            result.append(f" {label:<8}", style=FG4)
+            result.append(f"  {label:<8}", style=FG4)
             result.append(f"{value}\n", style=style)
         if not agent.recent_events:
-            result.append(" recent   no parsed activity markers", style=FG4)
+            result.append("  recent   no parsed activity markers", style=FG4)
             self.update(result)
             return
-        result.append(" recent\n", style=FG4)
+        result.append("  recent\n", style=FG4)
         for event in agent.recent_events[-6:]:
-            result.append(" ")
+            result.append("  ")
             result.append(event, style=_event_color(event))
             result.append("\n")
         self.update(result)
 
 
 class LogPreviewPanel(Static):
-    """Recent pane output, promoted to the primary detail panel."""
+    """Recent pane output — ANSI-stripped, timestamp-grouped, syntax-highlighted."""
 
     def set_logs(self, agent: DashboardSelectedAgentView | None) -> None:
         result = Text()
-        _append_section_title(result, "output")
+        _section_header(result, "output")
         if agent is None or not agent.log_preview:
-            result.append(" no recent output", style=FG4)
+            result.append("  no recent output\n", style=FG4)
             self.update(result)
             return
-        src_map = {"stdout": "out", "stderr": "err"}
-        for index, line in enumerate(agent.log_preview):
-            if index:
-                result.append("\n")
+        last_ts = ""
+        src_map = {"stdout": "out", "stderr": "err", "tmux": "tmx"}
+        for line in agent.log_preview:
             ts = format_short_timestamp(line.captured_at)
             src = src_map.get(line.source, line.source[:3])
             source_style = _LOG_SOURCE_STYLES.get(line.source, FG2)
-            result.append(f" {ts} ", style=FG4)
-            result.append(f"{src:<3}", style=source_style)
-            result.append(" ")
-            result.append(line.content, style=source_style)
+            content = _strip_ansi(line.content)
+            # Timestamp grouping: show only when time changes
+            if ts != last_ts:
+                result.append(f"  {ts} ", style=FG4)
+                last_ts = ts
+            else:
+                result.append("           ", style=FG4)
+            result.append(f"{src:<3} ", style=source_style)
+            # Light syntax highlighting for log content
+            result.append(_highlight_log_line(content, source_style))
+            result.append("\n")
         self.update(result)
 
 
+def _highlight_log_line(content: str, default_style: str) -> Text:
+    """Apply light syntax highlighting to log line content."""
+    text = Text()
+    lower = content.lower()
+    if any(kw in lower for kw in ("error", "fail", "traceback", "exception")):
+        text.append(content, style=f"bold {SEVERITY_ERROR}")
+    elif any(kw in lower for kw in ("warning", "warn", "deprecat")):
+        text.append(content, style=YELLOW)
+    elif content.startswith(("●", "✓", "✗", "│", "└", "├")):
+        # Tool calls / tree output
+        text.append(content, style=AQUA)
+    elif content.startswith(("$", ">", "λ")):
+        # Command prompts
+        text.append(content, style=f"bold {GREEN}")
+    else:
+        text.append(content, style=default_style)
+    return text
+
+
 class AlertPanel(Static):
-    """Active attention items."""
+    """Active attention items — compact severity badges."""
 
     def set_alerts(self, alerts: Sequence[DashboardAlertView]) -> None:
         joined = Text()
-        _append_section_title(joined, "attention")
+        _section_header(joined, "alerts")
         if not alerts:
-            joined.append(" no active alerts", style=FG4)
+            joined.append("  no active alerts\n", style=FG4)
             self.update(joined)
             return
-        for index, alert in enumerate(alerts[:6]):
-            if index:
-                joined.append("\n")
-            joined.append(f" {format_short_timestamp(alert.occurred_at)} ", style=FG4)
-            short_sev = alert.severity[:4]
-            joined.append(f"{short_sev:<4}", style=_SEVERITY_STYLES[alert.severity])
-            joined.append(f" {alert.agent_name}: ", style=f"bold {FG1}")
-            joined.append(alert.message, style=FG2)
+        for alert in alerts[:5]:
+            short_sev = alert.severity[:4].upper()
+            joined.append("  ")
+            joined.append(f"{short_sev:<4}", style=_SEVERITY_STYLES.get(alert.severity, FG3))
+            joined.append(f" {alert.agent_name}", style=f"bold {FG1}")
+            joined.append(f"  {alert.message}\n", style=FG3)
         self.update(joined)
 
 
