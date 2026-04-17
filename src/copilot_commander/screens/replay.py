@@ -35,6 +35,7 @@ class ReplayScreen(ShellScreen):
     def __init__(self, runtime: CommanderRuntime) -> None:
         super().__init__(runtime)
         self._session_id: str | None = None
+        self._session_ids: tuple[str, ...] = ()
         self._selected_index: int | None = None
         self._state: ReplayStateView | None = None
         self._export_format: ReplayExportFormat = "text"
@@ -75,6 +76,34 @@ class ReplayScreen(ShellScreen):
     def _refresh_data_inner(self) -> None:
         filter_bar = self.query_one(ReplayFilterBar)
         filter_bar.set_query(self._filter_text)
+        if self._session_ids:
+            self._load_version += 1
+            session_ids = self._session_ids
+            first_load = self._state is None
+            if first_load:
+                self.begin_loading(
+                    self.query_one(ReplayMarkerListPanel),
+                    self.query_one(ReplayTranscriptPanel),
+                    self.query_one(ReplayDetailPanel),
+                )
+                self.set_status("loading multi-session replay…")
+            selected_index = self._selected_index
+            filter_text = self._filter_text
+            presentation = self._presentation
+            follow_latest = self._follow_latest
+
+            def _load_multi() -> ReplayStateView:
+                replay = self.runtime.replay_worker or self.runtime.replay
+                return replay.load_multi_state(
+                    session_ids,
+                    selected_index=selected_index,
+                    filter_text=filter_text,
+                    presentation=presentation,
+                    follow_latest=follow_latest,
+                )
+
+            self.run_worker(_load_multi, thread=True, exclusive=True, name="replay_load")
+            return
         resolved_session_id = self.commander_app.resolve_replay_session_id(self._session_id)
         self._session_id = resolved_session_id
         if resolved_session_id is None:
@@ -236,8 +265,26 @@ class ReplayScreen(ShellScreen):
 
     def action_load_latest(self) -> None:
         self._session_id = None
+        self._session_ids = ()
         self._selected_index = None if self._follow_latest else 0
         self.refresh_data()
+
+    def action_open_multi_session_picker(self) -> None:
+        prefill = ", ".join(self._session_ids) if self._session_ids else (self._session_id or "")
+        from copilot_commander.screens.multi_session_picker import MultiSessionPickerScreen
+
+        def _on_done(result: tuple[str, ...] | None) -> None:
+            if result is None or not result:
+                self.set_status("multi-session picker cancelled")
+                return
+            self._session_ids = result
+            self._session_id = result[0]
+            self._selected_index = None
+            self._state = None
+            self.refresh_data()
+            self.set_status(f"merging {len(result)} session(s)")
+
+        self.app.push_screen(MultiSessionPickerScreen(prefill=prefill), _on_done)
 
     def action_jump_next_marker(self) -> None:
         self._jump_from_state("marker", self.runtime.replay.jump_to_next_marker)

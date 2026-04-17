@@ -1,4 +1,4 @@
-# ruff: noqa: E402,I001,PT009
+# ruff: noqa: E402,I001,PT009,PT027
 
 from __future__ import annotations
 
@@ -244,6 +244,66 @@ class ReplayControllerTests(unittest.TestCase):
             multi_signal.lines,
             "additional distinct signals must still be surfaced",
         )
+
+    def test_load_state_single_session_omits_agent_label_and_lists_session_id(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+
+        state = self.controller.load_state(session_id=bundle.session.id)
+
+        self.assertEqual(state.session_ids, (bundle.session.id,))
+        self.assertEqual(state.agent_ids, (bundle.session.agent_id,))
+        for entry in state.transcript:
+            self.assertIsNone(entry.agent_label)
+
+    def test_load_multi_state_populates_agent_label_and_agent_ids(self) -> None:
+        from copilot_commander.domain.enums import AgentStatus
+        from copilot_commander.domain.models import Agent
+
+        self.store.upsert_agent(
+            Agent(
+                id="agent-456",
+                name="reviewer",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@2",
+                tmux_pane_id="%2",
+                cwd=str(self.worktree_path),
+                repo_root=str(self.repo_root),
+                worktree_path=str(self.worktree_path),
+                branch="task/replay",
+                task_title="Review",
+                copilot_session_id="copilot-456",
+                status=AgentStatus.RUNNING,
+                started_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+                last_activity_at=datetime(2025, 1, 1, 12, 1, tzinfo=UTC),
+                last_seen_at=datetime(2025, 1, 1, 12, 2, tzinfo=UTC),
+            )
+        )
+        bundle_a = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, 0, tzinfo=UTC),
+        )
+        bundle_b = self.sessions.create_session(
+            "agent-456",
+            occurred_at=datetime(2025, 1, 1, 12, 0, 30, tzinfo=UTC),
+        )
+
+        state = self.controller.load_multi_state(
+            (bundle_a.session.id, bundle_b.session.id),
+        )
+
+        self.assertEqual(state.session_ids, (bundle_a.session.id, bundle_b.session.id))
+        self.assertEqual(set(state.agent_ids), {"agent-123", "agent-456"})
+        agent_labels = {entry.agent_id: entry.agent_label for entry in state.transcript}
+        self.assertEqual(agent_labels["agent-123"], "A")
+        self.assertEqual(agent_labels["agent-456"], "B")
+        self.assertEqual(state.session_id, bundle_a.session.id)
+
+    def test_load_multi_state_rejects_empty_input(self) -> None:
+        with self.assertRaises(ValueError):
+            self.controller.load_multi_state(())
 
 
 if __name__ == "__main__":
