@@ -48,6 +48,80 @@ def test_parse_workspace_yaml_empty_values(tmp_path: Path) -> None:
     assert "summary" not in result
 
 
+def test_parse_workspace_yaml_literal_block_scalar_strip(tmp_path: Path) -> None:
+    """``summary: |-`` must capture the indented continuation text.
+
+    Copilot CLI emits multi-line summaries for ACP-backed sessions
+    using YAML literal block scalars. The previous minimal parser
+    stored the literal string ``|-`` as the summary, which then showed
+    up verbatim in the sessions list. The parser must now dedent the
+    continuation lines, preserve internal newlines, and strip the
+    trailing newline implied by the ``-`` chomping indicator.
+    """
+    ws = tmp_path / "workspace.yaml"
+    ws.write_text(
+        "id: abc-123\n"
+        "summary: |-\n"
+        "  You are being used as the active ACP agent backend.\n"
+        "\n"
+        "  Use ACP capabilities to complete tasks.\n"
+        "repository: user/foo\n"
+    )
+    result = _parse_workspace_yaml(ws)
+    assert result["id"] == "abc-123"
+    assert result["repository"] == "user/foo"
+    assert result["summary"] == (
+        "You are being used as the active ACP agent backend.\n"
+        "\n"
+        "Use ACP capabilities to complete tasks."
+    )
+
+
+def test_parse_workspace_yaml_literal_block_keeps_trailing_newlines(tmp_path: Path) -> None:
+    """``|`` (no chomping) keeps trailing blank lines removed, ``|+`` keeps them.
+
+    The UI doesn't rely on terminal newlines, but the chomping
+    distinction matters for callers that join multiple fields. This
+    test locks in both variants emitting sensible content.
+    """
+    ws = tmp_path / "workspace.yaml"
+    ws.write_text("summary: |\n  line one\n  line two\nnext: value\n")
+    result = _parse_workspace_yaml(ws)
+    assert result["summary"] == "line one\nline two"
+    assert result["next"] == "value"
+
+
+def test_parse_workspace_yaml_folded_block_scalar(tmp_path: Path) -> None:
+    """``>`` folds consecutive non-empty lines into space-separated text."""
+    ws = tmp_path / "workspace.yaml"
+    ws.write_text(
+        "summary: >-\n  fix the\n  broken parser\n\n  and add tests\nrepository: user/foo\n"
+    )
+    result = _parse_workspace_yaml(ws)
+    assert result["summary"] == "fix the broken parser\n\nand add tests"
+    assert result["repository"] == "user/foo"
+
+
+def test_parse_workspace_yaml_block_scalar_at_eof(tmp_path: Path) -> None:
+    """A block scalar may be the final key in the file — no next key to terminate it.
+
+    Trailing empty lines must be trimmed so the scalar doesn't carry
+    dangling newlines that would later render as blank rows.
+    """
+    ws = tmp_path / "workspace.yaml"
+    ws.write_text("id: abc\nsummary: |-\n  only summary\n  more summary\n\n")
+    result = _parse_workspace_yaml(ws)
+    assert result["summary"] == "only summary\nmore summary"
+
+
+def test_parse_workspace_yaml_strips_surrounding_quotes(tmp_path: Path) -> None:
+    ws = tmp_path / "workspace.yaml"
+    ws.write_text("summary: \"Quoted summary with : colons\"\nbranch: 'single-quoted'\n")
+    result = _parse_workspace_yaml(ws)
+    assert result["summary"] == "Quoted summary with : colons"
+    assert result["branch"] == "single-quoted"
+
+
 # ── events.jsonl reading ────────────────────────────────────────
 
 
