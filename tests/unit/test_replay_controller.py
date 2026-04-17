@@ -245,6 +245,80 @@ class ReplayControllerTests(unittest.TestCase):
             "additional distinct signals must still be surfaced",
         )
 
+    def test_file_edit_precedence_and_jump_and_count(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        captured_at = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        # Chunk 1: only an activity (lower-precedence signal).
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Running command: pytest",),
+            captured_at=captured_at,
+        )
+        # Chunk 2: contains a file edit AND an activity-style line — the
+        # file_edit must win as ``marker_kind`` per the precedence rule.
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Editing file: src/auth.py\nRunning command: ruff",),
+            captured_at=captured_at,
+        )
+        # Chunk 3: another file edit so the count and jump have somewhere
+        # to advance to.
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Created file: tests/test_auth.py",),
+            captured_at=captured_at,
+        )
+
+        state = self.controller.load_state(
+            session_id=bundle.session.id,
+            presentation="parsed",
+            selected_index=0,
+        )
+
+        # Precedence: file_edit beats activity in the same chunk.
+        file_edit_entry = next(
+            entry for entry in state.transcript if entry.label == "modify: src/auth.py"
+        )
+        self.assertEqual(file_edit_entry.marker_kind, "file_edit")
+        self.assertEqual(file_edit_entry.file_path, "src/auth.py")
+
+        # Derived count covers every detected mutation, not entries.
+        self.assertEqual(state.files_touched, 2)
+
+        # Jump action lands on the next file_edit marker.
+        jumped = self.controller.jump_to_next_file_edit(state)
+        assert jumped is not None
+        next_entry = next(
+            entry for entry in jumped.transcript if entry.ordinal == jumped.selected_index
+        )
+        self.assertEqual(next_entry.marker_kind, "file_edit")
+
+    def test_jump_to_next_file_edit_returns_none_without_file_markers(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        captured_at = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Running command: pytest",),
+            captured_at=captured_at,
+        )
+
+        state = self.controller.load_state(
+            session_id=bundle.session.id,
+            presentation="parsed",
+        )
+
+        self.assertIsNone(self.controller.jump_to_next_file_edit(state))
+
 
 if __name__ == "__main__":
     unittest.main()

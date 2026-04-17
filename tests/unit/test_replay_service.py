@@ -136,6 +136,33 @@ class ReplayServiceTests(unittest.TestCase):
         self.assertIn("EVENT custom.note", transcript)
         self.assertIn("LOG stdout#0", transcript)
 
+    def test_jump_markers_include_file_edit_and_tool_call_kinds(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        captured_at = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Editing file: src/auth.py\nTool: ripgrep\nDeleted: legacy/old.py",),
+            captured_at=captured_at,
+        )
+
+        replay = self.replays.load_session_replay(bundle.session.id)
+        kinds = [marker.kind for marker in replay.jump_markers]
+        labels_for_file_edit = [
+            marker.label for marker in replay.jump_markers if marker.kind == "file_edit"
+        ]
+        labels_for_tool = [
+            marker.label for marker in replay.jump_markers if marker.kind == "tool_call"
+        ]
+
+        self.assertIn("file_edit", kinds)
+        self.assertIn("tool_call", kinds)
+        self.assertEqual(sorted(labels_for_file_edit), ["legacy/old.py", "src/auth.py"])
+        self.assertEqual(labels_for_tool, ["ripgrep"])
+
 
 if __name__ == "__main__":
     unittest.main()

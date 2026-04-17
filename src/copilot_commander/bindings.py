@@ -149,6 +149,7 @@ REPLAY_BINDINGS: Final[list[BindingSpec]] = [
     Binding("N", "jump_previous_marker", "Prev marker", show=False),
     Binding("a", "jump_next_activity", "Next activity", show=False),
     Binding("x", "jump_next_problem", "Next problem", show=False),
+    Binding("F", "jump_next_file_edit", "Next file edit", show=False),
     Binding("e", "cycle_export_format", "Export", show=False),
     Binding("g", "load_latest", "Latest session", show=False),
 ]
@@ -163,6 +164,7 @@ REPLAY_HINTS = (
     KeyHint("n/N", "markers"),
     KeyHint("a", "activity"),
     KeyHint("x", "problem"),
+    KeyHint("F", "file edit"),
     KeyHint("e", "export"),
     KeyHint("g", "latest"),
 )

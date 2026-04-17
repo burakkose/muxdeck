@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
@@ -8,6 +9,7 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Input, ListView
 from textual.worker import Worker, WorkerState
 
+from copilot_commander.adapters.diff_adapter import DiffAdapter, DiffPort
 from copilot_commander.bindings import REPLAY_BINDINGS, REPLAY_HINTS
 from copilot_commander.controllers import ReplayStateView, ReplayTranscriptEntryView
 from copilot_commander.controllers.replay_controller import (
@@ -17,6 +19,7 @@ from copilot_commander.controllers.replay_controller import (
 from copilot_commander.screens.base import ShellScreen
 from copilot_commander.widgets.replay import (
     ReplayDetailPanel,
+    ReplayDiffPanel,
     ReplayFilterBar,
     ReplayMarkerListPanel,
     ReplaySummaryPanel,
@@ -32,7 +35,12 @@ class ReplayScreen(ShellScreen):
     BINDINGS = REPLAY_BINDINGS
     FOOTER_HINTS = REPLAY_HINTS
 
-    def __init__(self, runtime: CommanderRuntime) -> None:
+    def __init__(
+        self,
+        runtime: CommanderRuntime,
+        *,
+        diff_adapter: DiffPort | None = None,
+    ) -> None:
         super().__init__(runtime)
         self._session_id: str | None = None
         self._selected_index: int | None = None
@@ -44,6 +52,9 @@ class ReplayScreen(ShellScreen):
         self._refreshing: bool = False
         self._filter_debounce_timer: object | None = None
         self._load_version: int = 0
+        self._diff_adapter: DiffPort = diff_adapter or DiffAdapter()
+        self._diff_version: int = 0
+        self._diff_cache: dict[tuple[int, str], str] = {}
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="replay-root"):
@@ -53,6 +64,7 @@ class ReplayScreen(ShellScreen):
                 yield ReplayMarkerListPanel(widget_id="replay-markers", classes="divider-right")
                 yield ReplayTranscriptPanel(widget_id="replay-transcript", classes="section")
             yield ReplayDetailPanel(id="replay-detail", classes="frame")
+            yield ReplayDiffPanel(id="replay-diff", classes="frame")
 
     def on_mount(self) -> None:
         self.refresh_data()
@@ -117,6 +129,21 @@ class ReplayScreen(ShellScreen):
         self.run_worker(_load, thread=True, exclusive=True, name="replay_load")
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        if event.worker.name == "replay_diff":
+            if event.state != WorkerState.SUCCESS:
+                return
+            result = cast(
+                "tuple[int, tuple[int, str], str] | None",
+                event.worker.result,
+            )
+            if result is None:
+                return
+            version, cache_key, text = result
+            if version != self._diff_version:
+                return
+            self._diff_cache[cache_key] = text
+            self._refresh_panels()
+            return
         if event.worker.name != "replay_load":
             return
         if event.state == WorkerState.ERROR:
@@ -146,6 +173,7 @@ class ReplayScreen(ShellScreen):
         status = (
             f"session {session_id} | "
             f"{len(state.transcript)}/{state.total_entries} entries | "
+            f"files {state.files_touched} | tools {state.tool_calls} | "
             f"{self._presentation} | follow {'on' if self._follow_latest else 'off'} | "
             f"export {self._export_format}"
         )
@@ -251,6 +279,9 @@ class ReplayScreen(ShellScreen):
     def action_jump_next_problem(self) -> None:
         self._jump_from_state("problem", self.runtime.replay.jump_to_next_problem)
 
+    def action_jump_next_file_edit(self) -> None:
+        self._jump_from_state("file edit", self.runtime.replay.jump_to_next_file_edit)
+
     def _jump_from_state(
         self,
         label: str,
@@ -275,15 +306,43 @@ class ReplayScreen(ShellScreen):
         markers = self.query_one(ReplayMarkerListPanel)
         transcript = self.query_one(ReplayTranscriptPanel)
         detail = self.query_one(ReplayDetailPanel)
+        diff_panel = self.query_one(ReplayDiffPanel)
         summary.set_state(self._state)
         if self._state is None:
             markers.set_markers((), selected_index=None)
             transcript.set_transcript(())
             detail.set_entry(None)
+            diff_panel.set_entry_diff(None, None)
             return
         markers.set_markers(self._state.jump_markers, selected_index=self._state.selected_index)
         transcript.set_transcript(self._state.transcript)
-        detail.set_entry(self._selected_entry())
+        entry = self._selected_entry()
+        detail.set_entry(entry)
+        self._refresh_diff_panel(entry)
+
+    def _refresh_diff_panel(self, entry: ReplayTranscriptEntryView | None) -> None:
+        diff_panel = self.query_one(ReplayDiffPanel)
+        state = self._state
+        if entry is None or not entry.file_path or state is None or state.worktree_path is None:
+            diff_panel.set_entry_diff(entry, None)
+            return
+        cache_key = (entry.ordinal, entry.file_path)
+        cached = self._diff_cache.get(cache_key)
+        if cached is not None:
+            diff_panel.set_entry_diff(entry, cached)
+            return
+        diff_panel.set_entry_diff(entry, "")
+        self._diff_version += 1
+        version = self._diff_version
+        repo_path = Path(state.worktree_path)
+        path = entry.file_path
+        adapter = self._diff_adapter
+
+        def _resolve() -> tuple[int, tuple[int, str], str]:
+            text = adapter.diff_for_path(repo_path, path, before=None, after=None)
+            return version, cache_key, text
+
+        self.run_worker(_resolve, thread=True, exclusive=False, name="replay_diff")
 
     def _release_follow_latest(self) -> None:
         if self._follow_latest:
