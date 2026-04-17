@@ -76,7 +76,7 @@ class SetupSummaryPanel(Static):
             return
         status_glyph, status_color = _CHECK_STYLES[report.overall_status]
         lines: list[Text] = []
-        for label, value, style in (
+        rows: list[tuple[str, str, str]] = [
             ("health", f"{status_glyph} {report.overall_status}", f"bold {status_color}"),
             (
                 "target",
@@ -90,7 +90,29 @@ class SetupSummaryPanel(Static):
                 "-" if report.pane_count is None else str(report.pane_count),
                 FG1,
             ),
-        ):
+        ]
+        wh = report.windows_host
+        if wh is not None and wh.is_wsl:
+            if wh.session_state_dir is not None and wh.is_available:
+                value = (
+                    f"{wh.session_state_dir}  ({wh.resolver}"
+                    + (
+                        f", {report.windows_session_count} sessions"
+                        if report.windows_session_count is not None
+                        else ""
+                    )
+                    + ")"
+                )
+                rows.append(("windows", value, FG1))
+            else:
+                rows.append(
+                    (
+                        "windows",
+                        wh.error or f"resolver {wh.resolver} — unavailable",
+                        ORANGE,
+                    )
+                )
+        for label, value, style in rows:
             line = Text()
             line.append(f"{label:<10}", style=FG4)
             line.append(value, style=style)

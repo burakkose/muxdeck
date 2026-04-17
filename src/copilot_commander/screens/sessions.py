@@ -8,6 +8,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.timer import Timer
 from textual.widgets import Input
+from textual.worker import Worker, WorkerState
 
 from copilot_commander.bindings import SESSIONS_BINDINGS, SESSIONS_HINTS
 from copilot_commander.screens.base import ShellScreen
@@ -23,6 +24,9 @@ if TYPE_CHECKING:
     from copilot_commander.controllers.sessions_controller import SessionsState
 
 
+_WORKER_NAME = "sessions_load"
+
+
 class SessionsScreen(ShellScreen):
     SCREEN_TITLE = "SESSIONS"
     BINDINGS = SESSIONS_BINDINGS
@@ -36,6 +40,7 @@ class SessionsScreen(ShellScreen):
         self._filter_text: str = ""
         self._filter_debounce_timer: Timer | None = None
         self._detail_timer: Timer | None = None
+        self._loading: bool = False
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="sessions-root"):
@@ -62,40 +67,99 @@ class SessionsScreen(ShellScreen):
         self.refresh_data()
 
     def refresh_data(self) -> None:
+        """Kick off a background worker; UI thread is never blocked.
+
+        The session store scan can take seconds on WSL (it walks the
+        Windows-side ``/mnt/c`` session directory). Running it inline
+        would freeze the event loop on every tab switch, so we dispatch
+        to a worker thread and paint when it returns.
+        """
         if self.runtime.sessions_ctrl is None:
             return
-        # Collect live agent session IDs for correlation
-        live_ids: frozenset[str] = frozenset()
-        try:
-            agents = self.runtime.store.list_agents()
-            live_ids = frozenset(a.copilot_session_id for a in agents if a.copilot_session_id)
-        except Exception:
-            pass
 
-        self._state = self.runtime.sessions_ctrl.build_state(
-            live_session_ids=live_ids,
-            selected_session_id=self._selected_session_id,
-            filter_text=self._filter_text,
-            show_completed=self._show_completed,
+        # Keep showing the previous state until the worker finishes so
+        # the screen never flashes blank on refresh. On first load
+        # (_state is None) paint a loading indicator on the list +
+        # detail panels so the user sees progress instead of an empty
+        # shell.
+        first_load = self._state is None
+        if first_load and not self._loading:
+            self.set_status("loading sessions…")
+            self.begin_loading(
+                self.query_one(SessionListPanel),
+                self.query_one(SessionDetailPanel),
+            )
+
+        selected_id = self._selected_session_id
+        filter_text = self._filter_text
+        show_completed = self._show_completed
+        sessions_ctrl = self.runtime.sessions_ctrl
+        store = self.runtime.store
+
+        def _load() -> SessionsState | None:
+            # Live agent ids correlate running tmux panes with session
+            # files on disk. Reading from the SQLite store is cheap but
+            # still not on the UI thread — keep it inside the worker.
+            live_ids: frozenset[str] = frozenset()
+            try:
+                agents = store.list_agents()
+                live_ids = frozenset(a.copilot_session_id for a in agents if a.copilot_session_id)
+            except Exception:
+                pass
+            return sessions_ctrl.build_state(
+                live_session_ids=live_ids,
+                selected_session_id=selected_id,
+                filter_text=filter_text,
+                show_completed=show_completed,
+            )
+
+        self._loading = True
+        self.run_worker(_load, thread=True, exclusive=True, name=_WORKER_NAME)
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        if event.worker.name != _WORKER_NAME:
+            return
+        if event.state == WorkerState.ERROR:
+            self._loading = False
+            self.end_loading(
+                self.query_one(SessionListPanel),
+                self.query_one(SessionDetailPanel),
+            )
+            self.set_status("session load failed")
+            return
+        if event.state != WorkerState.SUCCESS:
+            return
+        self._loading = False
+        self.end_loading(
+            self.query_one(SessionListPanel),
+            self.query_one(SessionDetailPanel),
         )
+        state = event.worker.result
+        if state is None:
+            return
+        self._apply_state(state)
+
+    def _apply_state(self, state: SessionsState) -> None:
+        self._state = state
 
         list_panel = self.query_one(SessionListPanel)
         list_panel.set_sessions(
-            self._state.sessions,
+            state.sessions,
             selected_session_id=self._selected_session_id,
             notify=False,
         )
 
         detail_panel = self.query_one(SessionDetailPanel)
-        detail_panel.set_detail(self._state.selected)
+        detail_panel.set_detail(state.selected)
 
         summary = self.query_one(SessionSummaryBar)
         summary.set_counts(
-            self._state.total_count,
-            self._state.active_count,
-            self._state.unclosed_count,
-            self._state.completed_count,
+            state.total_count,
+            state.active_count,
+            state.unclosed_count,
+            state.completed_count,
         )
+        self.set_status(f"{state.total_count} sessions · {state.active_count} active")
 
     def on_session_selected(self, event: SessionSelected) -> None:
         if event.session_id == self._selected_session_id:
@@ -166,6 +230,8 @@ class SessionsScreen(ShellScreen):
             session.session_id,
             cwd=session.cwd or session.git_root,
             window_name=f"copilot-{(session.summary or session.session_id)[:20]}",
+            origin=session.origin,
+            windows_cwd=session.windows_cwd,
         )
         if result.success:
             self.set_status(f"✓ {result.message}")
@@ -197,8 +263,8 @@ class SessionsScreen(ShellScreen):
                 ):
                     result = self.runtime.actions.focus_pane(
                         agent.tmux_pane_id,
-                        tmux_window_id=agent.tmux_window_id,
-                        tmux_session_name=agent.tmux_session_name,
+                        window_id=agent.tmux_window_id or None,
+                        session_name=agent.tmux_session_name or None,
                     )
                     msg = f"✓ {result.message}" if result.success else f"✗ {result.message}"
                     self.set_status(msg)

@@ -42,14 +42,10 @@ class FakeGit:
     def discover_repo_root(self, cwd: str | Path, /) -> Path:
         return Path(cwd)
 
-    def list_worktrees(
-        self, cwd: str | Path, /
-    ) -> tuple[GitWorktreeInfo, ...]:
+    def list_worktrees(self, cwd: str | Path, /) -> tuple[GitWorktreeInfo, ...]:
         return self._worktrees.get(str(Path(cwd).resolve()), ())
 
-    def inspect_repository(
-        self, cwd: str | Path, /
-    ) -> GitRepositorySnapshot:
+    def inspect_repository(self, cwd: str | Path, /) -> GitRepositorySnapshot:
         raise NotImplementedError
 
     def create_worktree(
@@ -102,17 +98,11 @@ class FakeWorktreeStore:
         if repo_root:
             result = [w for w in result if w.repo_root == repo_root]
         if assigned_agent_id:
-            result = [
-                w for w in result if w.assigned_agent_id == assigned_agent_id
-            ]
+            result = [w for w in result if w.assigned_agent_id == assigned_agent_id]
         return result
 
-    def list_worktrees_by_repo(
-        self, repo_root: str, /
-    ) -> Sequence[Worktree]:
-        return [
-            w for w in self._worktrees.values() if w.repo_root == repo_root
-        ]
+    def list_worktrees_by_repo(self, repo_root: str, /) -> Sequence[Worktree]:
+        return [w for w in self._worktrees.values() if w.repo_root == repo_root]
 
     def delete_worktree(self, worktree_id: str, /) -> bool:
         wt = self._worktrees.pop(worktree_id, None)
@@ -213,9 +203,7 @@ class TestWorktreeSync(unittest.TestCase):
         store = FakeWorktreeStore()
         store.upsert_worktree(existing)
 
-        git_wts = (
-            _make_git_worktree(root, root, "main", is_main=True),
-        )
+        git_wts = (_make_git_worktree(root, root, "main", is_main=True),)
         service, _ = _make_service({root: git_wts}, store=store)
 
         report = service.sync_worktrees_from_git([Path(root)])
@@ -243,14 +231,10 @@ class TestWorktreeSync(unittest.TestCase):
 
     def test_sync_deduplicates_repo_roots(self) -> None:
         root = "/home/user/repo"
-        git_wts = (
-            _make_git_worktree(root, root, "main", is_main=True),
-        )
+        git_wts = (_make_git_worktree(root, root, "main", is_main=True),)
         service, store = _make_service({root: git_wts})
 
-        report = service.sync_worktrees_from_git(
-            [Path(root), Path(root), Path(root)]
-        )
+        report = service.sync_worktrees_from_git([Path(root), Path(root), Path(root)])
 
         assert report.repo_roots_scanned == 1
         assert report.worktrees_upserted == 1
@@ -259,14 +243,10 @@ class TestWorktreeSync(unittest.TestCase):
         """If git fails for one root, other roots still sync."""
         root_ok = "/home/user/repo-ok"
         root_bad = "/home/user/repo-bad"
-        git_wts_ok = (
-            _make_git_worktree(root_ok, root_ok, "main", is_main=True),
-        )
+        git_wts_ok = (_make_git_worktree(root_ok, root_ok, "main", is_main=True),)
 
         class ErrorGit(FakeGit):
-            def list_worktrees(
-                self, cwd: str | Path, /
-            ) -> tuple[GitWorktreeInfo, ...]:
+            def list_worktrees(self, cwd: str | Path, /) -> tuple[GitWorktreeInfo, ...]:
                 if str(cwd) == root_bad:
                     msg = "not a git repository"
                     raise RuntimeError(msg)
@@ -281,9 +261,7 @@ class TestWorktreeSync(unittest.TestCase):
             session_contexts=FakeSessionContextStore(),
         )
 
-        report = service.sync_worktrees_from_git(
-            [Path(root_bad), Path(root_ok)]
-        )
+        report = service.sync_worktrees_from_git([Path(root_bad), Path(root_ok)])
 
         assert report.repo_roots_scanned == 2
         assert report.worktrees_upserted == 1
@@ -314,12 +292,8 @@ class TestWorktreeSync(unittest.TestCase):
             worktree_path=wt_path,
             branch="feat/task",
         )
-        git_wts = (
-            _make_git_worktree(root, wt_path, "feat/task"),
-        )
-        service, store = _make_service(
-            {root: git_wts}, agents=[agent]
-        )
+        git_wts = (_make_git_worktree(root, wt_path, "feat/task"),)
+        service, store = _make_service({root: git_wts}, agents=[agent])
 
         service.sync_worktrees_from_git([Path(root)])
 
@@ -380,9 +354,7 @@ class TestWorktreeSync(unittest.TestCase):
         store.upsert_worktree(existing)
 
         class ErrorGit(FakeGit):
-            def list_worktrees(
-                self, cwd: str | Path, /
-            ) -> tuple[GitWorktreeInfo, ...]:
+            def list_worktrees(self, cwd: str | Path, /) -> tuple[GitWorktreeInfo, ...]:
                 msg = "git failed"
                 raise RuntimeError(msg)
 

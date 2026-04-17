@@ -16,6 +16,7 @@ from copilot_commander.controllers import (
     DashboardSort,
     DashboardSortField,
     DashboardState,
+    DashboardSubAgentTreeView,
 )
 from copilot_commander.screens.base import ShellScreen
 from copilot_commander.screens.confirm_dialog import ConfirmScreen
@@ -116,18 +117,42 @@ class DashboardScreen(ShellScreen):
                 if self._state is None:
                     self.set_status("Discovering agents…")
                 return
-        self._selected_agent_id = self._state.selected_agent_id
-        if self._selected_agent_id is not None:
-            self.commander_app.remember_agent_selection(self._selected_agent_id)
+        # Preserve the live selection across async refreshes.
+        #
+        # The sync worker captures ``_selected_agent_id`` at kickoff and
+        # bakes it into ``state.selected_agent_id``. If the user pressed
+        # j/k while the sync was in flight, that value is already stale;
+        # blindly assigning it back here causes the visible cursor to
+        # snap "backward" onto the old row. Keep whatever the user just
+        # navigated to and only adopt the state's selection when we
+        # don't have one yet (e.g. first load, or the previous selection
+        # no longer exists).
+        agent_ids = {a.agent_id for a in self._state.agents}
+        if self._selected_agent_id is None or self._selected_agent_id not in agent_ids:
+            self._selected_agent_id = self._state.selected_agent_id
+        effective_selected = self._selected_agent_id
+        if effective_selected is not None:
+            self.commander_app.remember_agent_selection(effective_selected)
         self.query_one(StatusBar).set_state(self._state.health, self._state.metrics)
         filter_bar = self.query_one(FilterBar)
         filter_bar.set_query(self._filters.text_query)
         self.query_one(AgentListPanel).set_agents(
             self._state.agents,
-            selected_agent_id=self._state.selected_agent_id,
+            selected_agent_id=effective_selected,
         )
-        self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
-        self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
+        # If the live selection drifted from what the worker built, the
+        # cached ``selected_agent`` view is for the wrong agent. Rebuild
+        # the detail panels from the (fast) single-agent path so the
+        # sidebar stays consistent with the highlighted row.
+        if effective_selected is not None and self._state.selected_agent_id != effective_selected:
+            self._update_selected_detail()
+        else:
+            panel = self.query_one(AgentListPanel)
+            if panel.selected_subagent is not None:
+                self.query_one(AgentDetailPanel).set_subagent(panel.selected_subagent)
+            else:
+                self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
+            self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
         attention_controller = getattr(self.runtime, "attention", None)
         if attention_controller is not None:
@@ -164,6 +189,22 @@ class DashboardScreen(ShellScreen):
             self._detail_timer.stop()
         self._detail_timer = self.set_timer(0.05, self._update_selected_detail)
 
+    def on_agent_list_panel_sub_agent_highlighted(
+        self,
+        message: AgentListPanel.SubAgentHighlighted,
+    ) -> None:
+        # Fast path: rendering a sub-agent needs no DB work — the view
+        # carries prompt/result/type already. We still want the parent
+        # agent's detail in the cache for when the cursor moves back up,
+        # so we don't cancel the debounced `_update_selected_detail`.
+        detail_panel = self.query_one(AgentDetailPanel)
+        if message.subagent is None:
+            # Reset to the parent agent's detail (if we already have it).
+            if self._state is not None and self._state.selected_agent is not None:
+                detail_panel.set_agent(self._state.selected_agent)
+            return
+        detail_panel.set_subagent(message.subagent)
+
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id != "dashboard-filter-input":
             return
@@ -180,6 +221,49 @@ class DashboardScreen(ShellScreen):
 
     def action_cursor_up(self) -> None:
         self.query_one(AgentListPanel).move_cursor(-1)
+
+    def action_toggle_expand(self) -> None:
+        """Expand or collapse the selected agent's sub-agent tree.
+
+        The widget tracks expansion state; the screen's only job is
+        to react to an ``ExpandRequested`` message by loading the
+        tree on a worker and feeding it back. That keeps the keystroke
+        itself cheap (no DB or filesystem work on the UI thread).
+        """
+        self.query_one(AgentListPanel).toggle_expand()
+
+    def on_agent_list_panel_expand_requested(
+        self,
+        message: AgentListPanel.ExpandRequested,
+    ) -> None:
+        agent_id = message.agent_id
+        # Exclusive per agent id so rapid expand/collapse/expand of the
+        # same row doesn't start overlapping loads.
+        self.run_worker(
+            lambda agent_id=agent_id: self._load_subagents_sync(agent_id),
+            thread=True,
+            exclusive=True,
+            name=f"subagents:{agent_id}",
+        )
+
+    def _load_subagents_sync(self, agent_id: str) -> DashboardSubAgentTreeView:
+        # This runs on a Textual worker thread, so we must use the
+        # thread-safe sqlite connection (``sync_dashboard``). The
+        # default ``runtime.dashboard`` is bound to a connection that
+        # lives on the main thread and will raise
+        # ``sqlite3.ProgrammingError`` when touched from here.
+        dashboard = self.runtime.sync_dashboard or self.runtime.dashboard
+        tree = dashboard.load_subagents(agent_id)
+        # Hop back to the main thread to mutate the widget.
+        self.app.call_from_thread(self._apply_subagents, agent_id, tree)
+        return tree
+
+    def _apply_subagents(self, agent_id: str, tree: DashboardSubAgentTreeView) -> None:
+        try:
+            panel = self.query_one(AgentListPanel)
+        except Exception:
+            return
+        panel.set_subagents(agent_id, tree)
 
     def action_focus_filter(self) -> None:
         self.query_one(FilterBar).focus_input()
@@ -301,6 +385,28 @@ class DashboardScreen(ShellScreen):
         self.commander_app.remember_session_selection(session_id)
         self.commander_app.switch_mode("replay")
 
+    def action_view_pane(self) -> None:
+        """Open the full-screen live tmux pane viewer for the selected agent."""
+        if self._selected_agent_id is None:
+            self.set_status("no agent selected")
+            return
+        agent = self._find_selected_agent()
+        if agent is None or not agent.pane_id:
+            self.set_status("✗ agent has no pane")
+            return
+        if self.runtime.pane_stream is None:
+            self.set_status("✗ pane streaming unavailable")
+            return
+        from copilot_commander.screens.pane_viewer import PaneViewerScreen
+
+        self.app.push_screen(
+            PaneViewerScreen(
+                self.runtime,
+                pane_id=agent.pane_id,
+                display_name=agent.repo_name or agent.name,
+            )
+        )
+
     def _execute_agent_intent(
         self,
         label: str,
@@ -408,7 +514,13 @@ class DashboardScreen(ShellScreen):
                 selected_agent_id=item.agent_id,
                 selected_agent=selected_view,
             )
-        self.query_one(AgentDetailPanel).set_agent(selected_view)
+        # Don't clobber a sub-agent detail view if the cursor is currently
+        # parked on a sub-agent row under this parent.
+        panel = self.query_one(AgentListPanel)
+        if panel.selected_subagent is not None:
+            self.query_one(AgentDetailPanel).set_subagent(panel.selected_subagent)
+        else:
+            self.query_one(AgentDetailPanel).set_agent(selected_view)
         self.query_one(LogPreviewPanel).set_logs(selected_view)
 
     def _preview_line_limit(self) -> int:

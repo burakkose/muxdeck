@@ -164,6 +164,10 @@ class AttentionController:
         )
         return self._inbox.observe(signals)
 
+    @property
+    def unread_count(self) -> int:
+        return self._inbox.unread_count
+
     def mark_read(self, alert_id: str) -> None:
         self._inbox.mark_read((alert_id,))
 

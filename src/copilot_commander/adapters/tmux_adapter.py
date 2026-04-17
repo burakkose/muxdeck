@@ -193,15 +193,56 @@ class TmuxAdapter:
         start_line: str | int | None = None,
         end_line: str | int | None = None,
         join_wrapped_lines: bool = False,
+        include_escape_sequences: bool = False,
     ) -> str:
         args = ["capture-pane", "-p", "-t", target_pane]
         if join_wrapped_lines:
             args.append("-J")
+        if include_escape_sequences:
+            # ``-e`` asks tmux to preserve ANSI SGR sequences so the
+            # viewer can re-render colours instead of stripped plain
+            # text. Harmless when the caller renders without styles.
+            args.append("-e")
         if start_line is not None:
             args.extend(("-S", str(start_line)))
         if end_line is not None:
             args.extend(("-E", str(end_line)))
         return self._run_tmux(*args).stdout
+
+    def pipe_pane_to_file(
+        self,
+        target_pane: str,
+        /,
+        *,
+        target_path: Path,
+        append: bool = True,
+    ) -> None:
+        """Attach ``pipe-pane`` so new bytes append to ``target_path``.
+
+        Uses ``-o`` so the command toggles on (vs. toggling any
+        existing pipe off). The shell command deliberately uses
+        ``cat >>`` for append or ``cat >`` for truncate; tmux itself
+        does not expose a native "write to file" knob.
+        """
+        redirect = ">>" if append else ">"
+        # shlex.quote the path so embedded whitespace survives the
+        # shell tmux spawns to run the pipe command.
+        shell_path = shlex.quote(str(target_path))
+        shell_command = f"cat {redirect} {shell_path}"
+        self._run_tmux("pipe-pane", "-o", "-t", target_pane, shell_command)
+
+    def stop_pipe_pane(self, target_pane: str, /) -> None:
+        """Tear down any active ``pipe-pane`` on the target.
+
+        Calling ``pipe-pane`` with no shell command is the documented
+        way to stop piping. Best-effort: we swallow
+        :class:`TmuxCommandError` so closing a viewer for a pane
+        that already vanished doesn't crash the screen.
+        """
+        try:
+            self._run_tmux("pipe-pane", "-t", target_pane)
+        except TmuxCommandError:
+            return
 
     def send_keys(
         self,
@@ -277,6 +318,28 @@ class TmuxAdapter:
 
     def select_window(self, target_window: str, /) -> CommandResult:
         return self._run_tmux("select-window", "-t", target_window)
+
+    def switch_client(self, target: str, /) -> CommandResult:
+        """Move the calling tmux client to ``target`` (session/window/pane).
+
+        Useful when commander is attached inside tmux and needs to move the
+        user's active client to the agent's pane rather than only flipping
+        the window's active pane in the background.
+        """
+        return self._run_tmux("switch-client", "-t", target)
+
+    def has_attached_client(self) -> bool:
+        """Return True when at least one tmux client is attached.
+
+        ``switch-client`` is a no-op when there is no attached client on
+        the configured socket, which is the cross-server failure mode we
+        need to distinguish from a real focus switch.
+        """
+        try:
+            result = self._run_tmux("list-clients", "-F", "#{client_name}")
+        except TmuxCommandError:
+            return False
+        return bool(result.stdout.strip())
 
     def pane_exists(self, target_pane: str, /) -> bool:
         return self.get_pane_metadata(target_pane) is not None

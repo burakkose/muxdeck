@@ -133,8 +133,14 @@ class TestStaleAgentReaping(unittest.TestCase):
         report = sync.refresh()
         assert len(upserted) == 1
         assert upserted[0].status == AgentStatus.DEAD
-        assert upserted[0].needs_attention is True
-        assert "no longer exists" in (upserted[0].attention_reason or "")
+        # Reaping used to set needs_attention=True with a "tmux pane
+        # no longer exists" reason, but a post-mortem pane is not an
+        # actionable signal — alerting on every reaped agent drowned
+        # the dashboard in false positives. The agent is still
+        # recorded as DEAD for history; it just no longer triggers
+        # an alert.
+        assert upserted[0].needs_attention is False
+        assert upserted[0].attention_reason is None
 
     def test_respects_grace_period(self):
         from copilot_commander.services.discovery_service import PaneDiscoveryReport

@@ -6,9 +6,14 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Input
+from textual.worker import Worker, WorkerState
 
 from copilot_commander.bindings import BindingSpec, KeyHint
-from copilot_commander.controllers.fleet_controller import FleetController, FleetFilterState
+from copilot_commander.controllers.fleet_controller import (
+    FleetController,
+    FleetFilterState,
+    FleetState,
+)
 from copilot_commander.screens.base import ShellScreen
 from copilot_commander.widgets.fleet import (
     FleetGroupsPanel,
@@ -34,6 +39,9 @@ _FLEET_HINTS = (
 )
 
 
+_WORKER_NAME = "fleet_load"
+
+
 class FleetScreen(ShellScreen):
     SCREEN_TITLE = "FLEET"
     BINDINGS = _FLEET_BINDINGS
@@ -48,6 +56,8 @@ class FleetScreen(ShellScreen):
         super().__init__(runtime)
         self._controller = controller
         self._filters = FleetFilterState(include_completed=False)
+        self._state: FleetState | None = None
+        self._loading: bool = False
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="fleet-root"):
@@ -71,7 +81,49 @@ class FleetScreen(ShellScreen):
         if controller is None:
             self.set_status("fleet controller unavailable")
             return
-        state = controller.build_state(filters=self._filters)
+        first_load = self._state is None
+        if first_load and not self._loading:
+            self.set_status("loading fleet…")
+            self.begin_loading(
+                self.query_one(FleetGroupsPanel),
+                self.query_one(FleetResourcesPanel),
+                self.query_one(FleetHistoryPanel),
+            )
+        filters = self._filters
+
+        def _load() -> FleetState:
+            return controller.build_state(filters=filters)
+
+        self._loading = True
+        self.run_worker(_load, thread=True, exclusive=True, name=_WORKER_NAME)
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        if event.worker.name != _WORKER_NAME:
+            return
+        if event.state == WorkerState.ERROR:
+            self._loading = False
+            self.end_loading(
+                self.query_one(FleetGroupsPanel),
+                self.query_one(FleetResourcesPanel),
+                self.query_one(FleetHistoryPanel),
+            )
+            self.set_status("fleet load failed")
+            return
+        if event.state != WorkerState.SUCCESS:
+            return
+        self._loading = False
+        self.end_loading(
+            self.query_one(FleetGroupsPanel),
+            self.query_one(FleetResourcesPanel),
+            self.query_one(FleetHistoryPanel),
+        )
+        state = event.worker.result
+        if state is None:
+            return
+        self._apply_state(state)
+
+    def _apply_state(self, state: FleetState) -> None:
+        self._state = state
         self.query_one(FleetSummaryBar).set_state(state)
         self.query_one(FleetGroupsPanel).set_groups(state.groups)
         self.query_one(FleetResourcesPanel).set_resources(state.resources)
@@ -81,7 +133,10 @@ class FleetScreen(ShellScreen):
             helpers=state.search_helpers,
             hits=state.search_hits,
         )
-        status_parts = [f"{state.total_groups} groups", f"{state.total_visible_agents} agents"]
+        status_parts = [
+            f"{state.total_groups} groups",
+            f"{state.total_visible_agents} agents",
+        ]
         if self._filters.attention_only:
             status_parts.append("attention")
         if not self._filters.include_completed:

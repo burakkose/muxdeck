@@ -90,6 +90,14 @@ class ReplayScreen(ShellScreen):
         # overwriting newer ones when the user types faster than the worker.
         self._load_version += 1
         session_id = resolved_session_id
+        first_load = self._state is None
+        if first_load:
+            self.begin_loading(
+                self.query_one(ReplayMarkerListPanel),
+                self.query_one(ReplayTranscriptPanel),
+                self.query_one(ReplayDetailPanel),
+            )
+            self.set_status("loading replay…")
         selected_index = self._selected_index
         filter_text = self._filter_text
         presentation = self._presentation
@@ -112,12 +120,22 @@ class ReplayScreen(ShellScreen):
         if event.worker.name != "replay_load":
             return
         if event.state == WorkerState.ERROR:
+            self.end_loading(
+                self.query_one(ReplayMarkerListPanel),
+                self.query_one(ReplayTranscriptPanel),
+                self.query_one(ReplayDetailPanel),
+            )
             self._state = None
             self._refresh_panels()
             self.set_status("replay load failed — no session data available")
             return
         if event.state != WorkerState.SUCCESS:
             return
+        self.end_loading(
+            self.query_one(ReplayMarkerListPanel),
+            self.query_one(ReplayTranscriptPanel),
+            self.query_one(ReplayDetailPanel),
+        )
         state: ReplayStateView = event.worker.result
         self._state = state
         self._selected_index = state.selected_index

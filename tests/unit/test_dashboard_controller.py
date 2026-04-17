@@ -202,6 +202,72 @@ class DashboardControllerTests(unittest.TestCase):
             ["beta", "gamma"],
         )
 
+    def test_terminal_status_agents_do_not_produce_alerts(self) -> None:
+        """DEAD / COMPLETED agents carrying stale attention flags are
+
+        suppressed from the alert feed. They remain in the agent list
+        (so the history is visible) but they are not actionable signals
+        and must not add noise to the dashboard.
+        """
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        store.agents["agent-live"] = Agent(
+            id="agent-live",
+            name="Live",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Live task",
+            status=AgentStatus.WAITING_INPUT,
+            started_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+            last_activity_at=observed_at,
+            last_seen_at=observed_at,
+            idle_seconds=30,
+            needs_attention=True,
+            attention_reason="waiting for confirmation input",
+        )
+        store.agents["agent-dead"] = Agent(
+            id="agent-dead",
+            name="Dead",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@2",
+            tmux_pane_id="%2",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Dead task",
+            status=AgentStatus.DEAD,
+            started_at=datetime(2025, 1, 1, 11, tzinfo=UTC),
+            last_seen_at=datetime(2025, 1, 1, 11, 30, tzinfo=UTC),
+            needs_attention=True,
+            attention_reason="tmux pane no longer exists",
+        )
+        store.agents["agent-done"] = Agent(
+            id="agent-done",
+            name="Done",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@3",
+            tmux_pane_id="%3",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Done task",
+            status=AgentStatus.COMPLETED,
+            started_at=datetime(2025, 1, 1, 11, tzinfo=UTC),
+            last_seen_at=datetime(2025, 1, 1, 11, 45, tzinfo=UTC),
+            needs_attention=True,
+            attention_reason="reviewed tool failure",
+        )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        state = controller.build_state()
+
+        alert_ids = [alert.agent_id for alert in state.alerts]
+        self.assertEqual(alert_ids, ["agent-live"])
+
 
 if __name__ == "__main__":
     unittest.main()

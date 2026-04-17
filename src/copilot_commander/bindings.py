@@ -78,6 +78,8 @@ DASHBOARD_BINDINGS: Final[list[BindingSpec]] = [
     Binding("w", "open_worktree", "Worktree", show=False),
     Binding("m", "send_message", "Send message", show=False),
     Binding("l", "view_logs", "View logs", show=False),
+    Binding("v", "view_pane", "Live pane", show=False),
+    Binding("enter", "toggle_expand", "Expand sub-agents", show=False),
     Binding("S", "stop_all", "Stop all", show=False),
     Binding("A", "open_attention_inbox", "Attention inbox", show=False),
 ]
@@ -92,6 +94,8 @@ DASHBOARD_HINTS = (
     KeyHint("p", "console"),
     KeyHint("m", "message"),
     KeyHint("l", "logs"),
+    KeyHint("v", "pane"),
+    KeyHint("↵", "expand"),
     KeyHint("S", "stop all"),
 )
 

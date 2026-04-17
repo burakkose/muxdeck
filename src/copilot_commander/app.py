@@ -5,6 +5,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from textual.app import App
 from textual.driver import Driver
@@ -17,13 +18,23 @@ from copilot_commander.adapters import (
     SQLiteStore,
     TmuxAdapter,
 )
-from copilot_commander.adapters.copilot_session_store import CopilotSessionStore
+from copilot_commander.adapters.copilot_activity_reader import CopilotActivityReader
+from copilot_commander.adapters.copilot_session_resolver import InuseLockResolver
+from copilot_commander.adapters.copilot_session_store import (
+    CopilotSessionStore,
+    SessionStoreRoot,
+)
+from copilot_commander.adapters.os_notifier import OsNotifier, detect_os_notifier
+from copilot_commander.adapters.pane_stream import PaneStreamAdapter
+from copilot_commander.adapters.subagent_reader import SubAgentReader
+from copilot_commander.adapters.windows_host import WindowsHostInfo, detect_windows_host
 from copilot_commander.bindings import GLOBAL_BINDINGS
 from copilot_commander.config import AppConfig, load_config
 from copilot_commander.controllers import (
     AgentController,
     AttentionController,
     DashboardController,
+    DashboardFilterState,
     DashboardState,
     FleetController,
     OperationsController,
@@ -59,7 +70,9 @@ from copilot_commander.services import (
     WorktreeService,
 )
 from copilot_commander.services.action_service import TmuxActionService
+from copilot_commander.services.attention_service import AttentionNotification
 from copilot_commander.services.subtask_registry import SubTaskRegistry
+from copilot_commander.widgets.common import TabBar
 
 _log = logging.getLogger(__name__)
 
@@ -67,6 +80,22 @@ _SYNC_GROUP = "sync"
 _PERF_LOG_INTERVAL = 10  # log perf summary every N sync cycles
 _sync_cycle_count = 0
 _FALSEY_ENV_VALUES = frozenset({"", "0", "false", "no", "off"})
+
+
+_URGENCY_BY_SEVERITY: dict[str, str] = {
+    "error": "critical",
+    "warning": "normal",
+    "info": "low",
+}
+
+
+def _urgency_for(notification: AttentionNotification) -> Literal["low", "normal", "critical"]:
+    urgency = _URGENCY_BY_SEVERITY.get(notification.severity, "normal")
+    if urgency == "critical":
+        return "critical"
+    if urgency == "low":
+        return "low"
+    return "normal"
 
 
 def _command_logging_enabled() -> bool:
@@ -95,6 +124,8 @@ class CommanderRuntime:
     attention: AttentionController | None = None
     operations: OperationsController | None = None
     fleet: FleetController | None = None
+    pane_stream: PaneStreamAdapter | None = None
+    notifier: OsNotifier | None = None
 
 
 def _get_tmux_safe_driver() -> type[Driver] | None:
@@ -140,6 +171,23 @@ class CommanderApp(App[None]):
         self._sync_in_progress: bool = False
         self._refresh_pending: bool = False
         self._manual_refresh: bool = False
+        self.tab_badges: dict[str, int] = {}
+
+    def set_tab_badge(self, name: str, count: int) -> None:
+        """Update the badge count for a tab and refresh any mounted TabBar."""
+        safe_count = max(0, int(count))
+        if self.tab_badges.get(name, 0) == safe_count:
+            return
+        if safe_count == 0:
+            self.tab_badges.pop(name, None)
+        else:
+            self.tab_badges[name] = safe_count
+        try:
+            screen = self.screen
+        except Exception:
+            return
+        for tab_bar in screen.query(TabBar):
+            tab_bar.set_badges(self.tab_badges)
 
     def on_mount(self) -> None:
         attention = getattr(self.runtime, "attention", None)
@@ -218,9 +266,7 @@ class CommanderApp(App[None]):
             return current_session_id
         # Try interpreting current_session_id as a copilot session ID
         if current_session_id is not None:
-            by_copilot = self.runtime.store.get_session_by_copilot_session_id(
-                current_session_id
-            )
+            by_copilot = self.runtime.store.get_session_by_copilot_session_id(current_session_id)
             if by_copilot is not None:
                 return by_copilot.id
         if self.selected_agent_id is not None:
@@ -266,6 +312,7 @@ class CommanderApp(App[None]):
     class _SyncResult:
         report: RuntimeSyncReport
         dashboard_state: DashboardState | None = None
+        attention_dashboard_state: DashboardState | None = None
 
     def _run_sync(self) -> _SyncResult | None:
         synchronizer = self.runtime.synchronizer
@@ -279,7 +326,10 @@ class CommanderApp(App[None]):
             dashboard_state = None
             sync_dashboard = self.runtime.sync_dashboard
             if sync_dashboard is not None:
-                screen = self.screen
+                try:
+                    screen = self.screen
+                except Exception:
+                    screen = None
                 if isinstance(screen, DashboardScreen):
                     with timed("sync.build_dashboard"):
                         dashboard_state = sync_dashboard.build_state(
@@ -290,9 +340,21 @@ class CommanderApp(App[None]):
                                 self.runtime.config.general.log_preview_lines, 24
                             ),
                         )
+            # Build an attention-filtered snapshot regardless of the active
+            # screen so OS notifications fire from any tab. Read-only
+            # against ``sync_store`` and safe to run in the worker.
+            attention_state = None
+            if sync_dashboard is not None and self.runtime.attention is not None:
+                with timed("sync.build_attention"):
+                    attention_state = sync_dashboard.build_state(
+                        filters=DashboardFilterState(attention_only=True, include_completed=True),
+                        alert_limit=20,
+                        preview_line_limit=1,
+                    )
             return CommanderApp._SyncResult(
                 report=report,
                 dashboard_state=dashboard_state,
+                attention_dashboard_state=attention_state,
             )
         except Exception:
             _log.exception("sync worker error")
@@ -310,6 +372,7 @@ class CommanderApp(App[None]):
                 self.last_sync_report = result.report
                 if result.dashboard_state is not None:
                     self.last_dashboard_state = result.dashboard_state
+                self._dispatch_attention_notifications(result.attention_dashboard_state)
             elif event.state == WorkerState.ERROR:
                 _log.warning("sync worker failed: %s", event.worker.error)
             with timed("ui.refresh_widgets"):
@@ -323,13 +386,30 @@ class CommanderApp(App[None]):
                 self._refresh_pending = False
                 self._refresh_current_screen()
 
+    def _dispatch_attention_notifications(self, attention_state: DashboardState | None) -> None:
+        attention = self.runtime.attention
+        if attention is None or attention_state is None:
+            return
+        notifications = attention.observe_dashboard_state(attention_state)
+        notifier = self.runtime.notifier
+        if notifier is not None:
+            for notification in notifications:
+                notifier.notify(
+                    notification.title,
+                    notification.message,
+                    _urgency_for(notification),
+                )
+        self.set_tab_badge("attention", attention.unread_count)
+
     def _refresh_screen_widgets(self, *, force: bool = False) -> None:
         screen = self.screen
-        # Periodic sync only auto-refreshes the dashboard.
-        # Other screens refresh on tab switch (on_show) or manual r key.
+        # Periodic sync auto-refreshes the screens where staleness is
+        # user-visible. Other screens (worktrees, replay, setup) only
+        # refresh on tab-switch (on_show) or a manual `r` key so we don't
+        # spam git subprocesses or filesystem scans.
         if not force and not isinstance(
             screen,
-            DashboardScreen | AttentionScreen | OperationsScreen | FleetScreen,
+            DashboardScreen | AttentionScreen | OperationsScreen | FleetScreen | SessionsScreen,
         ):
             return
         refresher = getattr(screen, "refresh_data", None)
@@ -349,6 +429,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     git_adapter = GitAdapter(process_adapter)
     tmux_adapter = TmuxAdapter(process_adapter, socket_path=resolved_config.tmux.socket_path)
     action_service = TmuxActionService(tmux=tmux_adapter)
+    pane_stream_adapter = PaneStreamAdapter(tmux=tmux_adapter)
     copilot_adapter = CopilotAdapter(process_adapter)
     sessions = SessionService(store=store)
     replay_service = ReplayService(store=store, sessions=sessions)
@@ -401,9 +482,26 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         session_contexts=sync_store,
     )
     copilot_session_store = CopilotSessionStore()
+    # WSL users launch some agents through pwsh.exe, which stores its
+    # session state under the Windows %USERPROFILE%. Bridge that here so
+    # both roots feed the same Sessions screen and Setup diagnostics.
+    windows_host: WindowsHostInfo = detect_windows_host(env=os.environ)
+    if windows_host.is_available and windows_host.session_state_dir is not None:
+        copilot_session_store.set_extra_roots(
+            [SessionStoreRoot(windows_host.session_state_dir, "windows")]
+        )
     sessions_ctrl = SessionsController(copilot_session_store)
     subtask_registry = SubTaskRegistry()
-    dashboard = DashboardController(store, subtask_registry=subtask_registry)
+    subagent_reader = SubAgentReader(copilot_session_store)
+    activity_reader = CopilotActivityReader(store=copilot_session_store)
+    session_resolver = InuseLockResolver(copilot_session_store)
+    dashboard = DashboardController(
+        store,
+        subtask_registry=subtask_registry,
+        subagent_reader=subagent_reader,
+        session_resolver=session_resolver,
+        activity_reader=activity_reader,
+    )
     agent_controller = AgentController(store, sessions)
     attention = AttentionController(dashboard, AttentionInboxService())
     operations = OperationsController(
@@ -413,7 +511,13 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         actions=action_service,
     )
     fleet = FleetController(store, local_sessions=copilot_session_store)
-    sync_dashboard = DashboardController(sync_store, subtask_registry=subtask_registry)
+    sync_dashboard = DashboardController(
+        sync_store,
+        subtask_registry=subtask_registry,
+        subagent_reader=subagent_reader,
+        session_resolver=session_resolver,
+        activity_reader=activity_reader,
+    )
     return CommanderRuntime(
         config=resolved_config,
         store=store,
@@ -438,10 +542,14 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         setup=SetupDoctorService(
             tmux_adapter,
             configured_socket_path=resolved_config.tmux.socket_path,
+            windows_host_provider=lambda: windows_host,
+            windows_session_count_provider=lambda: copilot_session_store.count_by_origin("windows"),
         ),
         attention=attention,
         operations=operations,
         fleet=fleet,
+        pane_stream=pane_stream_adapter,
+        notifier=detect_os_notifier(),
     )
 
 

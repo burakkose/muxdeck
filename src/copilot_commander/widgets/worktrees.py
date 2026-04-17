@@ -37,7 +37,10 @@ def _section_header(text: Text, title: str) -> None:
 
 
 def _field_row(
-    text: Text, label: str, value: str | None, style: str,
+    text: Text,
+    label: str,
+    value: str | None,
+    style: str,
 ) -> None:
     """Render a single labeled field row. Skip if value is empty."""
     if not value or value == "-":
@@ -60,7 +63,10 @@ class WorktreeListPanel(Static, can_focus=True):
             self.worktree_id = worktree_id
 
     def __init__(
-        self, *, widget_id: str | None = None, classes: str | None = None,
+        self,
+        *,
+        widget_id: str | None = None,
+        classes: str | None = None,
     ) -> None:
         super().__init__(id=widget_id, classes=classes)
         self._worktrees: tuple[WorktreeSummaryView, ...] = ()
@@ -87,11 +93,7 @@ class WorktreeListPanel(Static, can_focus=True):
             self.update(empty)
             return
         selected_index = next(
-            (
-                i
-                for i, wt in enumerate(self._worktrees)
-                if wt.worktree_id == selected_worktree_id
-            ),
+            (i for i, wt in enumerate(self._worktrees) if wt.worktree_id == selected_worktree_id),
             min(self._selected_index, len(self._worktrees) - 1),
         )
         self._selected_index = selected_index
@@ -104,7 +106,8 @@ class WorktreeListPanel(Static, can_focus=True):
             return
         new_idx = self._selected_index + delta
         self._selected_index = max(
-            0, min(len(self._worktrees) - 1, new_idx),
+            0,
+            min(len(self._worktrees) - 1, new_idx),
         )
         self.focus()
         self._refresh_list()
@@ -171,9 +174,7 @@ class WorktreeListPanel(Static, can_focus=True):
 
             # Branch name — full, not truncated
             branch = wt.branch
-            branch_style = (
-                f"bold {FG}{row_bg}" if is_selected else f"{FG2}{row_bg}"
-            )
+            branch_style = f"bold {FG}{row_bg}" if is_selected else f"{FG2}{row_bg}"
             result.append(branch, style=branch_style)
 
             # Disambiguate duplicate branch names with dir name
@@ -241,13 +242,17 @@ class WorktreeDetailPanel(Static):
         _field_row(result, "base", summary.base_branch, FG1)
         if summary.ahead_count is not None and summary.ahead_count > 0:
             _field_row(
-                result, "ahead",
-                str(summary.ahead_count), GREEN,
+                result,
+                "ahead",
+                str(summary.ahead_count),
+                GREEN,
             )
         if summary.behind_count is not None and summary.behind_count > 0:
             _field_row(
-                result, "behind",
-                str(summary.behind_count), ORANGE,
+                result,
+                "behind",
+                str(summary.behind_count),
+                ORANGE,
             )
 
         # ── agent assignment ──
@@ -256,14 +261,14 @@ class WorktreeDetailPanel(Static):
             result.append("\n")
             _field_row(result, "agent", agent_name, f"bold {AQUA}")
         _field_row(
-            result, "sessions",
-            str(summary.active_session_count)
-            if summary.active_session_count
-            else None,
+            result,
+            "sessions",
+            str(summary.active_session_count) if summary.active_session_count else None,
             FG1,
         )
         _field_row(
-            result, "panes",
+            result,
+            "panes",
             ", ".join(detail.pane_targets) if detail.pane_targets else None,
             BLUE,
         )

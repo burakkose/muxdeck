@@ -183,3 +183,49 @@ def test_controller_selected_not_found() -> None:
     ctrl = SessionsController(FakeSessionStore([]))  # type: ignore[arg-type]
     state = ctrl.build_state(selected_session_id="nonexistent")
     assert state.selected is None
+
+
+# ── Windows-origin sessions ─────────────────────────────────────
+
+
+def test_windows_session_flows_through_detail_view() -> None:
+    store = FakeSessionStore(
+        [
+            CopilotLocalSession(
+                session_id="win-abc",
+                cwd=Path("/mnt/c/Users/alice/proj"),
+                git_root=Path("/mnt/c/Users/alice/proj"),
+                repository="alice/proj",
+                branch="main",
+                summary="work",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                origin="windows",
+                windows_cwd="C:\\Users\\alice\\proj",
+                windows_git_root="C:\\Users\\alice\\proj",
+            )
+        ]
+    )
+    ctrl = SessionsController(store)  # type: ignore[arg-type]
+    state = ctrl.build_state(show_completed=True, selected_session_id="win-abc")
+
+    assert state.sessions[0].origin == "windows"
+    assert state.selected is not None
+    assert state.selected.origin == "windows"
+    # Detail should prefer the Windows path so the user can copy it.
+    assert state.selected.cwd == "C:\\Users\\alice\\proj"
+    # Resume command must wrap in pwsh.
+    cmd = state.selected.resume_command
+    assert cmd.startswith("pwsh.exe -NoExit -Command")
+    assert "Set-Location -LiteralPath 'C:\\Users\\alice\\proj'" in cmd
+    assert "copilot --resume=win-abc" in cmd
+
+
+def test_local_session_resume_command_is_plain() -> None:
+    store = FakeSessionStore([_session(session_id="lin-abc")])
+    ctrl = SessionsController(store)  # type: ignore[arg-type]
+    state = ctrl.build_state(selected_session_id="lin-abc")
+
+    assert state.selected is not None
+    assert state.selected.origin == "local"
+    assert state.selected.resume_command == "copilot --resume=lin-abc"
