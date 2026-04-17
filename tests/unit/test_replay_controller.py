@@ -574,6 +574,56 @@ class ReplayControllerTests(unittest.TestCase):
         self.assertIn("```", markdown_full.content)
         self.assertIn("> Note: watch this", markdown_full.content)
 
+    def test_substring_filter_remains_backward_compatible(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        captured_at = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Running command: pytest\nfatal: merge conflict",),
+            captured_at=captured_at,
+        )
+
+        bare = self.controller.load_state(
+            session_id=bundle.session.id,
+            filter_text="merge",
+            presentation="parsed",
+            follow_latest=True,
+        )
+
+        self.assertEqual(len(bare.transcript), 1)
+        self.assertEqual(bare.transcript[0].label, "fatal: merge conflict")
+
+    def test_chip_helpers_emit_canonical_filter_text(self) -> None:
+        self.assertEqual(self.controller.apply_errors_only_chip(), "severity:error")
+        self.assertEqual(self.controller.apply_activity_chip(), "marker:activity")
+        self.assertEqual(self.controller.apply_tool_calls_chip(), "marker:tool_call")
+        self.assertEqual(self.controller.clear_chips(), "")
+
+    def test_load_state_attaches_insights(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        captured_at = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("fatal: merge conflict in /a/b/file.py",),
+            captured_at=captured_at,
+        )
+
+        state = self.controller.load_state(
+            session_id=bundle.session.id,
+            presentation="parsed",
+        )
+
+        self.assertIsNotNone(state.insights)
+        assert state.insights is not None
+        self.assertGreaterEqual(state.insights.error_count, 1)
 
 
 if __name__ == "__main__":

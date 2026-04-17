@@ -61,20 +61,45 @@ Run the operator console from a tmux window when possible. If your panes live on
 
 ## Replay usage
 
+### Navigation
+
 - `j` / `k` / `↑` / `↓` move the transcript or marker selection
-- `/` focuses the transcript filter; `esc` returns focus to the list
-- `m` focuses the marker list, `t` focuses the transcript
+- `m` focuses the marker list, `T` focuses the transcript
 - `v` toggles parsed vs raw chunk view
 - `f` toggles follow-latest mode
+- `g` reloads the latest session
+
+### Filter & chips
+
+- `/` focuses the transcript filter; `esc` returns focus to the list (and clears
+  active chips on a second press)
+- The filter box accepts faceted queries:
+  `kind:event severity:error agent:foo marker:activity since:14:30 until:15:00`,
+  quoted phrases like `text:"ImportError in foo"`, plain substrings, or any mix
+- `e` filters to errors only, `a` to activity, `t` to tool calls; `c` clears the chips
+
+### Markers & jumps
+
 - `[` / `]` jump to the previous / next marker
-- `a` jumps to the next activity marker, `x` to the next problem (error or blocking)
+- `A` jumps to the next activity marker, `x` to the next problem (error or blocking)
 - `F` jumps to the next file edit; the diff panel renders the unified diff for the
   selected file mutation when the session is tied to a worktree
+
+### Annotations
+
 - `b` toggles a bookmark on the selected entry
 - `n` opens a prompt to attach a note to the selected entry
 - `N` cycles to the next bookmarked or noted entry
-- `e` cycles the export format: text → JSON → Markdown (suitable for pasting into GitHub) → text
-- `g` reloads the latest session
+
+### Export & insights
+
+- `E` cycles the export format: text → JSON → Markdown (suitable for pasting into GitHub) → text
+- `i` toggles the insights panel (duration, idle gaps, top error clusters)
+
+### Multi-session
+
+- The multi-session picker merges multiple sessions into one transcript view,
+  attaching agent labels to each entry
 
 ## Discovery model
 

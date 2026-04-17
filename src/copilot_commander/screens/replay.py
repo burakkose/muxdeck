@@ -26,6 +26,7 @@ from copilot_commander.widgets.replay import (
     ReplayDetailPanel,
     ReplayDiffPanel,
     ReplayFilterBar,
+    ReplayInsightsPanel,
     ReplayMarkerListPanel,
     ReplayProgressBar,
     ReplaySummaryPanel,
@@ -76,6 +77,9 @@ class ReplayScreen(ShellScreen):
                 yield ReplayTranscriptPanel(widget_id="replay-transcript", classes="section")
             yield ReplayDetailPanel(id="replay-detail", classes="frame")
             yield ReplayDiffPanel(id="replay-diff", classes="frame")
+            insights_panel = ReplayInsightsPanel(id="replay-insights", classes="frame muted")
+            insights_panel.display = False
+            yield insights_panel
 
     def on_mount(self) -> None:
         self.refresh_data()
@@ -268,8 +272,14 @@ class ReplayScreen(ShellScreen):
         self.set_status("filter transcript")
 
     def action_escape_filter(self) -> None:
-        """Return focus to the active list (ESC from filter)."""
-        self._active_list().focus_list()
+        """ESC: return focus from filter to list, then clear active chips."""
+        filter_bar = self.query_one(ReplayFilterBar)
+        filter_input = filter_bar.query_one(Input)
+        if filter_input.has_focus:
+            self._active_list().focus_list()
+            return
+        if self._filter_text:
+            self.action_chip_clear()
 
     def action_focus_markers(self) -> None:
         self.query_one(ReplayMarkerListPanel).focus_list()
@@ -369,6 +379,34 @@ class ReplayScreen(ShellScreen):
             self.set_status(f"merging {len(result)} session(s)")
 
         self.app.push_screen(MultiSessionPickerScreen(prefill=prefill), _on_done)
+
+    def action_chip_errors_only(self) -> None:
+        self._apply_chip(self.runtime.replay.apply_errors_only_chip(), "errors only")
+
+    def action_chip_activity(self) -> None:
+        self._apply_chip(self.runtime.replay.apply_activity_chip(), "activity only")
+
+    def action_chip_tool_calls(self) -> None:
+        self._apply_chip(self.runtime.replay.apply_tool_calls_chip(), "tool calls only")
+
+    def action_chip_clear(self) -> None:
+        self._apply_chip(self.runtime.replay.clear_chips(), "filter cleared")
+
+    def action_toggle_insights(self) -> None:
+        panel = self.query_one(ReplayInsightsPanel)
+        panel.display = not panel.display
+        if panel.display:
+            panel.set_state(self._state)
+        self.set_status(f"insights {'on' if panel.display else 'off'}")
+
+    def _apply_chip(self, filter_text: str, status: str) -> None:
+        self._filter_text = filter_text
+        timer = self._filter_debounce_timer
+        if timer is not None:
+            timer.stop()
+            self._filter_debounce_timer = None
+        self.refresh_data()
+        self.set_status(status)
 
     def action_jump_next_marker(self) -> None:
         self._jump_from_state("marker", self.runtime.replay.jump_to_next_marker)
@@ -558,6 +596,7 @@ class ReplayScreen(ShellScreen):
         detail = self.query_one(ReplayDetailPanel)
         progress = self.query_one(ReplayProgressBar)
         diff_panel = self.query_one(ReplayDiffPanel)
+        insights = self.query_one(ReplayInsightsPanel)
         summary.set_state(self._state)
         if self._state is None:
             markers.set_markers((), selected_index=None)
@@ -565,6 +604,7 @@ class ReplayScreen(ShellScreen):
             detail.set_entry(None)
             progress.set_state(None, ())
             diff_panel.set_entry_diff(None, None)
+            insights.set_state(None)
             return
         markers.set_markers(self._state.jump_markers, selected_index=self._state.selected_index)
         transcript.set_transcript(self._state.transcript)
@@ -572,6 +612,8 @@ class ReplayScreen(ShellScreen):
         detail.set_entry(entry)
         progress.set_state(self._state.playback, self._state.jump_markers)
         self._refresh_diff_panel(entry)
+        if insights.display:
+            insights.set_state(self._state)
 
     def _refresh_diff_panel(self, entry: ReplayTranscriptEntryView | None) -> None:
         diff_panel = self.query_one(ReplayDiffPanel)

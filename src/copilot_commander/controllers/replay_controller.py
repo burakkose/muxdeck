@@ -6,6 +6,11 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal
 
+from copilot_commander.domain.replay_query import (
+    build_chip_filter_text,
+    parse_replay_query,
+    query_matches,
+)
 from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
 from copilot_commander.services import playback_controller as playback
 from copilot_commander.services.annotations_service import AnnotationsService
@@ -13,6 +18,10 @@ from copilot_commander.services.playback_controller import (
     EmptyTimelineError,
     PlaybackState,
     StepDirection,
+)
+from copilot_commander.services.replay_insights import (
+    ReplayInsightsView,
+    compute_replay_insights,
 )
 from copilot_commander.services.replay_service import (
     MultiSessionReplay,
@@ -147,6 +156,7 @@ class ReplayStateView:
     tool_calls: int = 0
     worktree_path: str | None = None
     annotations: tuple[ReplayAnnotationView, ...] = ()
+    insights: ReplayInsightsView | None = None
 
 
 class ReplayController:
@@ -488,6 +498,7 @@ class ReplayController:
             tool_calls=state.tool_calls,
             worktree_path=state.worktree_path,
             annotations=state.annotations,
+            insights=state.insights,
         )
 
     def _build_state(
@@ -587,7 +598,7 @@ class ReplayController:
     ) -> ReplayStateView:
         annotation_views = tuple(self._fetch_annotation_views(session_id))
         glyphs_by_ordinal = self._glyphs_by_ordinal(annotation_views)
-        query = filter_text.strip().casefold()
+        query = parse_replay_query(filter_text)
         initial_selection = entries[-1].ordinal if follow_latest and entries else selected_index
         transcript = tuple(
             self._build_transcript_entry(
@@ -599,8 +610,8 @@ class ReplayController:
             )
             for entry in entries
         )
-        if query:
-            transcript = tuple(entry for entry in transcript if query in self._search_blob(entry))
+        if not query.is_empty:
+            transcript = tuple(entry for entry in transcript if query_matches(query, entry))
         resolved_selection = initial_selection
         if resolved_selection not in {entry.ordinal for entry in transcript}:
             if transcript:
@@ -651,6 +662,7 @@ class ReplayController:
         files_touched = sum(1 for marker in jump_markers if marker.kind == "file_edit")
         tool_call_count = sum(1 for marker in jump_markers if marker.kind == "tool_call")
         all_marker_count = len(jump_markers) + len(annotation_views)
+        insights = compute_replay_insights(entries)
         return ReplayStateView(
             session_id=session_id,
             agent_id=agent_id,
@@ -669,6 +681,7 @@ class ReplayController:
             tool_calls=tool_call_count,
             worktree_path=worktree_path,
             annotations=annotation_views,
+            insights=insights,
         )
 
     def _fetch_annotation_views(self, session_id: str) -> list[ReplayAnnotationView]:
@@ -821,16 +834,29 @@ class ReplayController:
             return "warning"
         return None
 
-    def _search_blob(self, entry: ReplayTranscriptEntryView) -> str:
-        parts = (
-            entry.timestamp,
-            entry.kind,
-            entry.label,
-            entry.severity or "",
-            entry.marker_kind or "",
-            *entry.lines,
-        )
-        return "\n".join(parts).casefold()
+    @staticmethod
+    def apply_errors_only_chip() -> str:
+        """Filter-text snippet for the *errors only* quick filter."""
+
+        return build_chip_filter_text("errors_only")
+
+    @staticmethod
+    def apply_activity_chip() -> str:
+        """Filter-text snippet for the *activity only* quick filter."""
+
+        return build_chip_filter_text("activity")
+
+    @staticmethod
+    def apply_tool_calls_chip() -> str:
+        """Filter-text snippet for the *tool calls* quick filter."""
+
+        return build_chip_filter_text("tool_calls")
+
+    @staticmethod
+    def clear_chips() -> str:
+        """Filter-text snippet that clears all chips."""
+
+        return build_chip_filter_text("clear")
 
     def _normalize_json(self, payload_json: str) -> str:
         try:
