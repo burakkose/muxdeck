@@ -24,6 +24,11 @@ _COPILOT_EXECUTABLE_NAMES = frozenset(
 _WRAPPER_EXECUTABLE_NAMES = frozenset({"bun", "node", "npm", "npx", "pnpm", "yarn"})
 _GH_EXTENSION_PREFIX = ("gh", "copilot")
 
+# Only error lines appearing within this tail window (lines from the
+# end of the captured output) are surfaced as evidence.  Further back
+# in the scrollback is treated as stale scrollback noise.
+_ERROR_TAIL_WINDOW_LINES = 30
+
 
 def _normalize_optional_text(value: str | None) -> str | None:
     if value is None:
@@ -371,6 +376,20 @@ class CopilotAdapter:
             )
             for snapshot in parse_result.usage_snapshots
         )
+        # Only surface error evidence from the tail of the captured
+        # output.  The scrollback routinely contains `error:` /
+        # `fatal:` / `exception` / `traceback` lines from past tool
+        # calls (git, compilers, stack traces being reviewed) that
+        # are not indicative of the agent's current state.  Scoping
+        # to the tail keeps the evidence aligned with how
+        # `_has_activity_signal` scopes activity markers.
+        total_lines = output.count("\n") + 1 if output else 0
+        tail_threshold = max(1, total_lines - _ERROR_TAIL_WINDOW_LINES)
+        tail_error_messages = tuple(
+            error.message
+            for error in parse_result.errors
+            if error.span.start_line >= tail_threshold
+        )
         return CopilotSessionEvidence(
             parse_result=parse_result,
             copilot_session_id=session_ids[0] if session_ids else None,
@@ -378,7 +397,7 @@ class CopilotAdapter:
             usage_snapshots=usage_snapshots,
             latest_usage=usage_snapshots[-1] if usage_snapshots else None,
             blocking_issue_kinds=tuple(issue.kind for issue in parse_result.blocking_issues),
-            error_messages=tuple(error.message for error in parse_result.errors),
+            error_messages=tail_error_messages,
             background_task_count=parse_result.background_task_count,
             task_evidence=parse_result.task_evidence,
         )

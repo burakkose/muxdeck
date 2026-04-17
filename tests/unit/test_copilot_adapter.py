@@ -182,6 +182,33 @@ class CopilotAdapterTests(unittest.TestCase):
         assert latest_usage is not None
         assert latest_usage.input_tokens == 3
 
+    def test_interpret_output_drops_errors_outside_tail_window(self) -> None:
+        """`error:` lines far above the tail of the capture are noise.
+
+        Regression: a `git rebase` leaving `error: could not apply <sha>`
+        deep in the scrollback flipped the agent to ERROR even while the
+        agent was sitting idle at a prompt, because `interpret_output`
+        surfaced every match from the full capture.  Only errors within
+        the tail window are relevant to current state; everything else
+        is historical scrollback noise.
+        """
+        adapter = CopilotAdapter(FakeRunner(()))
+        buried_error = "\n".join(
+            ["error: could not apply 15c1344", *[f"filler line {i}" for i in range(80)]]
+        )
+
+        evidence = adapter.interpret_output(buried_error)
+
+        assert evidence.error_messages == ()
+
+    def test_interpret_output_keeps_errors_inside_tail_window(self) -> None:
+        adapter = CopilotAdapter(FakeRunner(()))
+        tail_error = "\n".join([*[f"filler line {i}" for i in range(80)], "fatal: build aborted"])
+
+        evidence = adapter.interpret_output(tail_error)
+
+        assert evidence.error_messages == ("fatal: build aborted",)
+
     def test_launch_in_pane_wraps_runner_failures(self) -> None:
         runner = FakeRunner((CommandError("tmux send-keys", stderr="can't find pane: %9"),))
         adapter = CopilotAdapter(runner)
