@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import timedelta
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -31,7 +32,13 @@ def _marker_style(kind: str) -> str:
 
 class ReplayFilterBar(Vertical):
     def compose(self) -> ComposeResult:
-        yield Input(placeholder="/ search transcript", id="replay-filter-input")
+        yield Input(
+            placeholder=(
+                "/ search  kind:event severity:error agent:foo "
+                "marker:activity since:14:30 until:15:00"
+            ),
+            id="replay-filter-input",
+        )
 
     def set_query(self, value: str) -> None:
         self.query_one(Input).value = value
@@ -86,6 +93,21 @@ class ReplayBoundListView(ListView):
 
     def action_load_latest(self) -> None:
         self._invoke_screen_action("load_latest")
+
+    def action_chip_errors_only(self) -> None:
+        self._invoke_screen_action("chip_errors_only")
+
+    def action_chip_activity(self) -> None:
+        self._invoke_screen_action("chip_activity")
+
+    def action_chip_tool_calls(self) -> None:
+        self._invoke_screen_action("chip_tool_calls")
+
+    def action_chip_clear(self) -> None:
+        self._invoke_screen_action("chip_clear")
+
+    def action_toggle_insights(self) -> None:
+        self._invoke_screen_action("toggle_insights")
 
 
 class ReplayMarkerListPanel(Vertical):
@@ -267,9 +289,67 @@ class ReplayDetailPanel(Static):
         self.update(header)
 
 
+def _format_duration(value: timedelta) -> str:
+    total = int(value.total_seconds())
+    if total < 0:
+        total = 0
+    hours, remainder = divmod(total, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
+
+
+class ReplayInsightsPanel(Static):
+    """Read-only summary of replay insights (i to toggle)."""
+
+    def set_state(self, state: ReplayStateView | None) -> None:
+        if state is None or state.insights is None:
+            self.update(Text("No insights available", style=FG4))
+            return
+        insights = state.insights
+        body = Text()
+        body.append("Insights\n", style=f"bold {AQUA}")
+        body.append("duration ", style=FG4)
+        body.append(_format_duration(insights.total_duration), style=FG1)
+        body.append("  longest streak ", style=FG4)
+        body.append(_format_duration(insights.longest_activity_streak), style=FG1)
+        body.append("  errors ", style=FG4)
+        body.append(str(insights.error_count), style=FG1)
+        body.append("  files ", style=FG4)
+        body.append(str(insights.files_touched), style=FG1)
+        body.append("  idle gaps ", style=FG4)
+        body.append(str(len(insights.idle_gaps)), style=FG1)
+        if insights.idle_gaps:
+            body.append("\n")
+            for gap in insights.idle_gaps[:3]:
+                body.append("  · ", style=FG4)
+                body.append(gap.start.isoformat(timespec="seconds"), style=FG4)
+                body.append(" → ", style=FG4)
+                body.append(gap.end.isoformat(timespec="seconds"), style=FG4)
+                body.append("  ", style=FG4)
+                body.append(_format_duration(gap.duration), style=YELLOW)
+                body.append("\n")
+            if len(insights.idle_gaps) > 3:
+                body.append(
+                    f"  · …{len(insights.idle_gaps) - 3} more\n",
+                    style=FG4,
+                )
+        if insights.top_error_clusters:
+            body.append("Top errors\n", style=f"bold {ORANGE}")
+            for cluster in insights.top_error_clusters:
+                body.append(f"  x{cluster.count} ", style=f"bold {SEVERITY_ERROR}")
+                body.append(cluster.canonical, style=FG1)
+                body.append("\n")
+        self.update(body)
+
+
 __all__ = [
     "ReplayDetailPanel",
     "ReplayFilterBar",
+    "ReplayInsightsPanel",
     "ReplayMarkerListPanel",
     "ReplaySummaryPanel",
     "ReplayTranscriptPanel",

@@ -45,6 +45,14 @@ Run the operator console from a tmux window when possible. If your panes live on
 - `d` deletes the selected worktree
 - `P` prunes stale worktrees
 
+## Replay quick reference
+
+- `e` filters to errors only, `a` to activity, `t` to tool calls; `c` clears the chips
+- `i` toggles the insights panel (duration, idle gaps, top error clusters)
+- The filter box accepts faceted queries:
+  `kind:event severity:error agent:foo marker:activity since:14:30 until:15:00`,
+  quoted phrases like `text:"ImportError in foo"`, plain substrings, or any mix.
+
 ## Discovery model
 
 - Discovery uses `tmux list-panes -a`, so it scans panes across **all windows** on the current tmux server, not just the current window.

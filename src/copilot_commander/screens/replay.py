@@ -18,6 +18,7 @@ from copilot_commander.screens.base import ShellScreen
 from copilot_commander.widgets.replay import (
     ReplayDetailPanel,
     ReplayFilterBar,
+    ReplayInsightsPanel,
     ReplayMarkerListPanel,
     ReplaySummaryPanel,
     ReplayTranscriptPanel,
@@ -53,6 +54,9 @@ class ReplayScreen(ShellScreen):
                 yield ReplayMarkerListPanel(widget_id="replay-markers", classes="divider-right")
                 yield ReplayTranscriptPanel(widget_id="replay-transcript", classes="section")
             yield ReplayDetailPanel(id="replay-detail", classes="frame")
+            insights_panel = ReplayInsightsPanel(id="replay-insights", classes="frame muted")
+            insights_panel.display = False
+            yield insights_panel
 
     def on_mount(self) -> None:
         self.refresh_data()
@@ -239,6 +243,34 @@ class ReplayScreen(ShellScreen):
         self._selected_index = None if self._follow_latest else 0
         self.refresh_data()
 
+    def action_chip_errors_only(self) -> None:
+        self._apply_chip(self.runtime.replay.apply_errors_only_chip(), "errors only")
+
+    def action_chip_activity(self) -> None:
+        self._apply_chip(self.runtime.replay.apply_activity_chip(), "activity only")
+
+    def action_chip_tool_calls(self) -> None:
+        self._apply_chip(self.runtime.replay.apply_tool_calls_chip(), "tool calls only")
+
+    def action_chip_clear(self) -> None:
+        self._apply_chip(self.runtime.replay.clear_chips(), "filter cleared")
+
+    def action_toggle_insights(self) -> None:
+        panel = self.query_one(ReplayInsightsPanel)
+        panel.display = not panel.display
+        if panel.display:
+            panel.set_state(self._state)
+        self.set_status(f"insights {'on' if panel.display else 'off'}")
+
+    def _apply_chip(self, filter_text: str, status: str) -> None:
+        self._filter_text = filter_text
+        timer = self._filter_debounce_timer
+        if timer is not None:
+            timer.stop()  # type: ignore[attr-defined]
+            self._filter_debounce_timer = None
+        self.refresh_data()
+        self.set_status(status)
+
     def action_jump_next_marker(self) -> None:
         self._jump_from_state("marker", self.runtime.replay.jump_to_next_marker)
 
@@ -275,15 +307,19 @@ class ReplayScreen(ShellScreen):
         markers = self.query_one(ReplayMarkerListPanel)
         transcript = self.query_one(ReplayTranscriptPanel)
         detail = self.query_one(ReplayDetailPanel)
+        insights = self.query_one(ReplayInsightsPanel)
         summary.set_state(self._state)
         if self._state is None:
             markers.set_markers((), selected_index=None)
             transcript.set_transcript(())
             detail.set_entry(None)
+            insights.set_state(None)
             return
         markers.set_markers(self._state.jump_markers, selected_index=self._state.selected_index)
         transcript.set_transcript(self._state.transcript)
         detail.set_entry(self._selected_entry())
+        if insights.display:
+            insights.set_state(self._state)
 
     def _release_follow_latest(self) -> None:
         if self._follow_latest:

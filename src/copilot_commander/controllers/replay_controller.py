@@ -4,7 +4,16 @@ import json
 from dataclasses import dataclass
 from typing import Literal
 
+from copilot_commander.domain.replay_query import (
+    build_chip_filter_text,
+    parse_replay_query,
+    query_matches,
+)
 from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
+from copilot_commander.services.replay_insights import (
+    ReplayInsightsView,
+    compute_replay_insights,
+)
 from copilot_commander.services.replay_service import ReplayEntry, ReplayService, SessionReplay
 
 ReplayExportFormat = Literal["text", "json"]
@@ -32,6 +41,7 @@ class ReplayTranscriptEntryView:
     marker_kind: str | None
     lines: tuple[str, ...]
     is_selected: bool
+    agent_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +65,7 @@ class ReplayStateView:
     follow_latest: bool
     total_entries: int
     total_markers: int
+    insights: ReplayInsightsView | None = None
 
 
 class ReplayController:
@@ -198,6 +209,7 @@ class ReplayController:
                     marker_kind=entry.marker_kind,
                     lines=entry.lines,
                     is_selected=entry.ordinal == selected_index,
+                    agent_id=entry.agent_id,
                 )
                 for entry in state.transcript
             ),
@@ -207,6 +219,7 @@ class ReplayController:
             follow_latest=state.follow_latest,
             total_entries=state.total_entries,
             total_markers=state.total_markers,
+            insights=state.insights,
         )
 
     def _build_state(
@@ -218,7 +231,7 @@ class ReplayController:
         presentation: ReplayPresentation,
         follow_latest: bool,
     ) -> ReplayStateView:
-        query = filter_text.strip().casefold()
+        query = parse_replay_query(filter_text)
         initial_selection = (
             replay.entries[-1].ordinal if follow_latest and replay.entries else selected_index
         )
@@ -230,8 +243,8 @@ class ReplayController:
             )
             for entry in replay.entries
         )
-        if query:
-            transcript = tuple(entry for entry in transcript if query in self._search_blob(entry))
+        if not query.is_empty:
+            transcript = tuple(entry for entry in transcript if query_matches(query, entry))
         resolved_selection = initial_selection
         if resolved_selection not in {entry.ordinal for entry in transcript}:
             if transcript:
@@ -251,6 +264,7 @@ class ReplayController:
                     marker_kind=entry.marker_kind,
                     lines=entry.lines,
                     is_selected=entry.ordinal == resolved_selection,
+                    agent_id=entry.agent_id,
                 )
                 for entry in transcript
             )
@@ -265,6 +279,7 @@ class ReplayController:
             for marker in replay.jump_markers
             if marker.index in visible_ordinals
         )
+        insights = compute_replay_insights(replay.entries)
         return ReplayStateView(
             session_id=replay.session.id,
             agent_id=replay.session.agent_id,
@@ -277,6 +292,7 @@ class ReplayController:
             follow_latest=follow_latest,
             total_entries=len(replay.entries),
             total_markers=len(replay.jump_markers),
+            insights=insights,
         )
 
     def _build_transcript_entry(
@@ -320,6 +336,7 @@ class ReplayController:
             marker_kind=marker_kind,
             lines=lines,
             is_selected=entry.ordinal == selected_index,
+            agent_id=entry.agent_id,
         )
 
     def _build_parsed_log_view(
@@ -358,16 +375,29 @@ class ReplayController:
             return "warning"
         return None
 
-    def _search_blob(self, entry: ReplayTranscriptEntryView) -> str:
-        parts = (
-            entry.timestamp,
-            entry.kind,
-            entry.label,
-            entry.severity or "",
-            entry.marker_kind or "",
-            *entry.lines,
-        )
-        return "\n".join(parts).casefold()
+    @staticmethod
+    def apply_errors_only_chip() -> str:
+        """Filter-text snippet for the *errors only* quick filter."""
+
+        return build_chip_filter_text("errors_only")
+
+    @staticmethod
+    def apply_activity_chip() -> str:
+        """Filter-text snippet for the *activity only* quick filter."""
+
+        return build_chip_filter_text("activity")
+
+    @staticmethod
+    def apply_tool_calls_chip() -> str:
+        """Filter-text snippet for the *tool calls* quick filter."""
+
+        return build_chip_filter_text("tool_calls")
+
+    @staticmethod
+    def clear_chips() -> str:
+        """Filter-text snippet that clears all chips."""
+
+        return build_chip_filter_text("clear")
 
     def _normalize_json(self, payload_json: str) -> str:
         try:
