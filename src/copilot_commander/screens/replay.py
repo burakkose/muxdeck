@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime, timedelta
+from time import monotonic
 from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.timer import Timer
 from textual.widgets import Input, ListView
 from textual.worker import Worker, WorkerState
 
@@ -15,10 +18,12 @@ from copilot_commander.controllers.replay_controller import (
     ReplayPresentation,
 )
 from copilot_commander.screens.base import ShellScreen
+from copilot_commander.services.playback_controller import PlaybackState
 from copilot_commander.widgets.replay import (
     ReplayDetailPanel,
     ReplayFilterBar,
     ReplayMarkerListPanel,
+    ReplayProgressBar,
     ReplaySummaryPanel,
     ReplayTranscriptPanel,
 )
@@ -45,10 +50,14 @@ class ReplayScreen(ShellScreen):
         self._refreshing: bool = False
         self._filter_debounce_timer: object | None = None
         self._load_version: int = 0
+        self._playback: PlaybackState | None = None
+        self._playback_timer: Timer | None = None
+        self._playback_last_tick: float | None = None
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="replay-root"):
             yield ReplaySummaryPanel(id="replay-summary", classes="muted")
+            yield ReplayProgressBar(id="replay-progress", classes="muted")
             yield ReplayFilterBar(id="replay-filter-row")
             with Horizontal(id="replay-main", classes="frame"):
                 yield ReplayMarkerListPanel(widget_id="replay-markers", classes="divider-right")
@@ -171,6 +180,7 @@ class ReplayScreen(ShellScreen):
         session_id = self._session_id
         if session_id is not None:
             self.commander_app.remember_session_selection(session_id)
+        self._initialize_playback(state)
         self._refresh_panels()
         status = (
             f"session {session_id} | "
@@ -317,20 +327,170 @@ class ReplayScreen(ShellScreen):
         target = entry.label if entry is not None else label
         self.set_status(f"jumped to {label}: {target}")
 
+    def action_playback_toggle(self) -> None:
+        self._with_playback(
+            lambda state, pb: self.runtime.replay.playback_toggle(state, pb),
+            label_when_paused="paused",
+            label_when_playing="playing",
+        )
+
+    def action_playback_step_prev(self) -> None:
+        self._with_playback(
+            lambda state, pb: self.runtime.replay.playback_step(state, pb, direction=-1),
+            label_when_paused="step prev",
+            label_when_playing="step prev",
+        )
+
+    def action_playback_step_next(self) -> None:
+        self._with_playback(
+            lambda state, pb: self.runtime.replay.playback_step(state, pb, direction=1),
+            label_when_paused="step next",
+            label_when_playing="step next",
+        )
+
+    def action_playback_speed_up(self) -> None:
+        self._with_playback(
+            lambda state, pb: self.runtime.replay.playback_cycle_speed(state, pb, direction=1),
+            label_when_paused="speed",
+            label_when_playing="speed",
+        )
+
+    def action_playback_speed_down(self) -> None:
+        self._with_playback(
+            lambda state, pb: self.runtime.replay.playback_cycle_speed(state, pb, direction=-1),
+            label_when_paused="speed",
+            label_when_playing="speed",
+        )
+
+    def action_playback_jump_to_time(self) -> None:
+        if self._state is None or self._playback is None:
+            self.set_status("playback unavailable")
+            return
+        from copilot_commander.screens.jump_to_time import JumpToTimeScreen
+
+        playback = self._playback
+
+        def _on_done(target: datetime | None) -> None:
+            if target is None or self._state is None or self._playback is None:
+                self.set_status("jump cancelled")
+                return
+            new_state, new_pb = self.runtime.replay.playback_jump_to(
+                self._state, self._playback, target
+            )
+            self._apply_playback_result(new_state, new_pb)
+            self.set_status(f"jumped to {new_pb.clock.isoformat(timespec='seconds')}")
+
+        self.app.push_screen(
+            JumpToTimeScreen(
+                clock=playback.clock,
+                start=playback.start,
+                end=playback.end,
+            ),
+            _on_done,
+        )
+
+    def _initialize_playback(self, state: ReplayStateView) -> None:
+        playback = self.runtime.replay.initial_playback(state)
+        self._playback = playback
+        if playback is None:
+            self._stop_playback_timer()
+            return
+        # Render the playback view immediately so the progress bar shows
+        # an accurate paused position even before the user starts the
+        # clock.
+        self._state = self.runtime.replay.apply_playback(state, playback)
+        self._selected_index = self._state.selected_index
+
+    def _with_playback(
+        self,
+        action: Callable[
+            [ReplayStateView, PlaybackState],
+            tuple[ReplayStateView, PlaybackState],
+        ],
+        *,
+        label_when_paused: str,
+        label_when_playing: str,
+    ) -> None:
+        if self._state is None or self._playback is None:
+            self.set_status("playback unavailable")
+            return
+        new_state, new_pb = action(self._state, self._playback)
+        self._apply_playback_result(new_state, new_pb)
+        label = label_when_playing if new_pb.mode == "playing" else label_when_paused
+        self.set_status(f"{label} | {new_pb.speed.label}")
+
+    def _apply_playback_result(
+        self,
+        state: ReplayStateView,
+        playback: PlaybackState,
+    ) -> None:
+        self._state = state
+        self._playback = playback
+        self._selected_index = state.selected_index
+        self._release_follow_latest()
+        self._refresh_panels()
+        if playback.mode == "playing":
+            self._start_playback_timer()
+        else:
+            self._stop_playback_timer()
+
+    def _start_playback_timer(self) -> None:
+        if self._playback_timer is not None:
+            return
+        self._playback_last_tick = monotonic()
+        self._playback_timer = self.set_interval(0.1, self._on_playback_tick)
+
+    def _stop_playback_timer(self) -> None:
+        if self._playback_timer is not None:
+            self._playback_timer.stop()
+            self._playback_timer = None
+        self._playback_last_tick = None
+
+    def _on_playback_tick(self) -> None:
+        if self._state is None or self._playback is None:
+            self._stop_playback_timer()
+            return
+        if self._playback.mode != "playing":
+            self._stop_playback_timer()
+            return
+        from copilot_commander.services import playback_controller as playback_module
+
+        now = monotonic()
+        previous = self._playback_last_tick if self._playback_last_tick is not None else now
+        elapsed_seconds = max(0.0, now - previous)
+        self._playback_last_tick = now
+        next_pb = playback_module.advance(self._playback, timedelta(seconds=elapsed_seconds))
+        if next_pb is self._playback:
+            return
+        new_state = self.runtime.replay.apply_playback(self._state, next_pb)
+        self._state = new_state
+        self._playback = next_pb
+        self._selected_index = new_state.selected_index
+        self._refresh_panels()
+        if next_pb.mode == "paused":
+            self._stop_playback_timer()
+            self.set_status("playback ended")
+
+    def on_hide(self) -> None:
+        self._stop_playback_timer()
+
     def _refresh_panels(self) -> None:
         summary = self.query_one(ReplaySummaryPanel)
         markers = self.query_one(ReplayMarkerListPanel)
         transcript = self.query_one(ReplayTranscriptPanel)
         detail = self.query_one(ReplayDetailPanel)
+        progress = self.query_one(ReplayProgressBar)
         summary.set_state(self._state)
         if self._state is None:
             markers.set_markers((), selected_index=None)
             transcript.set_transcript(())
             detail.set_entry(None)
+            progress.set_state(None, ())
             return
         markers.set_markers(self._state.jump_markers, selected_index=self._state.selected_index)
         transcript.set_transcript(self._state.transcript)
         detail.set_entry(self._selected_entry())
+        progress.set_state(self._state.playback, self._state.jump_markers)
 
     def _release_follow_latest(self) -> None:
         if self._follow_latest:

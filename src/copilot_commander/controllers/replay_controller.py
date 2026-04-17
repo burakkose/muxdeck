@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Literal
 
 from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
+from copilot_commander.services import playback_controller as playback
+from copilot_commander.services.playback_controller import (
+    EmptyTimelineError,
+    PlaybackState,
+    StepDirection,
+)
 from copilot_commander.services.replay_service import (
     MultiSessionReplay,
     ReplayEntry,
@@ -19,6 +26,27 @@ ReplayPresentation = Literal["parsed", "raw"]
 
 _ACTIVITY_MARKER_KINDS = frozenset({"activity"})
 _PROBLEM_MARKER_KINDS = frozenset({"blocking", "error"})
+
+
+@dataclass(frozen=True, slots=True)
+class _TimestampedEntry:
+    """Lightweight :class:`playback.TimedEntry` adapter for view-side math."""
+
+    ordinal: int
+    timestamp: datetime
+
+
+def _to_playback_view(state: PlaybackState) -> PlaybackStateView:
+    multiplier = None if state.speed.is_max else state.speed.multiplier
+    return PlaybackStateView(
+        mode=state.mode,
+        speed_label=state.speed.label,
+        speed_multiplier=multiplier,
+        clock=state.clock.isoformat(),
+        start=state.start.isoformat(),
+        end=state.end.isoformat(),
+        progress=state.progress,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +80,23 @@ class ReplayExportIntent:
 
 
 @dataclass(frozen=True, slots=True)
+class PlaybackStateView:
+    """UI-facing view of :class:`PlaybackState` (no domain types)."""
+
+    mode: Literal["paused", "playing"]
+    speed_label: str
+    speed_multiplier: float | None
+    clock: str
+    start: str
+    end: str
+    progress: float
+
+    @property
+    def is_max_speed(self) -> bool:
+        return self.speed_multiplier is None
+
+
+@dataclass(frozen=True, slots=True)
 class ReplayStateView:
     session_id: str
     agent_id: str
@@ -66,6 +111,7 @@ class ReplayStateView:
     total_markers: int
     session_ids: tuple[str, ...] = ()
     agent_ids: tuple[str, ...] = ()
+    playback: PlaybackStateView | None = None
 
 
 class ReplayController:
@@ -120,6 +166,97 @@ class ReplayController:
     def jump_to_marker(self, state: ReplayStateView, marker_ordinal: int) -> ReplayStateView:
         marker = state.jump_markers[marker_ordinal]
         return self._with_selection(state, marker.index)
+
+    def initial_playback(self, state: ReplayStateView) -> PlaybackState | None:
+        """Build the initial paused playback state from a view, or ``None``.
+
+        Parses ISO timestamps off ``state.transcript`` to avoid coupling
+        callers to the domain :class:`ReplayEntry` type. Returns
+        ``None`` when the transcript is empty so the screen can skip
+        timer setup.
+        """
+
+        if not state.transcript:
+            return None
+        timestamps = tuple(datetime.fromisoformat(entry.timestamp) for entry in state.transcript)
+        try:
+            return playback.make_initial_state(
+                tuple(
+                    _TimestampedEntry(ordinal=entry.ordinal, timestamp=ts)
+                    for entry, ts in zip(state.transcript, timestamps, strict=True)
+                )
+            )
+        except EmptyTimelineError:
+            return None
+
+    def apply_playback(
+        self,
+        state: ReplayStateView,
+        playback_state: PlaybackState,
+    ) -> ReplayStateView:
+        """Sync ``state.selected_index`` and ``state.playback`` from playback."""
+
+        ordinal = self._selected_ordinal_from_view(state, playback_state)
+        view = _to_playback_view(playback_state)
+        synced = self._with_selection(state, ordinal)
+        return replace(synced, playback=view)
+
+    def playback_toggle(
+        self,
+        state: ReplayStateView,
+        playback_state: PlaybackState,
+    ) -> tuple[ReplayStateView, PlaybackState]:
+        next_pb = playback.toggle_play(playback_state)
+        return self.apply_playback(state, next_pb), next_pb
+
+    def playback_step(
+        self,
+        state: ReplayStateView,
+        playback_state: PlaybackState,
+        *,
+        direction: StepDirection,
+    ) -> tuple[ReplayStateView, PlaybackState]:
+        entries = self._timestamped_entries(state)
+        next_pb = playback.step(playback_state, entries, direction=direction)
+        return self.apply_playback(state, next_pb), next_pb
+
+    def playback_jump_to(
+        self,
+        state: ReplayStateView,
+        playback_state: PlaybackState,
+        target: datetime,
+    ) -> tuple[ReplayStateView, PlaybackState]:
+        next_pb = playback.jump_to(playback_state, target)
+        return self.apply_playback(state, next_pb), next_pb
+
+    def playback_cycle_speed(
+        self,
+        state: ReplayStateView,
+        playback_state: PlaybackState,
+        *,
+        direction: StepDirection = 1,
+    ) -> tuple[ReplayStateView, PlaybackState]:
+        next_pb = playback.cycle_speed(playback_state, direction=direction)
+        return self.apply_playback(state, next_pb), next_pb
+
+    def _selected_ordinal_from_view(
+        self,
+        state: ReplayStateView,
+        playback_state: PlaybackState,
+    ) -> int | None:
+        return playback.selected_ordinal(playback_state, self._timestamped_entries(state))
+
+    def _timestamped_entries(
+        self,
+        state: ReplayStateView,
+    ) -> tuple[_TimestampedEntry, ...]:
+        return tuple(
+            _TimestampedEntry(
+                ordinal=entry.ordinal,
+                timestamp=datetime.fromisoformat(entry.timestamp),
+            )
+            for entry in state.transcript
+        )
 
     def jump_to_next_marker(self, state: ReplayStateView) -> ReplayStateView | None:
         return self._jump_relative_marker(state, direction=1)
@@ -505,6 +642,7 @@ class ReplayController:
 
 
 __all__ = [
+    "PlaybackStateView",
     "ReplayController",
     "ReplayExportIntent",
     "ReplayJumpMarkerView",

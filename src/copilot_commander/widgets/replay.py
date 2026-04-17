@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -10,6 +11,7 @@ from textual.widgets import Input, ListItem, ListView, Static
 
 from copilot_commander.bindings import REPLAY_BINDINGS
 from copilot_commander.controllers import (
+    PlaybackStateView,
     ReplayJumpMarkerView,
     ReplayStateView,
     ReplayTranscriptEntryView,
@@ -109,6 +111,24 @@ class ReplayBoundListView(ListView):
 
     def action_open_multi_session_picker(self) -> None:
         self._invoke_screen_action("open_multi_session_picker")
+
+    def action_playback_toggle(self) -> None:
+        self._invoke_screen_action("playback_toggle")
+
+    def action_playback_step_prev(self) -> None:
+        self._invoke_screen_action("playback_step_prev")
+
+    def action_playback_step_next(self) -> None:
+        self._invoke_screen_action("playback_step_next")
+
+    def action_playback_speed_up(self) -> None:
+        self._invoke_screen_action("playback_speed_up")
+
+    def action_playback_speed_down(self) -> None:
+        self._invoke_screen_action("playback_speed_down")
+
+    def action_playback_jump_to_time(self) -> None:
+        self._invoke_screen_action("playback_jump_to_time")
 
 
 class ReplayMarkerListPanel(Vertical):
@@ -246,6 +266,66 @@ class ReplayTranscriptPanel(Vertical):
         self.post_message(self.TranscriptSelected(self._ordinals[index]))
 
 
+class ReplayProgressBar(Static):
+    """Single-line progress bar with marker ticks and speed/play glyph."""
+
+    BAR_WIDTH = 60
+
+    def set_state(
+        self,
+        playback: PlaybackStateView | None,
+        markers: Sequence[ReplayJumpMarkerView] = (),
+    ) -> None:
+        if playback is None:
+            self.update(Text("⏸ no playback", style=FG4))
+            return
+        width = self.BAR_WIDTH
+        position = max(0, min(width - 1, round(playback.progress * (width - 1))))
+        marker_columns = self._marker_columns(playback, markers, width)
+        bar = Text()
+        for col in range(width):
+            if col == position:
+                bar.append("●", style=f"bold {BLUE}")
+            elif col in marker_columns:
+                bar.append("│", style=_marker_style(marker_columns[col]))
+            else:
+                bar.append("─", style=FG4)
+        glyph = "▶" if playback.mode == "playing" else "⏸"
+        glyph_style = f"bold {GREEN}" if playback.mode == "playing" else FG4
+        line = Text()
+        line.append(playback.clock[11:19], style=FG4)
+        line.append(" ", style=FG4)
+        line.append(bar)
+        line.append(" ", style=FG4)
+        line.append(f"{glyph} ", style=glyph_style)
+        line.append(playback.speed_label, style=AQUA)
+        self.update(line)
+
+    def _marker_columns(
+        self,
+        playback: PlaybackStateView,
+        markers: Sequence[ReplayJumpMarkerView],
+        width: int,
+    ) -> dict[int, str]:
+        columns: dict[int, str] = {}
+        if not markers:
+            return columns
+        start = datetime.fromisoformat(playback.start)
+        end = datetime.fromisoformat(playback.end)
+        span = (end - start).total_seconds()
+        if span <= 0:
+            return columns
+        for marker in markers:
+            try:
+                ts = datetime.fromisoformat(marker.timestamp)
+            except ValueError:
+                continue
+            ratio = max(0.0, min(1.0, (ts - start).total_seconds() / span))
+            col = round(ratio * (width - 1))
+            columns.setdefault(col, marker.kind)
+        return columns
+
+
 class ReplaySummaryPanel(Static):
     def set_state(self, state: ReplayStateView | None) -> None:
         if state is None:
@@ -303,6 +383,7 @@ __all__ = [
     "ReplayDetailPanel",
     "ReplayFilterBar",
     "ReplayMarkerListPanel",
+    "ReplayProgressBar",
     "ReplaySummaryPanel",
     "ReplayTranscriptPanel",
 ]

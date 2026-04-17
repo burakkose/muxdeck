@@ -305,6 +305,105 @@ class ReplayControllerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.controller.load_multi_state(())
 
+    def test_load_state_defaults_playback_to_none(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        self.sessions.append_events(
+            bundle.session.id,
+            (
+                Event(
+                    occurred_at=datetime(2025, 1, 1, 12, 5, tzinfo=UTC),
+                    kind="custom.note",
+                    payload_json='{"message":"hello"}',
+                ),
+            ),
+        )
+        state = self.controller.load_state(session_id=bundle.session.id)
+        self.assertIsNone(state.playback)
+
+    def test_initial_playback_returns_none_for_empty_transcript(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        empty = self.controller.load_state(
+            session_id=bundle.session.id,
+            filter_text="this-token-will-match-nothing",
+        )
+        self.assertEqual(empty.transcript, ())
+        self.assertIsNone(self.controller.initial_playback(empty))
+
+    def test_apply_playback_updates_selected_index_and_view(self) -> None:
+        from datetime import timedelta
+
+        from copilot_commander.services.playback_controller import (
+            SPEED_DOUBLE,
+            PlaybackState,
+        )
+
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        ts1 = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        ts2 = datetime(2025, 1, 1, 12, 10, tzinfo=UTC)
+        self.sessions.append_events(
+            bundle.session.id,
+            (
+                Event(
+                    occurred_at=ts1,
+                    kind="custom.first",
+                    payload_json='{"i":1}',
+                ),
+                Event(
+                    occurred_at=ts2,
+                    kind="custom.second",
+                    payload_json='{"i":2}',
+                ),
+            ),
+        )
+        state = self.controller.load_state(
+            session_id=bundle.session.id,
+            follow_latest=False,
+            selected_index=0,
+        )
+        playback_state = self.controller.initial_playback(state)
+        assert playback_state is not None
+
+        ts1 = datetime.fromisoformat(state.transcript[0].timestamp)
+        ts2 = datetime.fromisoformat(state.transcript[-1].timestamp)
+        ts_mid = datetime.fromisoformat(state.transcript[1].timestamp) - timedelta(microseconds=1)
+        self.assertEqual(playback_state.start, ts1)
+        self.assertEqual(playback_state.end, ts2)
+
+        midway = PlaybackState(
+            mode="paused",
+            speed=SPEED_DOUBLE,
+            clock=ts_mid,
+            start=ts1,
+            end=ts2,
+        )
+        synced = self.controller.apply_playback(state, midway)
+        self.assertEqual(synced.selected_index, state.transcript[0].ordinal)
+        self.assertIsNotNone(synced.playback)
+        assert synced.playback is not None
+        self.assertEqual(synced.playback.speed_label, "2x")
+        self.assertEqual(synced.playback.mode, "paused")
+
+        endpoint = PlaybackState(
+            mode="paused",
+            speed=SPEED_DOUBLE,
+            clock=ts2,
+            start=ts1,
+            end=ts2,
+        )
+        ended = self.controller.apply_playback(state, endpoint)
+        self.assertEqual(ended.selected_index, state.transcript[-1].ordinal)
+        assert ended.playback is not None
+        self.assertEqual(ended.playback.progress, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
