@@ -19,10 +19,23 @@ class _FakeStore:
     extra_roots: tuple[_FakeRoot, ...] = field(default_factory=tuple)
 
 
-def _write_proc(proc_dir: Path, pid: int, ppid: int) -> None:
+def _write_proc(
+    proc_dir: Path,
+    pid: int,
+    ppid: int,
+    *,
+    cmdline: str = "/usr/local/lib/node_modules/@github/copilot/copilot",
+) -> None:
     d = proc_dir / str(pid)
     d.mkdir(parents=True, exist_ok=True)
     (d / "status").write_text(f"Name:\tsome-proc\nPPid:\t{ppid}\n", encoding="utf-8")
+    # cmdline is NUL-delimited in the kernel; split on spaces so
+    # tests can write natural-looking strings.
+    parts = cmdline.split(" ") if cmdline else []
+    payload = "\x00".join(parts)
+    if payload:
+        payload += "\x00"
+    (d / "cmdline").write_bytes(payload.encode("utf-8"))
 
 
 def _make_session(root: Path, session_id: str, *, lock_pid: int | None) -> Path:
@@ -131,3 +144,103 @@ class TestInuseLockResolver:
         # Target pid is not in the (bounded) chain → returns None
         # rather than looping forever.
         assert resolver.resolve_for_pid(999) is None
+
+    def test_stale_lock_with_dead_pid_is_skipped(self, tmp_path: Path) -> None:
+        """A lock file whose pid no longer exists must not be trusted.
+
+        Copilot occasionally crashes without cleaning ``inuse.<pid>.lock``,
+        and those fossils routinely outlive the sessions that created
+        them. Previously we'd happily return the stale session id;
+        the dashboard would then render that session's sub-agents
+        under whatever muxdeck agent happened to share the pane
+        hierarchy.
+        """
+        root = tmp_path / "sessions"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(root, "stale-sess", lock_pid=12345)
+        # Also publish a *live* lock in a different session so the
+        # resolver has something else to pick — the bug was returning
+        # "stale-sess" when a legitimate candidate existed.
+        _make_session(root, "live-sess", lock_pid=2000)
+        _write_proc(proc, pid=2000, ppid=1000)
+        _write_proc(proc, pid=1000, ppid=1)
+        store = _FakeStore(session_state_dir=root)
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.resolve_for_pid(1000) == "live-sess"
+
+    def test_recycled_non_copilot_pid_is_skipped(self, tmp_path: Path) -> None:
+        """If the OS reused the lock's pid for an unrelated process
+        (a user's editor, a background daemon…) we must not treat
+        the lock as proof of session ownership.
+        """
+        root = tmp_path / "sessions"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(root, "recycled", lock_pid=5555)
+        _write_proc(proc, pid=5555, ppid=1234, cmdline="/usr/bin/python /home/u/foo.py")
+        _write_proc(proc, pid=1234, ppid=1)
+        store = _FakeStore(session_state_dir=root)
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.resolve_for_pid(1234) is None
+
+    def test_resume_flag_overrides_stale_lock_path(self, tmp_path: Path) -> None:
+        """When Copilot re-used a pid under ``--resume=<uuid>``, the
+        lock path points at the *previous* session but the live
+        process belongs to the uuid in its cmdline. Trust the
+        cmdline.
+        """
+        root = tmp_path / "sessions"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        # Stale session directory still carries a lock for a pid
+        # the OS has since handed to a different copilot session.
+        _make_session(root, "old-session", lock_pid=2395)
+        resume_uuid = "73c19583-3363-499c-ac00-1ddb2c90c4ea"
+        _write_proc(
+            proc,
+            pid=2395,
+            ppid=2379,
+            cmdline=(
+                "/usr/local/lib/node_modules/@github/copilot/"
+                f"node_modules/@github/copilot-linux-x64/copilot --resume={resume_uuid}"
+            ),
+        )
+        _write_proc(proc, pid=2379, ppid=2324, cmdline="node /usr/local/bin/copilot")
+        _write_proc(proc, pid=2324, ppid=1, cmdline="zsh")
+        store = _FakeStore(session_state_dir=root)
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.resolve_for_pid(2324) == resume_uuid
+
+    def test_fresh_session_falls_back_to_lock_path(self, tmp_path: Path) -> None:
+        """Without ``--resume`` the lock path *is* the session id."""
+        root = tmp_path / "sessions"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(root, "fresh-session", lock_pid=8143)
+        _write_proc(
+            proc,
+            pid=8143,
+            ppid=8132,
+            cmdline="/usr/local/lib/node_modules/@github/copilot/copilot",
+        )
+        _write_proc(proc, pid=8132, ppid=6854, cmdline="node /usr/local/bin/copilot")
+        _write_proc(proc, pid=6854, ppid=1, cmdline="zsh")
+        store = _FakeStore(session_state_dir=root)
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.resolve_for_pid(6854) == "fresh-session"
+
+    def test_exact_pid_match_wins_over_descendant_match(self, tmp_path: Path) -> None:
+        """Prefer the lock whose pid literally equals the pane pid —
+        matches are more reliable than ancestor walks.
+        """
+        root = tmp_path / "sessions"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(root, "ancestor-sess", lock_pid=111)
+        _make_session(root, "exact-sess", lock_pid=500)
+        _write_proc(proc, pid=111, ppid=500)
+        _write_proc(proc, pid=500, ppid=1)
+        store = _FakeStore(session_state_dir=root)
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.resolve_for_pid(500) == "exact-sess"
