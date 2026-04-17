@@ -86,7 +86,7 @@ Screen {
 /* ── dashboard ───────────────────────────────────────────────────── */
 
 #dashboard-status-bar {
-    height: 1;
+    height: 2;
     background: #282828;
     padding: 0 1;
 }
@@ -103,6 +103,7 @@ Screen {
 #dashboard-agents {
     width: 36%;
     min-width: 30;
+    border-right: solid #504945;
 }
 
 #dashboard-sidebar {
@@ -120,12 +121,14 @@ Screen {
     height: 1fr;
     min-height: 6;
     border-top: solid #504945;
+    padding-top: 1;
 }
 
 #dashboard-alerts {
     height: auto;
     max-height: 8;
     border-top: solid #504945;
+    padding-top: 1;
 }
 
 /* ── attention ───────────────────────────────────────────────────── */

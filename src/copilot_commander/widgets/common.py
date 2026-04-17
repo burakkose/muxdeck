@@ -15,12 +15,34 @@ from copilot_commander.theme import (
     BLUE,
     BLUE_DIM,
     FG,
+    FG1,
     FG3,
     FG4,
     GREEN,
     ORANGE,
     RED,
     YELLOW,
+)
+
+# Keys that perform actions on agents / the fleet. Rendered with
+# higher visual weight in the hint footer to signal that the TUI is
+# a command surface, not a passive log viewer.
+ACTION_HINT_KEYS: frozenset[str] = frozenset(
+    {
+        "i",
+        "c",
+        "m",
+        "v",
+        "p",
+        "l",
+        "S",
+        "A",
+        "x",
+        "d",
+        "R",
+        "enter",
+        "↵",
+    }
 )
 
 # ── status glyphs ───────────────────────────────────────────────────
@@ -158,8 +180,12 @@ class KeyHintFooter(Static):
         footer.append(f" {self.status}", style=FG3)
         footer.append("  │", style=FG4)
         for hint in self.hints:
-            footer.append(f"  {hint.key}", style=f"bold {BLUE}")
-            footer.append(f" {hint.label}", style=FG4)
+            if hint.key in ACTION_HINT_KEYS:
+                footer.append(f"  {hint.key}", style=f"bold {ORANGE}")
+                footer.append(f" {hint.label}", style=f"bold {FG1}")
+            else:
+                footer.append(f"  {hint.key}", style=f"bold {BLUE}")
+                footer.append(f" {hint.label}", style=FG4)
         return footer
 
 

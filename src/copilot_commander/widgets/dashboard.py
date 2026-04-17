@@ -78,10 +78,10 @@ _HEALTH_TONE_STYLES: dict[str, tuple[str, str]] = {
 }
 
 _LOG_SOURCE_STYLES: dict[str, str] = {
-    "stdout": FG1,
+    "stdout": FG3,
     "stderr": f"bold {SEVERITY_ERROR}",
-    "tmux": FG2,
-    "tmux_capture": FG2,
+    "tmux": FG4,
+    "tmux_capture": FG4,
     # Agent speech is the signal; user prompts are context around it.
     "assistant": AQUA,
     "user": f"bold {PURPLE}",
@@ -139,6 +139,23 @@ def _status_display(agent: DashboardAgentListItemView) -> tuple[str, str]:
         OperatorStatusKind.COMPLETED: FG4,
     }
     return (operator_status.label, style_lookup[operator_status.kind])
+
+
+_STATUS_DOT_COLORS: dict[OperatorStatusKind, str] = {
+    OperatorStatusKind.WORKING: GREEN,
+    OperatorStatusKind.WAITING_INPUT: ORANGE,
+    OperatorStatusKind.BLOCKED: SEVERITY_ERROR,
+    OperatorStatusKind.REVIEW_READY: ORANGE,
+    OperatorStatusKind.FAILED: SEVERITY_ERROR,
+    OperatorStatusKind.STALE: YELLOW,
+    OperatorStatusKind.COMPLETED: FG4,
+}
+
+
+def _status_dot_style(agent: DashboardAgentListItemView) -> str:
+    """Raw color for the status dot in the agent list (no 'bold ' prefix)."""
+    operator_status = _resolved_operator_status(agent)
+    return _STATUS_DOT_COLORS.get(operator_status.kind, FG4)
 
 
 def _resolved_operator_status(agent: DashboardAgentListItemView) -> OperatorStatus:
@@ -248,25 +265,36 @@ class StatusBar(Static):
         line = Text()
         line.append(" ", style=FG4)
         line.append(tone_label, style=f"bold {tone_color}")
-        counters: list[tuple[str, int | str, str]] = [
-            ("agents", health.total_agents, FG1),
-            ("active", health.active_agents, GREEN),
-        ]
-        if health.attention_agents:
-            counters.append(("attn", health.attention_agents, ORANGE))
-        if health.waiting_input_agents:
-            counters.append(("wait", health.waiting_input_agents, ORANGE))
-        if health.error_agents:
-            counters.append(("err", health.error_agents, SEVERITY_ERROR))
-        if health.blocked_agents:
-            counters.append(("block", health.blocked_agents, SEVERITY_ERROR))
-        for label, value, style in counters:
-            line.append("  ", style=FG4)
-            line.append(f"{label}:", style=FG4)
-            line.append(str(value), style=f"bold {style}")
+
+        # Primary section: always show active count right after the
+        # tone so the eye lands on "how many are working" first.
+        line.append("   ")
+        line.append("● ", style=f"bold {GREEN}")
+        line.append(f"{health.active_agents} active", style=f"bold {GREEN}")
+
+        sep_text = " │ "
+
+        # Attention sections: only rendered when non-zero so the strip
+        # stays quiet under normal conditions.
+        attention_total = health.attention_agents + health.waiting_input_agents
+        if attention_total:
+            line.append(sep_text, style=FG4)
+            line.append("● ", style=f"bold {ORANGE}")
+            line.append(f"{attention_total} attention", style=f"bold {ORANGE}")
+
+        error_total = health.error_agents + health.blocked_agents
+        if error_total:
+            line.append(sep_text, style=FG4)
+            line.append("● ", style=f"bold {SEVERITY_ERROR}")
+            line.append(f"{error_total} errors", style=f"bold {SEVERITY_ERROR}")
+
+        # Trailing: total agents (quiet) and tokens (aqua accent).
+        line.append(sep_text, style=FG4)
+        line.append(f"{health.total_agents} agents", style=FG4)
+
         if "tokens" in metric_lookup:
-            line.append("  ", style=FG4)
-            line.append("tok:", style=FG4)
+            line.append(sep_text, style=FG4)
+            line.append("tok: ", style=FG4)
             line.append(str(metric_lookup["tokens"]), style=f"bold {AQUA}")
         self.update(line)
 
@@ -606,8 +634,8 @@ class AgentListPanel(Static, can_focus=True):
             padding=(0, 1, 0, 0),
         )
         table.add_column("", width=2, no_wrap=True)
+        table.add_column("", width=2, no_wrap=True)
         table.add_column("agent", min_width=10, no_wrap=True, ratio=3)
-        table.add_column("status", width=10, no_wrap=True)
         table.add_column("idle", width=5, no_wrap=True, justify="right")
         table.add_column("branch", min_width=8, no_wrap=True, ratio=2, overflow="ellipsis")
         for index, row in enumerate(self._rows):
@@ -623,15 +651,20 @@ class AgentListPanel(Static, can_focus=True):
                     expanded=agent.agent_id in self._expanded,
                     running_count=running_count,
                 )
-                status_text, status_style = _status_display(agent)
+                dot_color = _status_dot_style(agent)
                 br_style = PURPLE if is_selected else FG4
-                name_text = Text(display_name, style=f"bold {FG}" if is_selected else FG2)
+                name_text = Text(display_name, style=f"bold {FG}" if is_selected else f"bold {FG2}")
                 if agent.subtask_count > 0:
                     name_text.append(f" ⚡{agent.subtask_count}", style=f"bold {YELLOW}")
+                activity = (agent.current_activity or agent.task_title or "").strip()
+                if activity:
+                    if len(activity) > 40:
+                        activity = activity[:39] + "…"
+                    name_text.append(f"  {activity}", style=FG3)
                 table.add_row(
                     indicator,
+                    Text("●", style=f"bold {dot_color}"),
                     name_text,
-                    Text(status_text, style=status_style),
                     Text(_format_idle(agent.idle_seconds), style=FG4),
                     Text(agent.branch or "─", style=br_style, overflow="ellipsis"),
                     style=row_style,
@@ -664,15 +697,15 @@ def _render_subagent_header_row(
     indicator = Text("▎ ", style=f"bold {BLUE}") if is_selected else Text("  ")
     if row.loading:
         label = Text("    loading active sub-agents…", style=FG4)
-        return (indicator, label, Text(""), Text(""), Text(""))
+        return (indicator, Text(""), label, Text(""), Text(""))
     if row.count == 0:
         label = Text("    no active sub-agents", style=FG4)
-        return (indicator, label, Text(""), Text(""), Text(""))
+        return (indicator, Text(""), label, Text(""), Text(""))
     label = Text()
     label.append("    ", style=FG4)
     label.append("active sub-agents ", style=f"bold {FG3}")
     label.append(f"({row.count})", style=FG4)
-    return (indicator, label, Text(""), Text(""), Text(""))
+    return (indicator, Text(""), label, Text(""), Text(""))
 
 
 def _render_subagent_row(
@@ -680,8 +713,6 @@ def _render_subagent_row(
 ) -> tuple[Text, Text, Text, Text, Text]:
     # Only active sub-agents are rendered — completed ones are
     # filtered out upstream in :meth:`AgentListPanel._rebuild_rows`.
-    status_label = "running"
-    status_style = GREEN
     glyph = "↳"
     glyph_color = AQUA
     duration = _format_subagent_duration(subagent)
@@ -695,8 +726,8 @@ def _render_subagent_row(
     indicator = Text("▎ ", style=f"bold {BLUE}") if is_selected else Text("  ")
     return (
         indicator,
+        Text("●", style=f"bold {GREEN}"),
         label,
-        Text(status_label, style=status_style),
         Text(duration, style=FG4),
         Text("", style=FG4),
     )
@@ -742,13 +773,16 @@ class AgentDetailPanel(Static):
         item = agent.item
         operator_status = _resolved_operator_status(item)
         _, status_style = _status_display(item)
+        bold_status_style = (
+            status_style if status_style.startswith("bold ") else f"bold {status_style}"
+        )
 
         # ── header: name + status on one line ──
         glyph_char, glyph_color = status_glyph_parts(item.status)
         result.append(f"  {glyph_char} ", style=f"bold {glyph_color}")
         result.append(item.name, style=f"bold {FG}")
         result.append("  ")
-        result.append(operator_status.headline, style=status_style)
+        result.append(operator_status.headline, style=bold_status_style)
         # The task_title is the high-level work ("Investigating cache
         # bug"). Only render it on the header when it genuinely differs
         # from the tool-level activity we show below — otherwise we
@@ -1162,7 +1196,7 @@ def _highlight_log_line(content: str, default_style: str) -> Text:
         # Command prompts
         text.append(content, style=f"bold {GREEN}")
     else:
-        text.append(content, style=default_style)
+        text.append(content, style=FG3)
     return text
 
 
