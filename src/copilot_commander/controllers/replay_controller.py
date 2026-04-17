@@ -301,7 +301,12 @@ class ReplayController:
             )
             severity = self._severity_for_marker(marker_kind)
             lines = parsed_lines if presentation == "parsed" else raw_lines
-            if not lines:
+            if not lines and not raw_lines:
+                # Genuinely empty chunk — keep a hint for the detail
+                # panel. Don't fire this when ``parsed_lines`` collapsed
+                # to nothing because every parsed signal was redundant
+                # with the label/kind columns; in that case the header
+                # alone is cleaner than synthetic placeholder text.
                 lines = ("(empty log chunk)",)
         else:
             msg = "replay entry is missing both event and log chunk"
@@ -333,7 +338,15 @@ class ReplayController:
         signals.extend(("boundary", boundary.kind) for boundary in parsed.boundaries)
         if signals:
             label_kind, label = signals[0]
-            lines = tuple(f"{kind}: {value}" for kind, value in signals)
+            signal_lines = tuple(f"{kind}: {value}" for kind, value in signals)
+            # The transcript widget already displays ``marker_kind`` and
+            # ``label`` as separate columns, so the first signal — which
+            # is always ``f"{label_kind}: {label}"`` — is pure visual
+            # noise when rendered as a preview/detail line. Drop that
+            # redundant entry but keep any additional signals, which
+            # carry distinct ``kind``/``value`` pairs worth surfacing.
+            redundant = f"{label_kind}: {label}"
+            lines = tuple(line for line in signal_lines if line != redundant)
             return label, lines, label_kind
         fallback = raw_lines[:3] if raw_lines else ("(no parsed markers)",)
         return f"{entry.log_chunk.source}#{entry.log_chunk.sequence_no}", fallback, None
