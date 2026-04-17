@@ -105,7 +105,7 @@ class PaneViewerScreen(ShellScreen):
         # container without explicit sizing used to collapse the
         # viewer into a narrow strip.
         viewer = LivePaneViewer(widget_id="pane-viewer")
-        viewer.border_title = self._border_title()
+        viewer.border_title = self._format_title()
         yield viewer
 
     def on_mount(self) -> None:
@@ -241,7 +241,7 @@ class PaneViewerScreen(ShellScreen):
         except OSError:
             return
 
-    def _border_title(self) -> str:
+    def _format_title(self) -> str:
         mode = "● INPUT" if self._write_through else "VIEW"
         return f"[{mode}] Pane {self._pane_id} — {self._display_name}"
 
@@ -249,7 +249,7 @@ class PaneViewerScreen(ShellScreen):
         """Reflect the current mode in title, border, footer, status."""
         if self.is_mounted:
             viewer = self.query_one(LivePaneViewer)
-            viewer.border_title = self._border_title()
+            viewer.border_title = self._format_title()
             viewer.set_class(self._write_through, "-input-on")
             self.set_hints(_hints_for_mode(input_on=self._write_through))
         pipe = "streaming" if self._pipe_started else "static"
