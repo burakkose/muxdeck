@@ -183,6 +183,68 @@ class ReplayControllerTests(unittest.TestCase):
         self.assertIsNotNone(previous_marker)
         self.assertEqual(previous_marker.selected_index, 0)
 
+    def test_parsed_transcript_drops_redundant_first_signal_line(self) -> None:
+        """The first parsed signal line is pure duplication.
+
+        ``_build_parsed_log_view`` uses ``signals[0]`` as ``(label_kind,
+        label)`` for the kind and label columns, then formats every
+        signal as ``f"{kind}: {value}"`` into ``lines``. That makes the
+        first line always equal to ``f"{label_kind}: {label}"`` — which
+        the transcript widget already renders as separate columns,
+        producing a visible double-render like
+        ``activity reading (General-purpose activity: reading (General-purpose``.
+        The controller must drop that redundant first line but keep any
+        additional distinct signals.
+        """
+
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        captured_at = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        # Single-activity chunk — ``lines`` must be empty after the fix.
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Running command: pytest",),
+            captured_at=captured_at,
+        )
+        # Multi-signal chunk — the redundant activity line is dropped
+        # but the error signal from a later line is still retained.
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Running command: ruff\nfatal: merge conflict",),
+            captured_at=captured_at,
+        )
+
+        state = self.controller.load_state(
+            session_id=bundle.session.id,
+            presentation="parsed",
+        )
+
+        single_activity = next(
+            entry for entry in state.transcript if entry.label.startswith("running")
+        )
+        self.assertEqual(single_activity.marker_kind, "activity")
+        self.assertEqual(
+            single_activity.lines,
+            (),
+            "single-signal activity entries must not repeat the label as a preview line",
+        )
+
+        multi_signal = next(entry for entry in state.transcript if entry.marker_kind == "error")
+        redundant = f"{multi_signal.marker_kind}: {multi_signal.label}"
+        self.assertNotIn(
+            redundant,
+            multi_signal.lines,
+            "the first signal line must be dropped even when additional signals remain",
+        )
+        self.assertTrue(
+            multi_signal.lines,
+            "additional distinct signals must still be surfaced",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
