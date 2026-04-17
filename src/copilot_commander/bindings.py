@@ -152,6 +152,12 @@ REPLAY_BINDINGS: Final[list[BindingSpec]] = [
     Binding("e", "cycle_export_format", "Export", show=False),
     Binding("g", "load_latest", "Latest session", show=False),
     Binding("M", "open_multi_session_picker", "Multi-session", show=False),
+    Binding("space,p", "playback_toggle", "Play/pause", show=False),
+    Binding("comma", "playback_step_prev", "Step prev", show=False),
+    Binding("full_stop", "playback_step_next", "Step next", show=False),
+    Binding("greater_than_sign", "playback_speed_up", "Speed up", show=False),
+    Binding("less_than_sign", "playback_speed_down", "Speed down", show=False),
+    Binding("colon", "playback_jump_to_time", "Jump to time", show=False),
 ]
 
 REPLAY_HINTS = (
@@ -167,6 +173,10 @@ REPLAY_HINTS = (
     KeyHint("e", "export"),
     KeyHint("g", "latest"),
     KeyHint("M", "multi-session"),
+    KeyHint("space/p", "play/pause"),
+    KeyHint(",/.", "step"),
+    KeyHint("</>", "speed"),
+    KeyHint(":", "jump time"),
 )
 
 SESSIONS_BINDINGS: Final[list[BindingSpec]] = [

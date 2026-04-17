@@ -42,6 +42,12 @@ Run the operator console from a tmux window when possible. If your panes live on
   session ids to merge their events and log chunks into a single
   chronologically-ordered timeline with per-agent badges and
   `agent_switch` markers at every transition
+- `space` / `p` toggles play/pause for time-driven playback (the virtual
+  clock advances real-elapsed × speed and auto-pauses at the end)
+- `,` / `.` step the clock to the previous / next entry timestamp
+- `<` / `>` cycle the playback speed through `0.5×, 1×, 2×, 4×, MAX`
+- `:` opens a small modal that accepts an absolute `HH:MM[:SS]` time or a
+  signed delta like `+30s`, `-1m`, `+2h` and jumps the clock there
 
 ## Worktrees usage
 
