@@ -151,6 +151,7 @@ REPLAY_BINDINGS: Final[list[BindingSpec]] = [
     Binding("x", "jump_next_problem", "Next problem", show=False),
     Binding("e", "cycle_export_format", "Export", show=False),
     Binding("g", "load_latest", "Latest session", show=False),
+    Binding("M", "open_multi_session_picker", "Multi-session", show=False),
 ]
 
 REPLAY_HINTS = (
@@ -165,6 +166,7 @@ REPLAY_HINTS = (
     KeyHint("x", "problem"),
     KeyHint("e", "export"),
     KeyHint("g", "latest"),
+    KeyHint("M", "multi-session"),
 )
 
 SESSIONS_BINDINGS: Final[list[BindingSpec]] = [

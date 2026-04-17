@@ -35,6 +35,14 @@ Run the operator console from a tmux window when possible. If your panes live on
 - `5` switches to setup
 - `?` opens the in-app help screen
 
+### Replay
+
+- `m` focuses the marker list, `t` focuses the transcript
+- `M` opens the multi-session picker — enter a comma-separated list of
+  session ids to merge their events and log chunks into a single
+  chronologically-ordered timeline with per-agent badges and
+  `agent_switch` markers at every transition
+
 ## Worktrees usage
 
 - `j` / `k` move the worktree selection

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
-from copilot_commander.services.replay_service import ReplayEntry, ReplayService, SessionReplay
+from copilot_commander.services.replay_service import (
+    MultiSessionReplay,
+    ReplayEntry,
+    ReplayJumpMarker,
+    ReplayService,
+    SessionReplay,
+)
 
 ReplayExportFormat = Literal["text", "json"]
 ReplayPresentation = Literal["parsed", "raw"]
@@ -32,6 +39,8 @@ class ReplayTranscriptEntryView:
     marker_kind: str | None
     lines: tuple[str, ...]
     is_selected: bool
+    agent_id: str | None = None
+    agent_label: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +64,8 @@ class ReplayStateView:
     follow_latest: bool
     total_entries: int
     total_markers: int
+    session_ids: tuple[str, ...] = ()
+    agent_ids: tuple[str, ...] = ()
 
 
 class ReplayController:
@@ -78,6 +89,27 @@ class ReplayController:
             tmux_pane_id=tmux_pane_id,
         )
         return self._build_state(
+            replay,
+            selected_index=selected_index,
+            filter_text=filter_text,
+            presentation=presentation,
+            follow_latest=follow_latest,
+        )
+
+    def load_multi_state(
+        self,
+        session_ids: Sequence[str],
+        *,
+        selected_index: int | None = None,
+        filter_text: str = "",
+        presentation: ReplayPresentation = "parsed",
+        follow_latest: bool = False,
+    ) -> ReplayStateView:
+        if not session_ids:
+            msg = "load_multi_state requires at least one session id"
+            raise ValueError(msg)
+        replay = self._service.load_multi_session_replay(session_ids)
+        return self._build_multi_state(
             replay,
             selected_index=selected_index,
             filter_text=filter_text,
@@ -198,6 +230,8 @@ class ReplayController:
                     marker_kind=entry.marker_kind,
                     lines=entry.lines,
                     is_selected=entry.ordinal == selected_index,
+                    agent_id=entry.agent_id,
+                    agent_label=entry.agent_label,
                 )
                 for entry in state.transcript
             ),
@@ -207,6 +241,8 @@ class ReplayController:
             follow_latest=state.follow_latest,
             total_entries=state.total_entries,
             total_markers=state.total_markers,
+            session_ids=state.session_ids,
+            agent_ids=state.agent_ids,
         )
 
     def _build_state(
@@ -218,17 +254,92 @@ class ReplayController:
         presentation: ReplayPresentation,
         follow_latest: bool,
     ) -> ReplayStateView:
-        query = filter_text.strip().casefold()
-        initial_selection = (
-            replay.entries[-1].ordinal if follow_latest and replay.entries else selected_index
+        return self._assemble_state(
+            entries=replay.entries,
+            jump_markers=replay.jump_markers,
+            session_id=replay.session.id,
+            agent_id=replay.session.agent_id,
+            task_title=replay.session.task_title,
+            session_ids=(replay.session.id,),
+            agent_ids=(replay.session.agent_id,),
+            agent_label_map=None,
+            selected_index=selected_index,
+            filter_text=filter_text,
+            presentation=presentation,
+            follow_latest=follow_latest,
         )
+
+    def _build_multi_state(
+        self,
+        replay: MultiSessionReplay,
+        *,
+        selected_index: int | None,
+        filter_text: str,
+        presentation: ReplayPresentation,
+        follow_latest: bool,
+    ) -> ReplayStateView:
+        primary = replay.sessions[0]
+        agent_label_map = self._build_agent_label_map(replay.entries)
+        agent_ids = tuple(agent_label_map.keys())
+        return self._assemble_state(
+            entries=replay.entries,
+            jump_markers=replay.jump_markers,
+            session_id=primary.id,
+            agent_id=primary.agent_id,
+            task_title=primary.task_title,
+            session_ids=tuple(session.id for session in replay.sessions),
+            agent_ids=agent_ids,
+            agent_label_map=agent_label_map,
+            selected_index=selected_index,
+            filter_text=filter_text,
+            presentation=presentation,
+            follow_latest=follow_latest,
+        )
+
+    def _build_agent_label_map(self, entries: Sequence[ReplayEntry]) -> Mapping[str, str]:
+        labels: dict[str, str] = {}
+        for entry in entries:
+            agent_id = entry.agent_id
+            if agent_id is None or agent_id in labels:
+                continue
+            labels[agent_id] = self._agent_alias(len(labels))
+        return labels
+
+    def _agent_alias(self, index: int) -> str:
+        # Stable A, B, ..., Z, AA, AB, ... aliases per first-appearance order.
+        letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        if index < len(letters):
+            return letters[index]
+        head = letters[(index // len(letters)) - 1]
+        tail = letters[index % len(letters)]
+        return head + tail
+
+    def _assemble_state(
+        self,
+        *,
+        entries: Sequence[ReplayEntry],
+        jump_markers: Sequence[ReplayJumpMarker],
+        session_id: str,
+        agent_id: str,
+        task_title: str | None,
+        session_ids: tuple[str, ...],
+        agent_ids: tuple[str, ...],
+        agent_label_map: Mapping[str, str] | None,
+        selected_index: int | None,
+        filter_text: str,
+        presentation: ReplayPresentation,
+        follow_latest: bool,
+    ) -> ReplayStateView:
+        query = filter_text.strip().casefold()
+        initial_selection = entries[-1].ordinal if follow_latest and entries else selected_index
         transcript = tuple(
             self._build_transcript_entry(
                 entry,
                 presentation=presentation,
                 selected_index=initial_selection,
+                agent_label_map=agent_label_map,
             )
-            for entry in replay.entries
+            for entry in entries
         )
         if query:
             transcript = tuple(entry for entry in transcript if query in self._search_blob(entry))
@@ -251,6 +362,8 @@ class ReplayController:
                     marker_kind=entry.marker_kind,
                     lines=entry.lines,
                     is_selected=entry.ordinal == resolved_selection,
+                    agent_id=entry.agent_id,
+                    agent_label=entry.agent_label,
                 )
                 for entry in transcript
             )
@@ -262,21 +375,23 @@ class ReplayController:
                 label=marker.label,
                 kind=marker.kind,
             )
-            for marker in replay.jump_markers
+            for marker in jump_markers
             if marker.index in visible_ordinals
         )
         return ReplayStateView(
-            session_id=replay.session.id,
-            agent_id=replay.session.agent_id,
-            task_title=replay.session.task_title,
+            session_id=session_id,
+            agent_id=agent_id,
+            task_title=task_title,
             selected_index=resolved_selection,
             transcript=transcript,
             jump_markers=markers,
             presentation=presentation,
             filter_text=filter_text,
             follow_latest=follow_latest,
-            total_entries=len(replay.entries),
-            total_markers=len(replay.jump_markers),
+            total_entries=len(entries),
+            total_markers=len(jump_markers),
+            session_ids=session_ids,
+            agent_ids=agent_ids,
         )
 
     def _build_transcript_entry(
@@ -285,6 +400,7 @@ class ReplayController:
         *,
         presentation: ReplayPresentation,
         selected_index: int | None,
+        agent_label_map: Mapping[str, str] | None = None,
     ) -> ReplayTranscriptEntryView:
         marker_kind: str | None = None
         if entry.event is not None:
@@ -302,15 +418,13 @@ class ReplayController:
             severity = self._severity_for_marker(marker_kind)
             lines = parsed_lines if presentation == "parsed" else raw_lines
             if not lines and not raw_lines:
-                # Genuinely empty chunk — keep a hint for the detail
-                # panel. Don't fire this when ``parsed_lines`` collapsed
-                # to nothing because every parsed signal was redundant
-                # with the label/kind columns; in that case the header
-                # alone is cleaner than synthetic placeholder text.
                 lines = ("(empty log chunk)",)
         else:
             msg = "replay entry is missing both event and log chunk"
             raise ValueError(msg)
+        agent_label: str | None = None
+        if agent_label_map is not None and entry.agent_id is not None:
+            agent_label = agent_label_map.get(entry.agent_id)
         return ReplayTranscriptEntryView(
             ordinal=entry.ordinal,
             kind=entry.kind,
@@ -320,6 +434,8 @@ class ReplayController:
             marker_kind=marker_kind,
             lines=lines,
             is_selected=entry.ordinal == selected_index,
+            agent_id=entry.agent_id,
+            agent_label=agent_label,
         )
 
     def _build_parsed_log_view(

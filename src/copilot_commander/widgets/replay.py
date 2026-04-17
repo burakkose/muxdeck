@@ -14,7 +14,25 @@ from copilot_commander.controllers import (
     ReplayStateView,
     ReplayTranscriptEntryView,
 )
-from copilot_commander.theme import AQUA, BLUE, FG, FG1, FG4, GREEN, ORANGE, SEVERITY_ERROR, YELLOW
+from copilot_commander.theme import (
+    AQUA,
+    BLUE,
+    FG,
+    FG1,
+    FG4,
+    GREEN,
+    ORANGE,
+    PURPLE,
+    SEVERITY_ERROR,
+    YELLOW,
+)
+
+_AGENT_BADGE_PALETTE: tuple[str, ...] = (BLUE, GREEN, ORANGE, AQUA, YELLOW, PURPLE)
+
+
+def _agent_badge_style(agent_id: str) -> str:
+    digest = sum(ord(ch) for ch in agent_id)
+    return f"bold {_AGENT_BADGE_PALETTE[digest % len(_AGENT_BADGE_PALETTE)]}"
 
 
 def _marker_style(kind: str) -> str:
@@ -26,6 +44,8 @@ def _marker_style(kind: str) -> str:
         return f"bold {GREEN}"
     if kind == "boundary":
         return f"bold {AQUA}"
+    if kind == "agent_switch":
+        return f"bold {PURPLE}"
     return f"bold {YELLOW}"
 
 
@@ -86,6 +106,9 @@ class ReplayBoundListView(ListView):
 
     def action_load_latest(self) -> None:
         self._invoke_screen_action("load_latest")
+
+    def action_open_multi_session_picker(self) -> None:
+        self._invoke_screen_action("open_multi_session_picker")
 
 
 class ReplayMarkerListPanel(Vertical):
@@ -177,6 +200,11 @@ class ReplayTranscriptPanel(Vertical):
                 caret_style = f"bold {BLUE}" if entry.is_selected else FG4
                 line.append("▸ " if entry.is_selected else "  ", style=caret_style)
                 line.append(f"{entry.timestamp[11:19]} ", style=FG4)
+                if entry.agent_label is not None and entry.agent_id is not None:
+                    line.append(
+                        f"{entry.agent_label} ",
+                        style=_agent_badge_style(entry.agent_id),
+                    )
                 entry_style = _marker_style(entry.marker_kind or entry.severity or entry.kind)
                 line.append(f"{(entry.marker_kind or entry.kind):<8.8} ", style=entry_style)
                 line.append(f"{entry.label:<24.24} ", style=FG1)
@@ -246,6 +274,10 @@ class ReplaySummaryPanel(Static):
             line.append(" │ ", style=FG4)
             line.append("filter ", style=FG4)
             line.append(state.filter_text.strip(), style=YELLOW)
+        if len(state.agent_ids) > 1:
+            line.append(" │ ", style=FG4)
+            line.append(f"agents {len(state.agent_ids)} ", style=FG4)
+            line.append("(" + ", ".join(state.agent_ids) + ")", style=PURPLE)
         self.update(line)
 
 

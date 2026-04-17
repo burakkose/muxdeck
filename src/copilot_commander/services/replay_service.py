@@ -57,6 +57,14 @@ class SessionReplay:
     jump_markers: tuple[ReplayJumpMarker, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class MultiSessionReplay:
+    sessions: tuple[Session, ...]
+    contexts: tuple[SessionContextView, ...]
+    entries: tuple[ReplayEntry, ...]
+    jump_markers: tuple[ReplayJumpMarker, ...]
+
+
 class ReplayService:
     def __init__(
         self,
@@ -87,6 +95,44 @@ class ReplayService:
             jump_markers=self.build_jump_markers(replay),
         )
 
+    def load_multi_session_replay(self, session_ids: Sequence[str]) -> MultiSessionReplay:
+        if not session_ids:
+            msg = "load_multi_session_replay requires at least one session id"
+            raise ValueError(msg)
+        seen: set[str] = set()
+        ordered_ids: list[str] = []
+        for session_id in session_ids:
+            if session_id in seen:
+                continue
+            seen.add(session_id)
+            ordered_ids.append(session_id)
+        sessions: list[Session] = []
+        contexts: list[SessionContextView] = []
+        all_entries: list[ReplayEntry] = []
+        for session_id in ordered_ids:
+            context = self._sessions.assemble_session_context(session_id)
+            sessions.append(context.session)
+            contexts.append(context)
+            entries = self._build_entries(
+                session_id=session_id,
+                events=self._store.list_events_for_session(session_id),
+                log_chunks=self._store.list_log_chunks(session_id),
+            )
+            all_entries.extend(entries)
+        merged = self._merge_and_reordinal(all_entries)
+        replay = MultiSessionReplay(
+            sessions=tuple(sessions),
+            contexts=tuple(contexts),
+            entries=merged,
+            jump_markers=(),
+        )
+        return MultiSessionReplay(
+            sessions=replay.sessions,
+            contexts=replay.contexts,
+            entries=replay.entries,
+            jump_markers=self.build_multi_jump_markers(replay),
+        )
+
     def load_replay_by_locator(
         self,
         *,
@@ -105,8 +151,33 @@ class ReplayService:
         return self.load_session_replay(lookup.session.id)
 
     def build_jump_markers(self, replay: SessionReplay) -> tuple[ReplayJumpMarker, ...]:
-        markers: list[ReplayJumpMarker] = []
+        return self._build_entry_markers(replay.entries)
+
+    def build_multi_jump_markers(self, replay: MultiSessionReplay) -> tuple[ReplayJumpMarker, ...]:
+        markers = list(self._build_entry_markers(replay.entries))
+        distinct_agents = {entry.agent_id for entry in replay.entries if entry.agent_id is not None}
+        if len(distinct_agents) <= 1:
+            return tuple(sorted(markers, key=lambda marker: (marker.index, marker.kind)))
+        previous_agent: str | None = None
         for index, entry in enumerate(replay.entries):
+            current_agent = entry.agent_id
+            if current_agent is None:
+                continue
+            if previous_agent is not None and current_agent != previous_agent:
+                markers.append(
+                    ReplayJumpMarker(
+                        index=index,
+                        timestamp=entry.timestamp,
+                        label=f"{previous_agent}→{current_agent}",
+                        kind="agent_switch",
+                    )
+                )
+            previous_agent = current_agent
+        return tuple(sorted(markers, key=lambda marker: (marker.index, marker.kind)))
+
+    def _build_entry_markers(self, entries: Sequence[ReplayEntry]) -> tuple[ReplayJumpMarker, ...]:
+        markers: list[ReplayJumpMarker] = []
+        for index, entry in enumerate(entries):
             if entry.event is not None:
                 markers.append(
                     ReplayJumpMarker(
@@ -186,54 +257,65 @@ class ReplayService:
         events: Sequence[Event],
         log_chunks: Sequence[LogChunk],
     ) -> tuple[ReplayEntry, ...]:
-        unsorted: list[tuple[datetime, int, int, ReplayEntry]] = []
-        for event_index, event in enumerate(events):
-            unsorted.append(
-                (
-                    event.occurred_at,
-                    0,
-                    event_index,
-                    ReplayEntry(
-                        kind="event",
-                        timestamp=event.occurred_at,
-                        ordinal=0,
-                        session_id=session_id,
-                        agent_id=event.agent_id,
-                        event=event,
-                    ),
-                )
+        entries = list(
+            self._iter_entries(session_id=session_id, events=events, log_chunks=log_chunks)
+        )
+        return self._merge_and_reordinal(entries)
+
+    def _merge_and_reordinal(self, entries: Sequence[ReplayEntry]) -> tuple[ReplayEntry, ...]:
+        ordered = sorted(
+            enumerate(entries),
+            key=lambda item: (
+                item[1].timestamp,
+                0 if item[1].kind == "event" else 1,
+                item[1].session_id,
+                item[0],
+            ),
+        )
+        return tuple(
+            ReplayEntry(
+                kind=entry.kind,
+                timestamp=entry.timestamp,
+                ordinal=ordinal,
+                session_id=entry.session_id,
+                agent_id=entry.agent_id,
+                event=entry.event,
+                log_chunk=entry.log_chunk,
             )
-        for chunk_index, chunk in enumerate(log_chunks):
-            unsorted.append(
-                (
-                    chunk.captured_at,
-                    1,
-                    chunk_index,
-                    ReplayEntry(
-                        kind="log",
-                        timestamp=chunk.captured_at,
-                        ordinal=0,
-                        session_id=session_id,
-                        agent_id=chunk.agent_id,
-                        log_chunk=chunk,
-                    ),
-                )
-            )
-        ordered = sorted(unsorted, key=lambda item: (item[0], item[1], item[2]))
-        entries: list[ReplayEntry] = []
-        for ordinal, (_, _, _, entry) in enumerate(ordered):
-            entries.append(
+            for ordinal, (_, entry) in enumerate(ordered)
+        )
+
+    def _iter_entries(
+        self,
+        *,
+        session_id: str,
+        events: Sequence[Event],
+        log_chunks: Sequence[LogChunk],
+    ) -> Sequence[ReplayEntry]:
+        out: list[ReplayEntry] = []
+        for event in events:
+            out.append(
                 ReplayEntry(
-                    kind=entry.kind,
-                    timestamp=entry.timestamp,
-                    ordinal=ordinal,
-                    session_id=entry.session_id,
-                    agent_id=entry.agent_id,
-                    event=entry.event,
-                    log_chunk=entry.log_chunk,
+                    kind="event",
+                    timestamp=event.occurred_at,
+                    ordinal=0,
+                    session_id=session_id,
+                    agent_id=event.agent_id,
+                    event=event,
                 )
             )
-        return tuple(entries)
+        for chunk in log_chunks:
+            out.append(
+                ReplayEntry(
+                    kind="log",
+                    timestamp=chunk.captured_at,
+                    ordinal=0,
+                    session_id=session_id,
+                    agent_id=chunk.agent_id,
+                    log_chunk=chunk,
+                )
+            )
+        return out
 
     def _normalize_payload(self, payload_json: str) -> str:
         try:
@@ -244,6 +326,7 @@ class ReplayService:
 
 
 __all__ = [
+    "MultiSessionReplay",
     "ReplayEntry",
     "ReplayJumpMarker",
     "ReplayService",
