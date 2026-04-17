@@ -312,11 +312,30 @@ class DiscoveryService:
                     fallback=command_detection,
                 )
         with timed("discovery.capture_pane"):
-            captured_output = self._tmux.capture_pane(
+            history_output = self._tmux.capture_pane(
                 snapshot.pane_id,
                 start_line=self._capture_start_line,
                 join_wrapped_lines=True,
             )
+            # tmux ``capture-pane -S <history> -E -`` reads from the
+            # main screen's scrollback buffer. For panes whose foreground
+            # process uses the alternate screen buffer (any full-screen
+            # TUI — including ``copilot`` itself when launched from
+            # pwsh on WSL) the alternate buffer's live content is NOT
+            # part of that scrollback and is silently omitted, so the
+            # capture stays frozen on whatever the main buffer last
+            # showed (typically the ``copilot`` command the user typed
+            # at the shell prompt). A second capture without ``-S``/``-E``
+            # targets the currently visible screen, which is the
+            # alternate buffer when one is active. We append it so the
+            # log preview reflects what's really on screen and the
+            # equality check downstream sees fresh content as the TUI
+            # updates.
+            visible_output = self._tmux.capture_pane(
+                snapshot.pane_id,
+                join_wrapped_lines=True,
+            )
+            captured_output = _merge_history_and_visible(history_output, visible_output)
         session_evidence = None
         if captured_output.strip():
             with timed("discovery.interpret_output"):
@@ -371,6 +390,38 @@ class DiscoveryService:
             if isinstance(pane, TmuxPaneMetadata | TmuxPaneRecord)
             and getattr(pane, "pane_id", None) not in self._ignore_pane_ids
         )
+
+
+def _merge_history_and_visible(history: str, visible: str, /) -> str:
+    """Return history+visible, deduping when history already ends with visible.
+
+    For panes whose foreground process uses the *main* screen buffer the
+    history capture (``-S -<n> -E -``) already includes the currently
+    visible rows, so the visible re-capture is a strict suffix of
+    history; appending it would just duplicate the last ~24 lines. For
+    panes on the *alternate* screen buffer the history capture omits
+    the live alt content entirely, so appending visible is what
+    actually unblocks the pipeline.
+
+    Comparing on rstripped, non-empty lines makes the suffix detection
+    robust to trailing blank padding that tmux sometimes adds to one
+    capture but not the other.
+    """
+    if not visible.strip():
+        return history
+    if not history.strip():
+        return visible
+    visible_lines = [line.rstrip() for line in visible.splitlines() if line.strip()]
+    if not visible_lines:
+        return history
+    history_lines = [line.rstrip() for line in history.splitlines() if line.strip()]
+    if (
+        len(history_lines) >= len(visible_lines)
+        and history_lines[-len(visible_lines) :] == visible_lines
+    ):
+        return history
+    separator = "" if history.endswith("\n") else "\n"
+    return f"{history}{separator}{visible}"
 
 
 def _has_session_signal(evidence: CopilotSessionEvidence | None, /) -> bool:
