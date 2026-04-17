@@ -151,7 +151,7 @@ class TestAgentListTable:
         panel._agents = (agent,)
         panel._selected_index = 0
         table = panel._build_table()
-        row_cells = table.columns[1]._cells
+        row_cells = table.columns[2]._cells
         assert len(row_cells) == 1
         assert "Planner" in str(row_cells[0])
 
@@ -165,7 +165,7 @@ class TestAgentListTable:
         panel._agents = (a1, a2)
         panel._selected_index = 0
         table = panel._build_table()
-        cells = table.columns[1]._cells
+        cells = table.columns[2]._cells
         assert "wt-a" in str(cells[0])
         assert "wt-b" in str(cells[1])
 
@@ -188,7 +188,7 @@ class TestAgentListTable:
         panel._agents = (a1, a2)
         panel._selected_index = 0
         table = panel._build_table()
-        cells = table.columns[1]._cells
+        cells = table.columns[2]._cells
         assert "ParallelTransformation" in str(cells[0])
         assert "Expired Transactions" in str(cells[1])
 
@@ -200,7 +200,7 @@ class TestAgentListTable:
         panel._agents = (agent,)
         panel._selected_index = 0
         table = panel._build_table()
-        row_cells = table.columns[1]._cells
+        row_cells = table.columns[2]._cells
         assert "python" in str(row_cells[0])
 
     def test_attention_agent_gets_attention_row_style(self):
@@ -218,7 +218,8 @@ class TestAgentListTable:
         assert len(table.columns) == 5
 
     def test_short_status_column_shows_status(self):
-        """The status column (index 2) shows a readable status label."""
+        """Status column (index 1) carries a colored dot keyed to operator status."""
+        from copilot_commander.theme import GREEN
         from copilot_commander.widgets.dashboard import AgentListPanel
 
         agent = _agent(status=AgentStatus.RUNNING)
@@ -226,10 +227,13 @@ class TestAgentListTable:
         panel._agents = (agent,)
         panel._selected_index = 0
         table = panel._build_table()
-        status_cells = table.columns[2]._cells
-        assert "working" in str(status_cells[0])
+        status_cells = table.columns[1]._cells
+        cell = status_cells[0]
+        assert "●" in str(cell)
+        assert GREEN in str(cell.style)
 
     def test_attention_running_agent_shows_review_status(self):
+        from copilot_commander.theme import ORANGE
         from copilot_commander.widgets.dashboard import AgentListPanel
 
         agent = _agent(
@@ -241,10 +245,13 @@ class TestAgentListTable:
         panel._agents = (agent,)
         panel._selected_index = 0
         table = panel._build_table()
-        status_cells = table.columns[2]._cells
-        assert "review" in str(status_cells[0])
+        status_cells = table.columns[1]._cells
+        cell = status_cells[0]
+        assert "●" in str(cell)
+        assert ORANGE in str(cell.style)
 
     def test_stuck_agent_shows_stuck_status(self):
+        from copilot_commander.theme import YELLOW
         from copilot_commander.widgets.dashboard import AgentListPanel
 
         agent = _agent(status=AgentStatus.RUNNING, is_potentially_stuck=True)
@@ -252,8 +259,10 @@ class TestAgentListTable:
         panel._agents = (agent,)
         panel._selected_index = 0
         table = panel._build_table()
-        status_cells = table.columns[2]._cells
-        assert "stale" in str(status_cells[0])
+        status_cells = table.columns[1]._cells
+        cell = status_cells[0]
+        assert "●" in str(cell)
+        assert YELLOW in str(cell.style)
 
 
 class TestDashboardPanels:
