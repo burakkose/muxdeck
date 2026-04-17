@@ -89,7 +89,15 @@ class MonitoringThresholds:
     waiting_input_after_seconds: int = 30
     idle_after_seconds: int = 300
     attention_idle_after_seconds: int = 900
-    error_after_seconds: int = 0
+    # ERROR is a noisy classification: `_ERROR_PATTERNS` match any
+    # "error:" / "fatal:" / "exception" / "traceback" line in the
+    # scrollback, and those appear routinely in normal agent work
+    # (git output, compiler messages, stack traces being discussed).
+    # We require the pane to be genuinely quiet for a while *and* no
+    # fresh activity to be observed before flipping to ERROR, so
+    # ambient error text from routine tool calls doesn't mislabel a
+    # working agent as failed.
+    error_after_seconds: int = 300
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -370,7 +378,21 @@ def compute_status_heuristics(
     # the idle / RUNNING branches below handle classification. These
     # kinds can still surface as attention reasons once the agent
     # goes quiet (see the error / idle branches).
-    if payload.error_messages and idle_seconds >= applied_thresholds.error_after_seconds:
+    # ERROR classification is intentionally conservative. We only flip
+    # to ERROR when:
+    #   * the pane has no fresh activity (`activity_observed` is false),
+    #   * the idle gate (`error_after_seconds`) has elapsed, and
+    #   * error evidence is still present.
+    # Without these gates, a single `error:` line sitting in the
+    # scrollback from a routine `git` / build / tool call flagged the
+    # whole agent as failed even while it was actively producing
+    # output. See also `_has_activity_signal`, which no longer treats
+    # error lines as an activity signal for the same reason.
+    if (
+        payload.error_messages
+        and not payload.activity_observed
+        and idle_seconds >= applied_thresholds.error_after_seconds
+    ):
         reason = payload.error_messages[0]
         if blocking_kind is not None and blocking_kind != "waiting_for_confirmation":
             reason = _blocking_attention_reason(blocking_kind)
@@ -432,10 +454,11 @@ def _has_activity_signal(session_evidence: MonitoringEvidence | None, /) -> bool
     """Detect current activity from recent output only.
 
     Signals that persist forever in scrollback (session_id, historical usage,
-    old activity markers) are NOT indicators of current work.  We look for
-    evidence of *ongoing* work: recent activity markers near the tail of
-    output, recent "Esc to cancel" UI marker (shown during active generation),
-    or fresh error messages.
+    old activity markers, `error:` / `fatal:` lines from past tool output)
+    are NOT indicators of current work.  We look for evidence of *ongoing*
+    work: recent activity markers near the tail of output, or the Copilot
+    CLI's "Esc to cancel" UI marker which is only rendered while the agent
+    is actively generating.
     """
     if session_evidence is None:
         return False
@@ -472,8 +495,12 @@ def _has_activity_signal(session_evidence: MonitoringEvidence | None, /) -> bool
                 if span is not None and getattr(span, "start_line", 0) >= tail_threshold:
                     return True
 
-    # Fresh error messages (usually short-lived) count as activity.
-    return bool(session_evidence.error_messages)
+    # `error:` / `fatal:` / `exception` / `traceback` lines from the
+    # parser are captured from the entire scrollback and routinely
+    # appear in normal agent work (git output, compiler messages,
+    # stack traces being reviewed).  They are NOT a reliable signal
+    # of fresh activity, so we do not treat them as one.
+    return False
 
 
 def _extract_latest_activity(

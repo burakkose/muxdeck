@@ -53,6 +53,67 @@ class FakeRecorder:
 
 
 class MonitoringServiceTests(unittest.TestCase):
+    def test_compute_status_heuristics_stale_errors_do_not_flip_running(self) -> None:
+        """Scrollback `error:` lines must not flag a working agent as ERROR.
+
+        Regression: `_ERROR_PATTERNS` match routine tool output
+        (e.g. `error: could not apply <sha>` from a `git rebase`).
+        With fresh activity observed, the agent is actively working
+        and must stay RUNNING regardless of any ambient error text
+        in the scrollback.
+        """
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        result = compute_status_heuristics(
+            StatusHeuristicInput(
+                started_at=now - timedelta(minutes=5),
+                observed_at=now,
+                previous_last_activity_at=now - timedelta(seconds=5),
+                activity_observed=True,
+                error_messages=("error: could not apply 15c1344",),
+            )
+        )
+        assert result.status is AgentStatus.RUNNING
+        assert result.needs_attention is False
+
+    def test_compute_status_heuristics_errors_require_idle_gate(self) -> None:
+        """Errors alone must not flip to ERROR until the idle gate elapses.
+
+        Without fresh activity but well before the error idle gate,
+        the agent should remain RUNNING (or IDLE for long enough
+        quiet periods) rather than being prematurely labelled
+        failed on stale scrollback text.
+        """
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        thresholds = MonitoringThresholds(
+            idle_after_seconds=600,
+            attention_idle_after_seconds=1200,
+            error_after_seconds=300,
+        )
+        early = compute_status_heuristics(
+            StatusHeuristicInput(
+                started_at=now - timedelta(minutes=5),
+                observed_at=now,
+                previous_last_activity_at=now - timedelta(seconds=30),
+                activity_observed=False,
+                error_messages=("error: something",),
+            ),
+            thresholds=thresholds,
+        )
+        assert early.status is AgentStatus.RUNNING
+
+        late = compute_status_heuristics(
+            StatusHeuristicInput(
+                started_at=now - timedelta(minutes=20),
+                observed_at=now,
+                previous_last_activity_at=now - timedelta(minutes=10),
+                activity_observed=False,
+                error_messages=("error: something",),
+            ),
+            thresholds=thresholds,
+        )
+        assert late.status is AgentStatus.ERROR
+        assert late.needs_attention is True
+
     def test_compute_status_heuristics_waiting_for_input(self) -> None:
         now = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
         result = compute_status_heuristics(

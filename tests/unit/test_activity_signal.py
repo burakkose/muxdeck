@@ -112,11 +112,19 @@ class TestActivitySignalRecency:
 
 
 class TestActivitySignalErrors:
-    """Error messages should count as activity."""
+    """Error messages alone must NOT count as activity.
 
-    def test_error_messages_signal_activity(self) -> None:
+    `_ERROR_PATTERNS` match any `error:` / `fatal:` / `exception` /
+    `traceback` line in the scrollback, which routinely appears in
+    normal agent work (git output, compiler messages, stack traces
+    being reviewed).  Treating those as activity locked agents in
+    ERROR status while they were actually idle at a prompt — the
+    exact bug this regression guards against.
+    """
+
+    def test_error_messages_do_not_signal_activity(self) -> None:
         ev = FakeEvidence(error_messages=("something failed",))
-        assert _has_activity_signal(ev) is True
+        assert _has_activity_signal(ev) is False
 
     def test_empty_error_messages_no_activity(self) -> None:
         ev = FakeEvidence(error_messages=())
