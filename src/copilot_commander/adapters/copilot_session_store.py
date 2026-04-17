@@ -74,21 +74,139 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 def _parse_workspace_yaml(path: Path) -> dict[str, str]:
-    """Minimal YAML parser for flat key: value files (no nesting)."""
+    """Minimal YAML parser for flat key: value files.
+
+    Copilot CLI writes multi-line fields — notably ``summary`` for
+    agents launched through the ACP backend — using YAML block scalar
+    syntax (``|``, ``|-``, ``|+``, ``>``, ``>-``, ``>+``). The previous
+    partition-on-first-colon approach stored the scalar indicator
+    literally (``summary: |-``), so those sessions surfaced the string
+    ``|-`` as their summary in the UI.
+
+    This parser stays dependency-free but correctly collects indented
+    continuation lines after a block-scalar indicator. The parser is
+    intentionally limited to the shape Copilot CLI emits — flat
+    top-level keys, no nesting, no anchors, no aliases — so anything
+    that looks like a YAML feature beyond block scalars is still
+    passed through unchanged.
+    """
     result: dict[str, str] = {}
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return result
-    for line in text.splitlines():
-        if ":" not in line:
+
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        # Top-level keys start at column 0; anything indented here
+        # without a preceding block-scalar indicator is malformed for
+        # our flat schema and is silently skipped.
+        if not stripped or stripped.startswith("#") or line[:1].isspace() or ":" not in line:
+            i += 1
             continue
         key, _, value = line.partition(":")
         key = key.strip()
         value = value.strip()
-        if key and value:
+        # Strip an inline trailing comment so e.g. ``key: value # note``
+        # doesn't capture the comment as part of the value.
+        if value and not value.startswith(("|", ">")):
+            # Only strip comments when clearly separated; avoid cutting
+            # inside unquoted URLs or timestamps.
+            comment_at = value.find(" #")
+            if comment_at != -1:
+                value = value[:comment_at].rstrip()
+        if not key:
+            i += 1
+            continue
+        if value in {"|", "|-", "|+", ">", ">-", ">+"}:
+            indicator = value
+            block_lines, consumed = _read_block_scalar(lines, i + 1)
+            result[key] = _apply_block_scalar(block_lines, indicator)
+            i += 1 + consumed
+            continue
+        if value:
+            # Drop surrounding quotes that the minimal parser would
+            # otherwise leak into downstream UI.
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                value = value[1:-1]
             result[key] = value
+        i += 1
     return result
+
+
+def _read_block_scalar(lines: list[str], start: int) -> tuple[list[str], int]:
+    """Collect the indented continuation lines of a YAML block scalar.
+
+    Returns the raw block lines (with their original leading whitespace)
+    and the number of source lines consumed. The block ends at the first
+    non-empty line that is not indented relative to column 0 — this
+    matches Copilot CLI's flat schema where the next top-level key marks
+    the end of the scalar.
+    """
+    collected: list[str] = []
+    j = start
+    while j < len(lines):
+        line = lines[j]
+        if line == "":
+            collected.append("")
+            j += 1
+            continue
+        if not line[:1].isspace():
+            break
+        collected.append(line)
+        j += 1
+    # Trim trailing empty lines so they don't get mistakenly included
+    # when we strip or clip later.
+    while collected and collected[-1] == "":
+        collected.pop()
+    return collected, j - start
+
+
+def _apply_block_scalar(block_lines: list[str], indicator: str) -> str:
+    """Apply chomping and folding rules for the supported indicators.
+
+    * ``|`` / ``|-`` / ``|+`` — literal block: preserve line breaks.
+    * ``>`` / ``>-`` / ``>+`` — folded block: collapse single newlines
+      between non-empty content lines into single spaces; keep blank
+      lines as hard breaks.
+
+    Chomping:
+      * ``-`` strips every trailing newline (default in our output).
+      * ``+`` keeps them all.
+      * bare indicator keeps a single trailing newline.
+
+    The parser doesn't need to preserve trailing newlines for the UI's
+    purposes, so we emit the scalar without any trailing ``\\n`` and
+    let callers decide whether to keep blank-line structure.
+    """
+    if not block_lines:
+        return ""
+    indent = min(
+        (len(line) - len(line.lstrip(" ")) for line in block_lines if line.strip()),
+        default=0,
+    )
+    dedented = [line[indent:] if len(line) >= indent else line for line in block_lines]
+    literal = indicator.startswith("|")
+    if literal:
+        return "\n".join(dedented).rstrip("\n")
+    # Folded: collapse runs of non-empty lines into space-separated
+    # paragraphs, preserve empty lines as paragraph breaks.
+    paragraphs: list[str] = []
+    buffer: list[str] = []
+    for line in dedented:
+        if line == "":
+            if buffer:
+                paragraphs.append(" ".join(buffer))
+                buffer = []
+            paragraphs.append("")
+        else:
+            buffer.append(line)
+    if buffer:
+        paragraphs.append(" ".join(buffer))
+    return "\n".join(paragraphs).rstrip("\n")
 
 
 def _read_last_valid_event(events_path: Path, max_bytes: int = 8192) -> dict[str, object] | None:
