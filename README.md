@@ -59,6 +59,20 @@ Run the operator console from a tmux window when possible. If your panes live on
 - `d` deletes the selected worktree
 - `P` prunes stale worktrees
 
+## Replay usage
+
+- `j` / `k` / `↑` / `↓` move the transcript or marker selection
+- `/` focuses the transcript filter; `esc` returns focus to the list
+- `m` focuses the marker list, `t` focuses the transcript
+- `v` toggles parsed vs raw chunk view
+- `f` toggles follow-latest mode
+- `n` / `N` jump to the next / previous marker
+- `a` jumps to the next activity marker, `x` to the next problem (error or blocking)
+- `F` jumps to the next file edit; the diff panel renders the unified diff for the
+  selected file mutation when the session is tied to a worktree
+- `e` cycles between text and JSON export
+- `g` reloads the latest session
+
 ## Discovery model
 
 - Discovery uses `tmux list-panes -a`, so it scans panes across **all windows** on the current tmux server, not just the current window.

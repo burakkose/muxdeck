@@ -227,6 +227,24 @@ class ReplayService:
                         kind="error",
                     )
                 )
+            for mutation in parsed.file_mutations:
+                markers.append(
+                    ReplayJumpMarker(
+                        index=index,
+                        timestamp=entry.timestamp,
+                        label=mutation.path,
+                        kind="file_edit",
+                    )
+                )
+            for tool in parsed.tool_calls:
+                markers.append(
+                    ReplayJumpMarker(
+                        index=index,
+                        timestamp=entry.timestamp,
+                        label=tool.name,
+                        kind="tool_call",
+                    )
+                )
         return tuple(markers)
 
     def export_transcript_text(self, replay: SessionReplay) -> str:

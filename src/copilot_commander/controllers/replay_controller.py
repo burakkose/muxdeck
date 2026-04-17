@@ -26,6 +26,21 @@ ReplayPresentation = Literal["parsed", "raw"]
 
 _ACTIVITY_MARKER_KINDS = frozenset({"activity"})
 _PROBLEM_MARKER_KINDS = frozenset({"blocking", "error"})
+_FILE_EDIT_MARKER_KINDS = frozenset({"file_edit"})
+
+# Precedence for the entry's primary ``marker_kind``/``label`` when
+# multiple parsed signals fire on the same log chunk. Higher-signal,
+# operator-actionable kinds win: a file mutation or tool call is what
+# the operator usually cares about, then errors / blockers, and only
+# then activity / boundary fluff.
+_MARKER_KIND_PRIORITY: tuple[str, ...] = (
+    "file_edit",
+    "tool_call",
+    "error",
+    "blocking",
+    "activity",
+    "boundary",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +84,7 @@ class ReplayTranscriptEntryView:
     is_selected: bool
     agent_id: str | None = None
     agent_label: str | None = None
+    file_path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +128,9 @@ class ReplayStateView:
     session_ids: tuple[str, ...] = ()
     agent_ids: tuple[str, ...] = ()
     playback: PlaybackStateView | None = None
+    files_touched: int = 0
+    tool_calls: int = 0
+    worktree_path: str | None = None
 
 
 class ReplayController:
@@ -270,6 +289,9 @@ class ReplayController:
     def jump_to_next_problem(self, state: ReplayStateView) -> ReplayStateView | None:
         return self._jump_relative_marker(state, direction=1, kinds=_PROBLEM_MARKER_KINDS)
 
+    def jump_to_next_file_edit(self, state: ReplayStateView) -> ReplayStateView | None:
+        return self._jump_relative_marker(state, direction=1, kinds=_FILE_EDIT_MARKER_KINDS)
+
     def build_export_intent(
         self,
         state: ReplayStateView,
@@ -369,6 +391,7 @@ class ReplayController:
                     is_selected=entry.ordinal == selected_index,
                     agent_id=entry.agent_id,
                     agent_label=entry.agent_label,
+                    file_path=entry.file_path,
                 )
                 for entry in state.transcript
             ),
@@ -380,6 +403,9 @@ class ReplayController:
             total_markers=state.total_markers,
             session_ids=state.session_ids,
             agent_ids=state.agent_ids,
+            files_touched=state.files_touched,
+            tool_calls=state.tool_calls,
+            worktree_path=state.worktree_path,
         )
 
     def _build_state(
@@ -404,6 +430,9 @@ class ReplayController:
             filter_text=filter_text,
             presentation=presentation,
             follow_latest=follow_latest,
+            worktree_path=(
+                replay.context.worktree.path if replay.context.worktree is not None else None
+            ),
         )
 
     def _build_multi_state(
@@ -416,6 +445,7 @@ class ReplayController:
         follow_latest: bool,
     ) -> ReplayStateView:
         primary = replay.sessions[0]
+        primary_context = replay.contexts[0] if replay.contexts else None
         agent_label_map = self._build_agent_label_map(replay.entries)
         agent_ids = tuple(agent_label_map.keys())
         return self._assemble_state(
@@ -431,6 +461,11 @@ class ReplayController:
             filter_text=filter_text,
             presentation=presentation,
             follow_latest=follow_latest,
+            worktree_path=(
+                primary_context.worktree.path
+                if primary_context is not None and primary_context.worktree is not None
+                else None
+            ),
         )
 
     def _build_agent_label_map(self, entries: Sequence[ReplayEntry]) -> Mapping[str, str]:
@@ -466,6 +501,7 @@ class ReplayController:
         filter_text: str,
         presentation: ReplayPresentation,
         follow_latest: bool,
+        worktree_path: str | None = None,
     ) -> ReplayStateView:
         query = filter_text.strip().casefold()
         initial_selection = entries[-1].ordinal if follow_latest and entries else selected_index
@@ -501,6 +537,7 @@ class ReplayController:
                     is_selected=entry.ordinal == resolved_selection,
                     agent_id=entry.agent_id,
                     agent_label=entry.agent_label,
+                    file_path=entry.file_path,
                 )
                 for entry in transcript
             )
@@ -515,6 +552,8 @@ class ReplayController:
             for marker in jump_markers
             if marker.index in visible_ordinals
         )
+        files_touched = sum(1 for marker in jump_markers if marker.kind == "file_edit")
+        tool_call_count = sum(1 for marker in jump_markers if marker.kind == "tool_call")
         return ReplayStateView(
             session_id=session_id,
             agent_id=agent_id,
@@ -529,6 +568,9 @@ class ReplayController:
             total_markers=len(jump_markers),
             session_ids=session_ids,
             agent_ids=agent_ids,
+            files_touched=files_touched,
+            tool_calls=tool_call_count,
+            worktree_path=worktree_path,
         )
 
     def _build_transcript_entry(
@@ -540,13 +582,14 @@ class ReplayController:
         agent_label_map: Mapping[str, str] | None = None,
     ) -> ReplayTranscriptEntryView:
         marker_kind: str | None = None
+        file_path: str | None = None
         if entry.event is not None:
             label = entry.event.kind
             severity = entry.event.severity
             lines: tuple[str, ...] = (self._normalize_json(entry.event.payload_json),)
         elif entry.log_chunk is not None:
             raw_lines = tuple(entry.log_chunk.content.splitlines())
-            parsed_label, parsed_lines, marker_kind = self._build_parsed_log_view(entry)
+            parsed_label, parsed_lines, marker_kind, file_path = self._build_parsed_log_view(entry)
             label = (
                 parsed_label
                 if presentation == "parsed"
@@ -573,36 +616,49 @@ class ReplayController:
             is_selected=entry.ordinal == selected_index,
             agent_id=entry.agent_id,
             agent_label=agent_label,
+            file_path=file_path,
         )
 
     def _build_parsed_log_view(
         self,
         entry: ReplayEntry,
-    ) -> tuple[str, tuple[str, ...], str | None]:
+    ) -> tuple[str, tuple[str, ...], str | None, str | None]:
         if entry.log_chunk is None:
             msg = "expected log chunk"
             raise ValueError(msg)
         parsed = parse_copilot_output(entry.log_chunk.content)
         raw_lines = tuple(line for line in entry.log_chunk.content.splitlines() if line.strip())
+        # Collect signals as (kind, value) pairs. Order within this
+        # list only controls the *secondary* signal lines — the primary
+        # ``marker_kind``/``label`` is picked by ``_MARKER_KIND_PRIORITY``.
         signals: list[tuple[str, str]] = []
+        signals.extend(("file_edit", f"{m.action}: {m.path}") for m in parsed.file_mutations)
+        signals.extend(("tool_call", t.name) for t in parsed.tool_calls)
         signals.extend(("error", error.message) for error in parsed.errors)
         signals.extend(("blocking", issue.kind) for issue in parsed.blocking_issues)
         signals.extend(("activity", marker.activity) for marker in parsed.activity_markers)
         signals.extend(("boundary", boundary.kind) for boundary in parsed.boundaries)
         if signals:
-            label_kind, label = signals[0]
+            primary = self._pick_primary_signal(signals)
+            label_kind, label = primary
+            file_path = parsed.file_mutations[0].path if parsed.file_mutations else None
             signal_lines = tuple(f"{kind}: {value}" for kind, value in signals)
             # The transcript widget already displays ``marker_kind`` and
-            # ``label`` as separate columns, so the first signal — which
-            # is always ``f"{label_kind}: {label}"`` — is pure visual
-            # noise when rendered as a preview/detail line. Drop that
-            # redundant entry but keep any additional signals, which
-            # carry distinct ``kind``/``value`` pairs worth surfacing.
+            # ``label`` as separate columns; drop the line that duplicates
+            # the chosen primary signal but keep the rest.
             redundant = f"{label_kind}: {label}"
             lines = tuple(line for line in signal_lines if line != redundant)
-            return label, lines, label_kind
+            return label, lines, label_kind, file_path
         fallback = raw_lines[:3] if raw_lines else ("(no parsed markers)",)
-        return f"{entry.log_chunk.source}#{entry.log_chunk.sequence_no}", fallback, None
+        return f"{entry.log_chunk.source}#{entry.log_chunk.sequence_no}", fallback, None, None
+
+    @staticmethod
+    def _pick_primary_signal(signals: list[tuple[str, str]]) -> tuple[str, str]:
+        for kind in _MARKER_KIND_PRIORITY:
+            for candidate_kind, candidate_value in signals:
+                if candidate_kind == kind:
+                    return candidate_kind, candidate_value
+        return signals[0]
 
     def _severity_for_marker(self, marker_kind: str | None) -> str | None:
         if marker_kind == "error":

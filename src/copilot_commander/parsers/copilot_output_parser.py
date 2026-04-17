@@ -159,6 +159,76 @@ _ACTIVITY_PATTERNS: tuple[tuple[str, str, str], ...] = (
         "tool_use",
     ),
 )
+# File-mutation banners. Heuristics — grounded in the existing
+# activity patterns (file_read / file_write) and common Copilot CLI /
+# agent output prefixes ("Editing file:", "Created file:", "Deleted ...",
+# "Renamed X -> Y"). Each pattern captures the path in group ``path``.
+# Keep matching strict (literal banner verbs at line start, optional
+# emoji prefix) so we don't confuse free-form prose mentioning a path
+# with an actual mutation banner.
+_FileAction = Literal["add", "modify", "delete", "rename"]
+_FILE_MUTATION_PATTERNS: tuple[tuple[_FileAction, re.Pattern[str]], ...] = (
+    (
+        "add",
+        re.compile(
+            r"^(?:[\u2728\u2705\U0001f4dd\U0001f4c4\U0001f4c1]\s*)?"
+            r"(?:Created file|New file|Wrote file|Created|Added|Wrote)"
+            r"\s*[: ]\s*[`'\"]?(?P<path>(?=[^\s]*[/.])[^\s`'\"]{2,200})",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "modify",
+        re.compile(
+            r"^(?:[\u270f\u2702\U0001f527\U0001f4dd]\s*)?"
+            r"(?:Editing file|Edited|Modified|Modifying|Updated|Updating|Patched|Patching|Editing)"
+            r"\s*[: ]\s*[`'\"]?(?P<path>(?=[^\s]*[/.])[^\s`'\"]{2,200})",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "delete",
+        re.compile(
+            r"^(?:[\U0001f5d1\u274c\U0001f5d1\ufe0f]\s*)?"
+            r"(?:Deleted file|Removed file|Deleted|Removed|Removing)"
+            r"\s*[: ]\s*[`'\"]?(?P<path>(?=[^\s]*[/.])[^\s`'\"]{2,200})",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "rename",
+        re.compile(
+            r"^(?:[\U0001f504\u21aa]\s*)?"
+            r"(?:Renamed|Renaming|Moved|Moving)"
+            r"\s*[: ]?\s*[`'\"]?(?P<path>(?=[^\s]*[/.])[^\s`'\"]{2,200})"
+            r"[`'\"]?\s*(?:->|=>|\u2192|to)\s*[`'\"]?(?P<dest>(?=[^\s]*[/.])[^\s`'\"]{2,200})",
+            re.IGNORECASE,
+        ),
+    ),
+)
+# Tool-call banners. Patterns match common framings: a labelled
+# "Tool:" / "Calling tool:" prefix, an emoji-banner ("🔧 tool: foo"),
+# Bash-style "Bash(command='…')" calls already used by the activity
+# parser, and the CLI-style "<tool_use name=...>" markers.
+_TOOL_CALL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"^(?:\U0001f527\s*)?(?:Calling tool|Tool call|Tool|Using tool)"
+        r"\s*[: ]\s*(?P<name>[A-Za-z_][\w.-]{1,80})"
+        r"(?:\s*\((?P<args>[^)]{0,200})\))?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?P<name>Bash|Read|Write|Edit|Grep|Glob|Search)"
+        r"\((?P<args>[^)]{0,200})\)",
+    ),
+    re.compile(
+        r"<tool_use\s+name=['\"](?P<name>[A-Za-z_][\w.-]{1,80})['\"]"
+        r"(?:[^>]*?args=['\"](?P<args>[^'\"]{0,200})['\"])?",
+        re.IGNORECASE,
+    ),
+)
+
+
 _INPUT_TOKENS_PATTERNS = (
     re.compile(r"\binput(?:_tokens?| tokens?)\s*[:=]\s*(?P<value>\d[\d,]*)", re.IGNORECASE),
     re.compile(r"\b(?P<value>\d[\d,]*)\s+input tokens?\b", re.IGNORECASE),
@@ -309,6 +379,40 @@ class CopilotActivityMarker:
     span: CopilotEvidenceSpan
 
 
+@dataclass(frozen=True, slots=True)
+class FileMutation:
+    """A file change announced by an agent in its log output.
+
+    ``path`` is the (possibly relative) path the agent reported
+    touching. ``action`` is one of ``"add" | "modify" | "delete" |
+    "rename"``. ``summary`` is the original banner line — useful for
+    showing operators the literal wording the agent printed.
+
+    Detection uses only the heuristic banner patterns documented at the
+    top of this module (``_FILE_MUTATION_PATTERNS``); ad-hoc prose
+    mentioning a path is intentionally not classified as a mutation.
+    """
+
+    path: str
+    action: Literal["add", "modify", "delete", "rename"]
+    summary: str | None
+    span: CopilotEvidenceSpan
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """A tool invocation announced by the agent.
+
+    ``name`` is the tool identifier (``"Bash"``, ``"Read"``, ``"Edit"``,
+    a custom MCP tool name, …). ``args`` is the raw argument blob the
+    agent printed alongside the call, when present.
+    """
+
+    name: str
+    args: str | None
+    span: CopilotEvidenceSpan
+
+
 # ── Sub-task / background-agent evidence ────────────────────────────
 
 TaskStatus = Literal["running", "completed", "idle", "failed", "cancelled"]
@@ -363,20 +467,32 @@ def _parse_task_evidence(
     search_block = "\n".join(tail_lines)
 
     for m in _TASK_RUNNING_PATTERN.finditer(search_block):
-        tasks.append(CopilotTaskEvidence(
-            agent_type_label=m.group(1), model=m.group(2),
-            description=m.group(3).strip(), status="running",
-        ))
+        tasks.append(
+            CopilotTaskEvidence(
+                agent_type_label=m.group(1),
+                model=m.group(2),
+                description=m.group(3).strip(),
+                status="running",
+            )
+        )
     for m in _TASK_COMPLETED_PATTERN.finditer(search_block):
-        tasks.append(CopilotTaskEvidence(
-            agent_type_label=m.group(1), model=m.group(2),
-            description="completed", status="completed",
-        ))
+        tasks.append(
+            CopilotTaskEvidence(
+                agent_type_label=m.group(1),
+                model=m.group(2),
+                description="completed",
+                status="completed",
+            )
+        )
     for m in _TASK_IDLE_PATTERN.finditer(search_block):
-        tasks.append(CopilotTaskEvidence(
-            agent_type_label=m.group(1), model=m.group(2),
-            description="idle", status="idle",
-        ))
+        tasks.append(
+            CopilotTaskEvidence(
+                agent_type_label=m.group(1),
+                model=m.group(2),
+                description="idle",
+                status="idle",
+            )
+        )
     seen: set[tuple[str, str | None]] = set()
     unique: list[CopilotTaskEvidence] = []
     for t in tasks:
@@ -401,6 +517,8 @@ class CopilotOutputParseResult:
     errors: tuple[CopilotErrorEvidence, ...]
     ui_markers: tuple[CopilotUIMarker, ...]
     activity_markers: tuple[CopilotActivityMarker, ...] = ()
+    file_mutations: tuple[FileMutation, ...] = ()
+    tool_calls: tuple[ToolCall, ...] = ()
     evidence_spans: tuple[CopilotEvidenceSpan, ...] = ()
     background_task_count: int = 0
     task_evidence: tuple[CopilotTaskEvidence, ...] = ()
@@ -584,6 +702,57 @@ def parse_copilot_output(output: str) -> CopilotOutputParseResult:
             )
             evidence_spans.append(span)
 
+    file_mutations: list[FileMutation] = []
+    tool_calls: list[ToolCall] = []
+    for line_number, raw_line in enumerate(output.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        for action, pattern in _FILE_MUTATION_PATTERNS:
+            match = pattern.match(line)
+            if match is None:
+                continue
+            path = match.group("path")
+            span = _build_span(
+                category=f"file_mutation:{action}",
+                start_line=line_number,
+                end_line=line_number,
+                lines=[raw_line],
+                confidence=Decimal("0.9000"),
+            )
+            file_mutations.append(FileMutation(path=path, action=action, summary=line, span=span))
+            evidence_spans.append(span)
+            if action == "rename":
+                dest = match.group("dest")
+                dest_span = _build_span(
+                    category="file_mutation:rename_dest",
+                    start_line=line_number,
+                    end_line=line_number,
+                    lines=[raw_line],
+                    confidence=Decimal("0.9000"),
+                )
+                file_mutations.append(
+                    FileMutation(path=dest, action="rename", summary=line, span=dest_span)
+                )
+                evidence_spans.append(dest_span)
+            break
+        for tool_pattern in _TOOL_CALL_PATTERNS:
+            match = tool_pattern.search(line)
+            if match is None:
+                continue
+            name = match.group("name")
+            args = match.group("args") if "args" in match.groupdict() else None
+            span = _build_span(
+                category="tool_call",
+                start_line=line_number,
+                end_line=line_number,
+                lines=[raw_line],
+                confidence=Decimal("0.8800"),
+            )
+            tool_calls.append(ToolCall(name=name, args=args or None, span=span))
+            evidence_spans.append(span)
+            break
+
     bg_count, task_ev = _parse_task_evidence(output)
 
     return CopilotOutputParseResult(
@@ -594,6 +763,8 @@ def parse_copilot_output(output: str) -> CopilotOutputParseResult:
         errors=tuple(errors),
         ui_markers=tuple(ui_markers),
         activity_markers=tuple(activity_markers),
+        file_mutations=tuple(file_mutations),
+        tool_calls=tuple(tool_calls),
         evidence_spans=tuple(evidence_spans),
         background_task_count=bg_count,
         task_evidence=task_ev,

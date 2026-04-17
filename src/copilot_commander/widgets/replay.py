@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 
+from rich.syntax import Syntax
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -48,6 +49,10 @@ def _marker_style(kind: str) -> str:
         return f"bold {AQUA}"
     if kind == "agent_switch":
         return f"bold {PURPLE}"
+    if kind == "file_edit":
+        return f"bold {BLUE}"
+    if kind == "tool_call":
+        return f"bold {AQUA}"
     return f"bold {YELLOW}"
 
 
@@ -102,6 +107,9 @@ class ReplayBoundListView(ListView):
 
     def action_jump_next_problem(self) -> None:
         self._invoke_screen_action("jump_next_problem")
+
+    def action_jump_next_file_edit(self) -> None:
+        self._invoke_screen_action("jump_next_file_edit")
 
     def action_cycle_export_format(self) -> None:
         self._invoke_screen_action("cycle_export_format")
@@ -338,6 +346,8 @@ class ReplaySummaryPanel(Static):
             ("task", state.task_title or "-", FG1),
             ("entries", f"{len(state.transcript)}/{state.total_entries}", FG1),
             ("markers", f"{len(state.jump_markers)}/{state.total_markers}", FG1),
+            ("files", str(state.files_touched), BLUE if state.files_touched else FG4),
+            ("tools", str(state.tool_calls), AQUA if state.tool_calls else FG4),
             ("view", state.presentation, AQUA),
             (
                 "follow",
@@ -379,8 +389,35 @@ class ReplayDetailPanel(Static):
         self.update(header)
 
 
+class ReplayDiffPanel(Static):
+    """Render a unified diff for the selected file-mutation entry.
+
+    The screen owns diff resolution (so it can run off the UI thread)
+    and feeds the result to :meth:`set_entry_diff`. The widget is
+    purely presentation: it picks a placeholder when the entry has no
+    file mutation or when the diff text is empty/whitespace.
+    """
+
+    def set_entry_diff(
+        self,
+        entry: ReplayTranscriptEntryView | None,
+        diff_text: str | None,
+    ) -> None:
+        if entry is None:
+            self.update(Text("No entry selected", style=FG4))
+            return
+        if not entry.file_path:
+            self.update(Text("non-file entry", style=FG4))
+            return
+        if diff_text is None or not diff_text.strip():
+            self.update(Text(f"no diff available for {entry.file_path}", style=FG4))
+            return
+        self.update(Syntax(diff_text, "diff", theme="ansi_dark", word_wrap=False))
+
+
 __all__ = [
     "ReplayDetailPanel",
+    "ReplayDiffPanel",
     "ReplayFilterBar",
     "ReplayMarkerListPanel",
     "ReplayProgressBar",
