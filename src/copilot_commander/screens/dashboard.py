@@ -19,6 +19,7 @@ from copilot_commander.controllers import (
     DashboardSubAgentTreeView,
 )
 from copilot_commander.screens.base import ShellScreen
+from copilot_commander.screens.compose_mirror import ComposeWithMirrorScreen
 from copilot_commander.screens.confirm_dialog import ConfirmScreen
 from copilot_commander.screens.message_input import MessageResult, SendMessageScreen
 from copilot_commander.services.attention_service import AttentionNotification
@@ -386,9 +387,21 @@ class DashboardScreen(ShellScreen):
         self.commander_app.switch_mode("replay")
 
     def action_view_pane(self) -> None:
-        """Open the full-screen live tmux pane viewer for the selected agent."""
+        """Open the pane mirror + compose editor for the selected agent.
+
+        The mirror shows a live-streaming view of the agent's tmux
+        pane (seeded from the current scrollback and followed via
+        ``tmux pipe-pane``) so the user never loses context while
+        composing.  The bottom half is a multi-line editor with full
+        Textual ``TextArea`` editing — selection, copy/cut/paste,
+        word-wise motion, undo, etc.  ``ctrl+s`` sends; ``esc``
+        closes.
+        """
         if self._selected_agent_id is None:
             self.set_status("no agent selected")
+            return
+        if self.runtime.actions is None:
+            self.set_status("✗ action service unavailable")
             return
         agent = self._find_selected_agent()
         if agent is None or not agent.pane_id:
@@ -397,10 +410,8 @@ class DashboardScreen(ShellScreen):
         if self.runtime.pane_stream is None:
             self.set_status("✗ pane streaming unavailable")
             return
-        from copilot_commander.screens.pane_viewer import PaneViewerScreen
-
         self.app.push_screen(
-            PaneViewerScreen(
+            ComposeWithMirrorScreen(
                 self.runtime,
                 pane_id=agent.pane_id,
                 display_name=agent.repo_name or agent.name,
