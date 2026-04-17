@@ -3,6 +3,7 @@ from copilot_commander.services.agent_service import (
     AgentRecordResult,
     AgentService,
 )
+from copilot_commander.services.annotations_service import AnnotationsService
 from copilot_commander.services.attention_service import (
     AttentionInboxService,
     AttentionNotification,
@@ -84,6 +85,7 @@ __all__ = [
     "AgentFactInput",
     "AgentRecordResult",
     "AgentService",
+    "AnnotationsService",
     "AttentionInboxService",
     "AttentionNotification",
     "AttentionSeverity",

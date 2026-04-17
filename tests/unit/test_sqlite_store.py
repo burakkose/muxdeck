@@ -123,7 +123,11 @@ class SQLiteStoreTests(unittest.TestCase):
         )
         self.assertEqual(
             self.store.applied_migrations(),
-            ("0001_initial.sql", "0002_add_tasks.sql"),
+            (
+                "0001_initial.sql",
+                "0002_add_tasks.sql",
+                "0003_add_replay_annotations.sql",
+            ),
         )
         self.assertEqual(self.store.journal_mode, "wal")
         self.assertTrue(self.store.foreign_keys_enabled)
@@ -154,7 +158,11 @@ class SQLiteStoreTests(unittest.TestCase):
         )
         self.assertEqual(
             applied_migrations,
-            [("0001_initial.sql",), ("0002_add_tasks.sql",)],
+            [
+                ("0001_initial.sql",),
+                ("0002_add_tasks.sql",),
+                ("0003_add_replay_annotations.sql",),
+            ],
         )
         self.assertEqual(journal_mode, ("wal",))
 

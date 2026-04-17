@@ -55,6 +55,7 @@ from copilot_commander.controllers.operations_controller import (
 )
 from copilot_commander.controllers.replay_controller import (
     PlaybackStateView,
+    ReplayAnnotationView,
     ReplayController,
     ReplayExportIntent,
     ReplayJumpMarkerView,
@@ -123,6 +124,7 @@ __all__ = [
     "OperationsExecutionSummary",
     "OperationsState",
     "PlaybackStateView",
+    "ReplayAnnotationView",
     "ReplayController",
     "ReplayExportIntent",
     "ReplayJumpMarkerView",

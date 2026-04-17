@@ -20,6 +20,7 @@ from copilot_commander.controllers.replay_controller import (
     ReplayPresentation,
 )
 from copilot_commander.screens.base import ShellScreen
+from copilot_commander.screens.replay_note_input import ReplayNoteInputScreen
 from copilot_commander.services.playback_controller import PlaybackState
 from copilot_commander.widgets.replay import (
     ReplayDetailPanel,
@@ -291,7 +292,7 @@ class ReplayScreen(ShellScreen):
         self.set_status(f"follow latest {'on' if self._follow_latest else 'off'}")
 
     def action_cycle_export_format(self) -> None:
-        self._export_format = "json" if self._export_format == "text" else "text"
+        self._export_format = self._next_export_format(self._export_format)
         if self._state is None:
             self.set_status(f"export {self._export_format}")
             return
@@ -300,6 +301,51 @@ class ReplayScreen(ShellScreen):
             export_format=self._export_format,
         )
         self.set_status(f"export {intent.format} -> {intent.filename_hint}")
+
+    @staticmethod
+    def _next_export_format(current: ReplayExportFormat) -> ReplayExportFormat:
+        if current == "text":
+            return "json"
+        if current == "json":
+            return "markdown"
+        return "text"
+
+    def action_toggle_bookmark(self) -> None:
+        if self._state is None or self._session_id is None:
+            self.set_status("no replay loaded")
+            return
+        ordinal = self._state.selected_index
+        if ordinal is None:
+            self.set_status("select an entry to bookmark")
+            return
+        added = self.runtime.replay.toggle_bookmark(self._session_id, ordinal)
+        self.set_status(
+            f"bookmark added at #{ordinal}" if added else f"bookmark removed at #{ordinal}"
+        )
+        self.refresh_data()
+
+    def action_add_note(self) -> None:
+        if self._state is None or self._session_id is None:
+            self.set_status("no replay loaded")
+            return
+        ordinal = self._state.selected_index
+        if ordinal is None:
+            self.set_status("select an entry to annotate")
+            return
+        session_id = self._session_id
+
+        def _on_dismiss(result: str | None) -> None:
+            if not result:
+                self.set_status("note cancelled")
+                return
+            self.runtime.replay.add_note(session_id, ordinal, result)
+            self.set_status(f"note saved at #{ordinal}")
+            self.refresh_data()
+
+        self.commander_app.push_screen(ReplayNoteInputScreen(ordinal), _on_dismiss)
+
+    def action_jump_next_annotation(self) -> None:
+        self._jump_from_state("annotation", self.runtime.replay.jump_to_next_annotation)
 
     def action_load_latest(self) -> None:
         self._session_id = None

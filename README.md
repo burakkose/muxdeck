@@ -66,11 +66,14 @@ Run the operator console from a tmux window when possible. If your panes live on
 - `m` focuses the marker list, `t` focuses the transcript
 - `v` toggles parsed vs raw chunk view
 - `f` toggles follow-latest mode
-- `n` / `N` jump to the next / previous marker
+- `[` / `]` jump to the previous / next marker
 - `a` jumps to the next activity marker, `x` to the next problem (error or blocking)
 - `F` jumps to the next file edit; the diff panel renders the unified diff for the
   selected file mutation when the session is tied to a worktree
-- `e` cycles between text and JSON export
+- `b` toggles a bookmark on the selected entry
+- `n` opens a prompt to attach a note to the selected entry
+- `N` cycles to the next bookmarked or noted entry
+- `e` cycles the export format: text → JSON → Markdown (suitable for pasting into GitHub) → text
 - `g` reloads the latest session
 
 ## Discovery model

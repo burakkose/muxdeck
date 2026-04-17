@@ -16,6 +16,10 @@ from copilot_commander.constants import DEFAULT_DATABASE_FILE_NAME as _DEFAULT_D
 from copilot_commander.domain.enums import AgentStatus, TaskPriority, TaskStatus
 from copilot_commander.domain.events import Event, LogChunk
 from copilot_commander.domain.models import Agent, Session, Worktree
+from copilot_commander.domain.replay_annotations import (
+    ReplayAnnotation,
+    ReplayAnnotationKind,
+)
 from copilot_commander.domain.task_models import Task
 from copilot_commander.domain.value_objects import (
     ensure_aware_datetime,
@@ -323,6 +327,22 @@ _SELECT_SESSION_CONTEXT_SQL = (
     f"SELECT {', '.join(_SESSION_CONTEXT_COLUMNS)} FROM session_context_cache"
 )
 
+_REPLAY_ANNOTATION_COLUMNS = (
+    "id",
+    "session_id",
+    "ordinal",
+    "created_at",
+    "kind",
+    "body",
+)
+_INSERT_REPLAY_ANNOTATION_SQL = f"""
+INSERT INTO replay_annotations ({", ".join(_REPLAY_ANNOTATION_COLUMNS)})
+VALUES ({_placeholders(_REPLAY_ANNOTATION_COLUMNS)})
+"""
+_SELECT_REPLAY_ANNOTATION_SQL = (
+    f"SELECT {', '.join(_REPLAY_ANNOTATION_COLUMNS)} FROM replay_annotations"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class SessionContextRecord:
@@ -600,6 +620,62 @@ class SQLiteStore:
             (task_id,),
             operation="delete task",
         )
+
+    # ----- replay annotations -------------------------------------------------
+
+    def insert_replay_annotation(self, annotation: ReplayAnnotation, /) -> None:
+        self._execute_write(
+            _INSERT_REPLAY_ANNOTATION_SQL,
+            self._replay_annotation_params(annotation),
+            operation="insert replay annotation",
+        )
+
+    def delete_replay_annotation(self, annotation_id: str, /) -> bool:
+        return self._execute_delete(
+            "DELETE FROM replay_annotations WHERE id = ?",
+            (annotation_id,),
+            operation="delete replay annotation",
+        )
+
+    def update_replay_annotation_body(self, annotation_id: str, body: str, /) -> bool:
+        return self._execute_delete(
+            "UPDATE replay_annotations SET body = ? WHERE id = ?",
+            (body, annotation_id),
+            operation="update replay annotation body",
+        )
+
+    def list_replay_annotations(self, session_id: str, /) -> tuple[ReplayAnnotation, ...]:
+        rows = self._fetch_all(
+            f"{_SELECT_REPLAY_ANNOTATION_SQL} WHERE session_id = ? "
+            "ORDER BY ordinal ASC, created_at ASC, id ASC",
+            (session_id,),
+            operation="list replay annotations",
+        )
+        return tuple(_row_to_replay_annotation(row) for row in rows)
+
+    def find_replay_bookmark(
+        self,
+        session_id: str,
+        ordinal: int,
+        /,
+    ) -> ReplayAnnotation | None:
+        row = self._fetch_one(
+            f"{_SELECT_REPLAY_ANNOTATION_SQL} "
+            "WHERE session_id = ? AND ordinal = ? AND kind = 'bookmark'",
+            (session_id, ordinal),
+            operation="find replay bookmark",
+        )
+        return None if row is None else _row_to_replay_annotation(row)
+
+    def _replay_annotation_params(self, annotation: ReplayAnnotation) -> dict[str, object]:
+        return {
+            "id": annotation.id,
+            "session_id": annotation.session_id,
+            "ordinal": annotation.ordinal,
+            "created_at": _serialize_datetime(annotation.created_at),
+            "kind": annotation.kind,
+            "body": annotation.body,
+        }
 
     def upsert_session(self, session: Session, /) -> None:
         self._execute_write(
@@ -1358,6 +1434,26 @@ def _row_to_worktree(row: sqlite3.Row) -> Worktree:
         raise PersistenceError(msg) from exc
 
 
+def _row_to_replay_annotation(row: sqlite3.Row) -> ReplayAnnotation:
+    annotation_id = _require_text(row, "id")
+    kind_value = _require_text(row, "kind")
+    if kind_value not in ("bookmark", "note"):
+        msg = f"invalid replay annotation kind in row {annotation_id!r}: {kind_value!r}"
+        raise PersistenceError(msg)
+    try:
+        return ReplayAnnotation(
+            id=annotation_id,
+            session_id=_require_text(row, "session_id"),
+            ordinal=_require_int(row, "ordinal"),
+            created_at=_require_datetime(row, "created_at"),
+            kind=cast(ReplayAnnotationKind, kind_value),
+            body=_require_text_allow_empty(row, "body"),
+        )
+    except (DomainValidationError, ValueError) as exc:
+        msg = f"invalid replay annotation row for {annotation_id!r}: {exc}"
+        raise PersistenceError(msg) from exc
+
+
 def _row_to_task(row: sqlite3.Row) -> Task:
     task_id = _require_text(row, "id")
     try:
@@ -1469,6 +1565,14 @@ def _require_text(row: sqlite3.Row, column: str) -> str:
         raise PersistenceError(msg)
     if not value.strip():
         msg = f"column {column} must not be empty"
+        raise PersistenceError(msg)
+    return value
+
+
+def _require_text_allow_empty(row: sqlite3.Row, column: str) -> str:
+    value = _row_value(row, column)
+    if not isinstance(value, str):
+        msg = f"expected text in column {column}, got {type(value).__name__}"
         raise PersistenceError(msg)
     return value
 

@@ -26,6 +26,9 @@ from copilot_commander.adapters.copilot_session_store import (
 )
 from copilot_commander.adapters.os_notifier import OsNotifier, detect_os_notifier
 from copilot_commander.adapters.pane_stream import PaneStreamAdapter
+from copilot_commander.adapters.sqlite_replay_annotations import (
+    SqliteReplayAnnotationsRepository,
+)
 from copilot_commander.adapters.subagent_reader import SubAgentReader
 from copilot_commander.adapters.windows_host import WindowsHostInfo, detect_windows_host
 from copilot_commander.bindings import GLOBAL_BINDINGS
@@ -57,6 +60,7 @@ from copilot_commander.screens import (
 from copilot_commander.screens.sessions import SessionsScreen
 from copilot_commander.services import (
     AgentService,
+    AnnotationsService,
     AttentionInboxService,
     DiscoveryService,
     MonitoringService,
@@ -433,9 +437,11 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     copilot_adapter = CopilotAdapter(process_adapter)
     sessions = SessionService(store=store)
     replay_service = ReplayService(store=store, sessions=sessions)
+    annotations_service = AnnotationsService(SqliteReplayAnnotationsRepository(store))
     # Thread-safe replay service for worker-thread usage (replay screen).
     sync_sessions = SessionService(store=sync_store)
     sync_replay_service = ReplayService(store=sync_store, sessions=sync_sessions)
+    sync_annotations_service = AnnotationsService(SqliteReplayAnnotationsRepository(sync_store))
     sync_agent_service = AgentService(
         sync_store,
         sync_store,
@@ -523,8 +529,8 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         store=store,
         dashboard=dashboard,
         worktrees=WorktreeController(worktree_service, store),
-        replay=ReplayController(replay_service),
-        replay_worker=ReplayController(sync_replay_service),
+        replay=ReplayController(replay_service, annotations_service),
+        replay_worker=ReplayController(sync_replay_service, sync_annotations_service),
         agents=agent_controller,
         actions=action_service,
         synchronizer=RuntimeSynchronizer(
