@@ -268,6 +268,79 @@ class DashboardControllerTests(unittest.TestCase):
         alert_ids = [alert.agent_id for alert in state.alerts]
         self.assertEqual(alert_ids, ["agent-live"])
 
+    def test_log_preview_dedupes_static_scrollback_across_snapshots(self) -> None:
+        # Each tmux_capture LogChunk is a complete pane snapshot, not
+        # an incremental delta — so a long-lived agent accumulates
+        # many snapshots that share the same static scrollback prefix
+        # (the original ``copilot`` command, the launch banner, etc.).
+        # Without dedup, ``lines[-N:]`` surfaces that frozen prefix
+        # because it dominates the flattened line stream. The preview
+        # must show the *cumulative live churn* — content that's new
+        # in later snapshots — not the same banner over and over.
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+        store.agents["agent-pwsh"] = Agent(
+            id="agent-pwsh",
+            name="pwsh-agent",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%9",
+            cwd="/repo",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_seen_at=observed_at,
+        )
+        store.sessions["session-pwsh"] = Session(
+            id="session-pwsh",
+            agent_id="agent-pwsh",
+            created_at=observed_at,
+        )
+        # First snapshot: shell prompt + the operator's `copilot` command
+        # + the banner that copilot prints on launch.
+        snapshot_one = (
+            "PS C:\\repo> copilot\n"
+            "  banner-line-1\n"
+            "  banner-line-2\n"
+            "  banner-line-3\n"
+            "Copilot ready. > \n"
+        )
+        # Second snapshot: same scrollback above, plus a new live line
+        # at the bottom (typical TUI churn).
+        snapshot_two = snapshot_one + "● Read main.py\n  done\n"
+        # Third snapshot: same scrollback + more new churn.
+        snapshot_three = snapshot_two + "◐ Thinking (1.2 KiB)\n"
+        for sequence_no, content in enumerate((snapshot_one, snapshot_two, snapshot_three)):
+            store.logs.append(
+                LogChunk(
+                    id=f"log-{sequence_no}",
+                    agent_id="agent-pwsh",
+                    session_id="session-pwsh",
+                    source="tmux_capture",
+                    sequence_no=sequence_no,
+                    captured_at=observed_at,
+                    content=content,
+                )
+            )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        state = controller.build_state(
+            selected_agent_id="agent-pwsh",
+            preview_line_limit=5,
+        )
+
+        assert state.selected_agent is not None
+        contents = [line.content for line in state.selected_agent.log_preview]
+        # The frozen prefix must NOT dominate the preview…
+        self.assertNotIn("PS C:\\repo> copilot", contents)
+        self.assertNotIn("banner-line-1", contents)
+        # …and the live tail from the most recent snapshots MUST be
+        # what surfaces, including content unique to later snapshots.
+        self.assertIn("● Read main.py", contents)
+        self.assertIn("◐ Thinking (1.2 KiB)", contents)
+        # The live tail is the *last* thing in the preview, since
+        # dedup preserves chronological insertion order.
+        self.assertEqual(contents[-1], "◐ Thinking (1.2 KiB)")
+
 
 if __name__ == "__main__":
     unittest.main()

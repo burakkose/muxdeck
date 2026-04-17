@@ -692,12 +692,39 @@ class DashboardController:
         *,
         preview_line_limit: int,
     ) -> tuple[DashboardLogLineView, ...]:
+        # Each ``tmux_capture`` chunk is a *complete snapshot* of the
+        # pane's recent scrollback (~200 lines), not an incremental
+        # delta. Successive snapshots share long stretches of identical
+        # text — typically the original shell prompt, the ``copilot``
+        # command the user typed, and any startup banner that scrolled
+        # far enough back to remain inside the scrollback window. The
+        # previous implementation flattened every snapshot end-to-end
+        # and took ``lines[-N:]``, which surfaced that frozen prefix
+        # (200xN copies of it) instead of the live tail the operator
+        # actually wants — so for a long-lived ``pwsh`` Copilot agent
+        # the Output panel pinned itself on the original ``copilot``
+        # invocation and "never updated" even though new chunks were
+        # streaming in correctly.
+        #
+        # Dedup by line content while iterating chronologically: a line
+        # that already appeared in any earlier chunk is part of the
+        # static scrollback overlap and contributes nothing new to a
+        # "recent activity" preview, so skip it. What's left, in order,
+        # is the cumulative live churn at the bottom of the pane —
+        # exactly the "live or recent logs" view the panel is meant to
+        # show. Source/timestamp metadata still tracks the chunk where
+        # each line *first* appeared so the timestamp grouping in
+        # ``LogPreviewPanel`` stays meaningful.
+        if preview_line_limit <= 0:
+            return ()
+        seen: set[str] = set()
         lines: list[DashboardLogLineView] = []
         for chunk in logs:
             for line in chunk.content.splitlines():
                 stripped = line.rstrip()
-                if not stripped:
+                if not stripped or stripped in seen:
                     continue
+                seen.add(stripped)
                 lines.append(
                     DashboardLogLineView(
                         captured_at=chunk.captured_at,
@@ -706,8 +733,6 @@ class DashboardController:
                         content=stripped,
                     )
                 )
-        if preview_line_limit <= 0:
-            return ()
         return tuple(lines[-preview_line_limit:])
 
     def _build_alerts(
