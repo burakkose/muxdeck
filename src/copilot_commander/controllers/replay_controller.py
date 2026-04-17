@@ -5,13 +5,18 @@ from dataclasses import dataclass
 from typing import Literal
 
 from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
+from copilot_commander.services.annotations_service import AnnotationsService
 from copilot_commander.services.replay_service import ReplayEntry, ReplayService, SessionReplay
 
-ReplayExportFormat = Literal["text", "json"]
+ReplayExportFormat = Literal["text", "json", "markdown"]
 ReplayPresentation = Literal["parsed", "raw"]
 
 _ACTIVITY_MARKER_KINDS = frozenset({"activity"})
 _PROBLEM_MARKER_KINDS = frozenset({"blocking", "error"})
+_ANNOTATION_MARKER_KINDS = frozenset({"annotation"})
+
+_BOOKMARK_GLYPH = "✱"
+_NOTE_GLYPH = "✎"
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +25,15 @@ class ReplayJumpMarkerView:
     timestamp: str
     label: str
     kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayAnnotationView:
+    id: str
+    ordinal: int
+    kind: Literal["bookmark", "note"]
+    body: str
+    created_at: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +46,7 @@ class ReplayTranscriptEntryView:
     marker_kind: str | None
     lines: tuple[str, ...]
     is_selected: bool
+    annotation_glyph: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,11 +70,17 @@ class ReplayStateView:
     follow_latest: bool
     total_entries: int
     total_markers: int
+    annotations: tuple[ReplayAnnotationView, ...] = ()
 
 
 class ReplayController:
-    def __init__(self, service: ReplayService) -> None:
+    def __init__(
+        self,
+        service: ReplayService,
+        annotations: AnnotationsService | None = None,
+    ) -> None:
         self._service = service
+        self._annotations = annotations
 
     def load_state(
         self,
@@ -85,6 +106,34 @@ class ReplayController:
             follow_latest=follow_latest,
         )
 
+    def list_annotations(self, session_id: str) -> tuple[ReplayAnnotationView, ...]:
+        return tuple(self._fetch_annotation_views(session_id))
+
+    def toggle_bookmark(self, session_id: str, ordinal: int) -> bool:
+        if self._annotations is None:
+            msg = "annotations service is not configured"
+            raise RuntimeError(msg)
+        return self._annotations.toggle_bookmark(session_id, ordinal)
+
+    def add_note(self, session_id: str, ordinal: int, body: str) -> ReplayAnnotationView:
+        if self._annotations is None:
+            msg = "annotations service is not configured"
+            raise RuntimeError(msg)
+        annotation = self._annotations.add_note(session_id, ordinal, body)
+        return ReplayAnnotationView(
+            id=annotation.id,
+            ordinal=annotation.ordinal,
+            kind=annotation.kind,
+            body=annotation.body,
+            created_at=annotation.created_at.isoformat(),
+        )
+
+    def delete_annotation(self, annotation_id: str) -> bool:
+        if self._annotations is None:
+            msg = "annotations service is not configured"
+            raise RuntimeError(msg)
+        return self._annotations.delete(annotation_id)
+
     def jump_to_marker(self, state: ReplayStateView, marker_ordinal: int) -> ReplayStateView:
         marker = state.jump_markers[marker_ordinal]
         return self._with_selection(state, marker.index)
@@ -101,50 +150,81 @@ class ReplayController:
     def jump_to_next_problem(self, state: ReplayStateView) -> ReplayStateView | None:
         return self._jump_relative_marker(state, direction=1, kinds=_PROBLEM_MARKER_KINDS)
 
+    def jump_to_next_annotation(self, state: ReplayStateView) -> ReplayStateView | None:
+        return self._jump_relative_marker(state, direction=1, kinds=_ANNOTATION_MARKER_KINDS)
+
     def build_export_intent(
         self,
         state: ReplayStateView,
         *,
         export_format: ReplayExportFormat = "text",
+        range: tuple[int, int] | None = None,  # noqa: A002 - intentional parameter name
+        include_annotations: bool = False,
     ) -> ReplayExportIntent:
+        transcript = self._slice_transcript(state.transcript, range)
+        annotations = self._slice_annotations(state.annotations, range)
         if export_format == "text":
-            content = "\n".join(self._flatten_transcript(state.transcript))
-            suffix = "txt"
-        else:
-            content = json.dumps(
-                {
-                    "session_id": state.session_id,
-                    "agent_id": state.agent_id,
-                    "task_title": state.task_title,
-                    "selected_index": state.selected_index,
-                    "presentation": state.presentation,
-                    "filter_text": state.filter_text,
-                    "follow_latest": state.follow_latest,
-                    "transcript": [
-                        {
-                            "ordinal": entry.ordinal,
-                            "kind": entry.kind,
-                            "timestamp": entry.timestamp,
-                            "label": entry.label,
-                            "severity": entry.severity,
-                            "marker_kind": entry.marker_kind,
-                            "lines": entry.lines,
-                        }
-                        for entry in state.transcript
-                    ],
-                    "jump_markers": [
-                        {
-                            "index": marker.index,
-                            "timestamp": marker.timestamp,
-                            "label": marker.label,
-                            "kind": marker.kind,
-                        }
-                        for marker in state.jump_markers
-                    ],
-                },
-                sort_keys=True,
-                indent=2,
+            content = "\n".join(
+                self._flatten_transcript(
+                    transcript,
+                    annotations=annotations if include_annotations else (),
+                )
             )
+            suffix = "txt"
+        elif export_format == "markdown":
+            content = self._render_markdown(
+                state,
+                transcript=transcript,
+                annotations=annotations if include_annotations else (),
+                ordinal_range=range,
+            )
+            suffix = "md"
+        else:
+            payload: dict[str, object] = {
+                "session_id": state.session_id,
+                "agent_id": state.agent_id,
+                "task_title": state.task_title,
+                "selected_index": state.selected_index,
+                "presentation": state.presentation,
+                "filter_text": state.filter_text,
+                "follow_latest": state.follow_latest,
+                "ordinal_range": list(range) if range is not None else None,
+                "transcript": [
+                    {
+                        "ordinal": entry.ordinal,
+                        "kind": entry.kind,
+                        "timestamp": entry.timestamp,
+                        "label": entry.label,
+                        "severity": entry.severity,
+                        "marker_kind": entry.marker_kind,
+                        "lines": list(entry.lines),
+                        "annotation_glyph": entry.annotation_glyph,
+                    }
+                    for entry in transcript
+                ],
+                "jump_markers": [
+                    {
+                        "index": marker.index,
+                        "timestamp": marker.timestamp,
+                        "label": marker.label,
+                        "kind": marker.kind,
+                    }
+                    for marker in state.jump_markers
+                    if range is None or range[0] <= marker.index <= range[1]
+                ],
+            }
+            if include_annotations:
+                payload["annotations"] = [
+                    {
+                        "id": annotation.id,
+                        "ordinal": annotation.ordinal,
+                        "kind": annotation.kind,
+                        "body": annotation.body,
+                        "created_at": annotation.created_at,
+                    }
+                    for annotation in annotations
+                ]
+            content = json.dumps(payload, sort_keys=True, indent=2)
             suffix = "json"
         return ReplayExportIntent(
             session_id=state.session_id,
@@ -198,6 +278,7 @@ class ReplayController:
                     marker_kind=entry.marker_kind,
                     lines=entry.lines,
                     is_selected=entry.ordinal == selected_index,
+                    annotation_glyph=entry.annotation_glyph,
                 )
                 for entry in state.transcript
             ),
@@ -207,6 +288,7 @@ class ReplayController:
             follow_latest=state.follow_latest,
             total_entries=state.total_entries,
             total_markers=state.total_markers,
+            annotations=state.annotations,
         )
 
     def _build_state(
@@ -218,6 +300,8 @@ class ReplayController:
         presentation: ReplayPresentation,
         follow_latest: bool,
     ) -> ReplayStateView:
+        annotation_views = tuple(self._fetch_annotation_views(replay.session.id))
+        glyphs_by_ordinal = self._glyphs_by_ordinal(annotation_views)
         query = filter_text.strip().casefold()
         initial_selection = (
             replay.entries[-1].ordinal if follow_latest and replay.entries else selected_index
@@ -227,6 +311,7 @@ class ReplayController:
                 entry,
                 presentation=presentation,
                 selected_index=initial_selection,
+                annotation_glyph=glyphs_by_ordinal.get(entry.ordinal),
             )
             for entry in replay.entries
         )
@@ -251,11 +336,12 @@ class ReplayController:
                     marker_kind=entry.marker_kind,
                     lines=entry.lines,
                     is_selected=entry.ordinal == resolved_selection,
+                    annotation_glyph=entry.annotation_glyph,
                 )
                 for entry in transcript
             )
         visible_ordinals = {entry.ordinal for entry in transcript}
-        markers = tuple(
+        markers: list[ReplayJumpMarkerView] = [
             ReplayJumpMarkerView(
                 index=marker.index,
                 timestamp=marker.timestamp.isoformat(),
@@ -264,20 +350,86 @@ class ReplayController:
             )
             for marker in replay.jump_markers
             if marker.index in visible_ordinals
+        ]
+        markers.extend(
+            ReplayJumpMarkerView(
+                index=annotation.ordinal,
+                timestamp=annotation.created_at,
+                label=self._annotation_marker_label(annotation),
+                kind="annotation",
+            )
+            for annotation in annotation_views
+            if annotation.ordinal in visible_ordinals
         )
+        all_marker_count = len(replay.jump_markers) + len(annotation_views)
         return ReplayStateView(
             session_id=replay.session.id,
             agent_id=replay.session.agent_id,
             task_title=replay.session.task_title,
             selected_index=resolved_selection,
             transcript=transcript,
-            jump_markers=markers,
+            jump_markers=tuple(markers),
             presentation=presentation,
             filter_text=filter_text,
             follow_latest=follow_latest,
             total_entries=len(replay.entries),
-            total_markers=len(replay.jump_markers),
+            total_markers=all_marker_count,
+            annotations=annotation_views,
         )
+
+    def _fetch_annotation_views(self, session_id: str) -> list[ReplayAnnotationView]:
+        if self._annotations is None:
+            return []
+        return [
+            ReplayAnnotationView(
+                id=annotation.id,
+                ordinal=annotation.ordinal,
+                kind=annotation.kind,
+                body=annotation.body,
+                created_at=annotation.created_at.isoformat(),
+            )
+            for annotation in self._annotations.list_for_session(session_id)
+        ]
+
+    def _glyphs_by_ordinal(
+        self,
+        annotations: tuple[ReplayAnnotationView, ...] | list[ReplayAnnotationView],
+    ) -> dict[int, str]:
+        glyphs: dict[int, str] = {}
+        for annotation in annotations:
+            glyph = _BOOKMARK_GLYPH if annotation.kind == "bookmark" else _NOTE_GLYPH
+            existing = glyphs.get(annotation.ordinal)
+            if existing == _BOOKMARK_GLYPH:
+                # Prefer bookmark glyph when both kinds attach to the same ordinal.
+                continue
+            glyphs[annotation.ordinal] = glyph
+        return glyphs
+
+    def _annotation_marker_label(self, annotation: ReplayAnnotationView) -> str:
+        if annotation.kind == "bookmark":
+            return "bookmark"
+        body = annotation.body.strip().splitlines()[0] if annotation.body.strip() else "(empty)"
+        return f"note: {body}"
+
+    def _slice_transcript(
+        self,
+        transcript: tuple[ReplayTranscriptEntryView, ...],
+        ordinal_range: tuple[int, int] | None,
+    ) -> tuple[ReplayTranscriptEntryView, ...]:
+        if ordinal_range is None:
+            return transcript
+        low, high = sorted(ordinal_range)
+        return tuple(entry for entry in transcript if low <= entry.ordinal <= high)
+
+    def _slice_annotations(
+        self,
+        annotations: tuple[ReplayAnnotationView, ...],
+        ordinal_range: tuple[int, int] | None,
+    ) -> tuple[ReplayAnnotationView, ...]:
+        if ordinal_range is None:
+            return annotations
+        low, high = sorted(ordinal_range)
+        return tuple(annotation for annotation in annotations if low <= annotation.ordinal <= high)
 
     def _build_transcript_entry(
         self,
@@ -285,6 +437,7 @@ class ReplayController:
         *,
         presentation: ReplayPresentation,
         selected_index: int | None,
+        annotation_glyph: str | None,
     ) -> ReplayTranscriptEntryView:
         marker_kind: str | None = None
         if entry.event is not None:
@@ -320,6 +473,7 @@ class ReplayController:
             marker_kind=marker_kind,
             lines=lines,
             is_selected=entry.ordinal == selected_index,
+            annotation_glyph=annotation_glyph,
         )
 
     def _build_parsed_log_view(
@@ -379,17 +533,73 @@ class ReplayController:
     def _flatten_transcript(
         self,
         transcript: tuple[ReplayTranscriptEntryView, ...],
+        *,
+        annotations: tuple[ReplayAnnotationView, ...] = (),
     ) -> tuple[str, ...]:
+        annotations_by_ordinal: dict[int, list[ReplayAnnotationView]] = {}
+        for annotation in annotations:
+            annotations_by_ordinal.setdefault(annotation.ordinal, []).append(annotation)
         lines: list[str] = []
         for entry in transcript:
             marker = f" {entry.marker_kind}" if entry.marker_kind else ""
             lines.append(f"{entry.timestamp} {entry.kind.upper()}{marker} {entry.label}")
             lines.extend(f"  {line}" for line in entry.lines)
+            for annotation in annotations_by_ordinal.get(entry.ordinal, ()):
+                lines.append(self._format_annotation_text(annotation))
         return tuple(lines)
+
+    def _format_annotation_text(self, annotation: ReplayAnnotationView) -> str:
+        if annotation.kind == "bookmark":
+            return "  ★ bookmark"
+        body = annotation.body.strip() or "(empty note)"
+        return f"  ✎ note: {body}"
+
+    def _render_markdown(
+        self,
+        state: ReplayStateView,
+        *,
+        transcript: tuple[ReplayTranscriptEntryView, ...],
+        annotations: tuple[ReplayAnnotationView, ...],
+        ordinal_range: tuple[int, int] | None,
+    ) -> str:
+        annotations_by_ordinal: dict[int, list[ReplayAnnotationView]] = {}
+        for annotation in annotations:
+            annotations_by_ordinal.setdefault(annotation.ordinal, []).append(annotation)
+        lines: list[str] = []
+        title = state.task_title or state.session_id
+        lines.append(f"## Replay slice — {title}")
+        meta = [f"agent `{state.agent_id}`", f"session `{state.session_id}`"]
+        if ordinal_range is not None:
+            low, high = sorted(ordinal_range)
+            meta.append(f"ordinals `{low}`-`{high}`")
+        lines.append("_" + ", ".join(meta) + "_")
+        lines.append("")
+        for entry in transcript:
+            header_kind = entry.marker_kind or entry.kind
+            header = f"### #{entry.ordinal} · {entry.timestamp} · {header_kind} — {entry.label}"
+            lines.append(header)
+            if entry.severity:
+                lines.append(f"_severity: {entry.severity}_")
+            if entry.lines:
+                lines.append("```")
+                lines.extend(entry.lines)
+                lines.append("```")
+            for annotation in annotations_by_ordinal.get(entry.ordinal, ()):
+                lines.append(self._format_annotation_markdown(annotation))
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    def _format_annotation_markdown(self, annotation: ReplayAnnotationView) -> str:
+        if annotation.kind == "bookmark":
+            return "> ★ Bookmark"
+        body = annotation.body.strip() or "(empty note)"
+        return "> Note: " + body.replace("\n", "\n> ")
 
 
 __all__ = [
+    "ReplayAnnotationView",
     "ReplayController",
+    "ReplayExportFormat",
     "ReplayExportIntent",
     "ReplayJumpMarkerView",
     "ReplayPresentation",

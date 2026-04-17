@@ -26,6 +26,8 @@ def _marker_style(kind: str) -> str:
         return f"bold {GREEN}"
     if kind == "boundary":
         return f"bold {AQUA}"
+    if kind == "annotation":
+        return f"bold {BLUE}"
     return f"bold {YELLOW}"
 
 
@@ -80,6 +82,15 @@ class ReplayBoundListView(ListView):
 
     def action_jump_next_problem(self) -> None:
         self._invoke_screen_action("jump_next_problem")
+
+    def action_toggle_bookmark(self) -> None:
+        self._invoke_screen_action("toggle_bookmark")
+
+    def action_add_note(self) -> None:
+        self._invoke_screen_action("add_note")
+
+    def action_jump_next_annotation(self) -> None:
+        self._invoke_screen_action("jump_next_annotation")
 
     def action_cycle_export_format(self) -> None:
         self._invoke_screen_action("cycle_export_format")
@@ -176,6 +187,9 @@ class ReplayTranscriptPanel(Vertical):
                 line = Text()
                 caret_style = f"bold {BLUE}" if entry.is_selected else FG4
                 line.append("▸ " if entry.is_selected else "  ", style=caret_style)
+                glyph = entry.annotation_glyph or " "
+                glyph_style = f"bold {BLUE}" if entry.annotation_glyph else FG4
+                line.append(f"{glyph} ", style=glyph_style)
                 line.append(f"{entry.timestamp[11:19]} ", style=FG4)
                 entry_style = _marker_style(entry.marker_kind or entry.severity or entry.kind)
                 line.append(f"{(entry.marker_kind or entry.kind):<8.8} ", style=entry_style)

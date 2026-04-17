@@ -15,11 +15,15 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from copilot_commander.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
+from copilot_commander.adapters.sqlite_replay_annotations import (
+    SqliteReplayAnnotationsRepository,
+)
 from copilot_commander.config import AppConfig, PathsConfig
 from copilot_commander.controllers.replay_controller import ReplayController
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.events import Event
 from copilot_commander.domain.models import Agent, Worktree
+from copilot_commander.services.annotations_service import AnnotationsService
 from copilot_commander.services.replay_service import ReplayService
 from copilot_commander.services.session_service import SessionService
 
@@ -84,7 +88,8 @@ class ReplayControllerTests(unittest.TestCase):
         )
         self.sessions = SessionService(store=self.store)
         self.replays = ReplayService(store=self.store, sessions=self.sessions)
-        self.controller = ReplayController(self.replays)
+        self.annotations = AnnotationsService(SqliteReplayAnnotationsRepository(self.store))
+        self.controller = ReplayController(self.replays, self.annotations)
 
     def _cleanup_runtime_dir(self) -> None:
         if self.runtime_dir.exists():
@@ -244,6 +249,103 @@ class ReplayControllerTests(unittest.TestCase):
             multi_signal.lines,
             "additional distinct signals must still be surfaced",
         )
+
+    def test_annotations_appear_in_state_and_jump_markers(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Running command: pytest", "fatal: merge conflict"),
+            captured_at=timestamp,
+        )
+
+        added = self.controller.toggle_bookmark(bundle.session.id, ordinal=0)
+        note = self.controller.add_note(bundle.session.id, ordinal=1, body="off the rails")
+        state = self.controller.load_state(
+            session_id=bundle.session.id,
+            presentation="parsed",
+        )
+
+        self.assertTrue(added)
+        self.assertEqual(len(state.annotations), 2)
+        glyphs = {entry.ordinal: entry.annotation_glyph for entry in state.transcript}
+        self.assertEqual(glyphs[0], "✱")
+        self.assertEqual(glyphs[1], "✎")
+        annotation_kinds = [marker.kind for marker in state.jump_markers]
+        self.assertIn("annotation", annotation_kinds)
+        # The note appears as a jump marker labelled with its body.
+        annotation_marker = next(
+            marker
+            for marker in state.jump_markers
+            if marker.kind == "annotation" and marker.index == 1
+        )
+        self.assertIn("off the rails", annotation_marker.label)
+
+        removed = self.controller.toggle_bookmark(bundle.session.id, ordinal=0)
+        self.assertFalse(removed)
+        cleared = self.controller.list_annotations(bundle.session.id)
+        self.assertEqual(len(cleared), 1)
+        self.assertEqual(cleared[0].id, note.id)
+
+    def test_export_intent_honors_range_and_includes_annotations(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Running command: pytest", "fatal: merge conflict"),
+            captured_at=timestamp,
+        )
+        self.controller.add_note(bundle.session.id, ordinal=1, body="watch this")
+
+        state = self.controller.load_state(session_id=bundle.session.id)
+
+        text_full = self.controller.build_export_intent(
+            state,
+            export_format="text",
+            include_annotations=True,
+        )
+        text_sliced = self.controller.build_export_intent(
+            state,
+            export_format="text",
+            range=(2, 2),
+            include_annotations=True,
+        )
+        json_sliced = self.controller.build_export_intent(
+            state,
+            export_format="json",
+            range=(1, 1),
+            include_annotations=True,
+        )
+        markdown_full = self.controller.build_export_intent(
+            state,
+            export_format="markdown",
+            include_annotations=True,
+        )
+
+        # Full text contains the note inline.
+        self.assertIn("note: watch this", text_full.content)
+        # Sliced to ordinal 2 — note attached to ordinal 1 must be excluded.
+        self.assertNotIn("watch this", text_sliced.content)
+        self.assertIn("merge conflict", text_sliced.content)
+        # JSON slice carries annotations as structured data.
+        self.assertIn('"annotations"', json_sliced.content)
+        self.assertIn("watch this", json_sliced.content)
+        self.assertNotIn("merge conflict", json_sliced.content)
+        # Markdown emits headers, fenced blocks and inline notes.
+        self.assertEqual(markdown_full.format, "markdown")
+        self.assertTrue(markdown_full.filename_hint.endswith(".md"))
+        self.assertIn("## Replay slice", markdown_full.content)
+        self.assertIn("### #1", markdown_full.content)
+        self.assertIn("```", markdown_full.content)
+        self.assertIn("> Note: watch this", markdown_full.content)
 
 
 if __name__ == "__main__":

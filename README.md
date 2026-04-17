@@ -45,6 +45,13 @@ Run the operator console from a tmux window when possible. If your panes live on
 - `d` deletes the selected worktree
 - `P` prunes stale worktrees
 
+## Replay usage
+
+- `b` toggles a bookmark on the selected entry
+- `n` opens a prompt to attach a note to the selected entry
+- `N` cycles to the next bookmarked or noted entry
+- `e` cycles the export format: text → JSON → Markdown (suitable for pasting into GitHub) → text
+
 ## Discovery model
 
 - Discovery uses `tmux list-panes -a`, so it scans panes across **all windows** on the current tmux server, not just the current window.
