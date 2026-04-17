@@ -57,12 +57,66 @@ from copilot_commander.widgets.common import (
     status_glyph_parts,
 )
 
-# ── ANSI escape stripper ────────────────────────────────────────────
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07")
+# ── ANSI / control-byte stripper ────────────────────────────────────
+#
+# Pane output captured from real shells — particularly PowerShell on
+# WSL with PSReadLine — contains far more than the basic SGR colour
+# sequences the previous implementation handled. PSReadLine emits DEC
+# private-mode toggles like ``\x1b[?25h`` and ``\x1b[?2004h``
+# (bracketed paste) constantly, OSC sequences terminated with ``ST``
+# (``\x1b\\``) instead of ``BEL`` (``\x07``) for window titles and
+# OSC 8 hyperlinks, charset designators (``\x1b(B``), and naked
+# 2-character escapes (``\x1b=``, ``\x1bM``). Windows-originated
+# streams also occasionally leak BOMs, stray ``\r`` cursor returns,
+# and backspaces. The earlier ``\x1b\[[0-9;]*[a-zA-Z]`` pattern
+# matched none of these, so the raw bytes leaked through into the
+# dashboard "output" panel as visible garbage.
+#
+# The patterns below follow ECMA-48 / xterm conventions:
+#   * CSI: ``ESC [`` then param bytes (0x30-0x3F: digits, ``:;<=>?``),
+#     intermediate bytes (0x20-0x2F), and a final byte (0x40-0x7E).
+#   * OSC / DCS / SOS / PM / APC: introducer then a body terminated
+#     by ``BEL``, ``ST`` (``ESC \``), or single-byte ``ST`` (``\x9c``).
+#   * Charset designators: ``ESC`` + intermediate (0x20-0x2F) + final.
+#   * Other Fe escapes: ``ESC`` + 0x40-0x5F (excluding the introducers
+#     handled above by ordering the OSC/DCS patterns first).
+#
+# After ANSI stripping we also drop control-byte noise that survives
+# (``\x00-\x08``, ``\x0b-\x1f``, ``\x7f``, BOM, and stray ``\r`` not
+# followed by ``\n``). TAB (``\x09``) and LF (``\x0a``) are preserved.
+_ANSI_RE = re.compile(
+    "|".join(
+        (
+            # OSC ... (BEL | ST | 0x9c)
+            r"\x1b\][^\x07\x1b\x9c]*?(?:\x07|\x1b\\|\x9c)",
+            # DCS / SOS / PM / APC ... (ST | 0x9c)
+            r"\x1b[PX^_][^\x1b\x9c]*?(?:\x1b\\|\x9c)",
+            # CSI
+            r"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]",
+            # Charset designators (e.g. ``ESC ( B``, ``ESC ) 0``)
+            r"\x1b[\x20-\x2f]+[\x30-\x7e]",
+            # Other two-character escapes spanning the Fp (0x30-0x3F:
+            # ``ESC =``, ``ESC >``, ``ESC 7``, ``ESC 8``...), Fe
+            # (0x40-0x5F: ``ESC M``, ``ESC D``, ``ESC E``...) and
+            # Fs (0x60-0x7E: ``ESC c``...) ranges. The introducers
+            # ``P`` (0x50), ``X`` (0x58), ``[`` (0x5B), ``]`` (0x5D),
+            # ``^`` (0x5E), ``_`` (0x5F) are excluded so the more
+            # specific patterns above own them.
+            r"\x1b[\x30-\x4f\x51-\x57\x59-\x5a\x5c\x60-\x7e]",
+        )
+    )
+)
+
+# Control-byte cleanup. We deliberately preserve TAB (\x09), LF
+# (\x0a), and CR-when-followed-by-LF — splitlines() and downstream
+# rendering rely on those. Everything else in the C0 range, plus
+# DEL, BOM, and stray CRs, is noise that produces visible artefacts
+# (Windows stdouts in particular leak BOMs and bare CRs).
+_CONTROL_NOISE_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufeff]|\r(?!\n)")
 
 
 def _strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub("", text)
+    return _CONTROL_NOISE_RE.sub("", _ANSI_RE.sub("", text))
 
 
 _SEVERITY_STYLES: dict[str, str] = {
