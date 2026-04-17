@@ -545,6 +545,14 @@ class FakeReplayController:
             content="payload",
         )
 
+    def initial_playback(self, state: ReplayStateView) -> None:
+        # The integration shell only verifies navigation; no playback
+        # is exercised. Returning None keeps the screen in its paused,
+        # bar-hidden state and matches the documented contract for
+        # empty / non-applicable transcripts.
+        del state
+        return None
+
 
 class FakeSetupService:
     def build_report(self) -> SetupDoctorReport:
@@ -600,6 +608,7 @@ class FakeRuntime:
         self.dashboard = FakeDashboardController()
         self.worktrees = FakeWorktreeController()
         self.replay = FakeReplayController()
+        self.replay_worker = None
         self.setup = FakeSetupService()
         self.agents = FakeAgentController()
         self.synchronizer = None
@@ -619,10 +628,15 @@ async def test_textual_shell_navigation_and_updates() -> None:
 
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "Planner" in rendered_text(app.screen.query_one("#dashboard-detail"))
+        detail_text = rendered_text(app.screen.query_one("#dashboard-detail"))
+        assert "Planner" in detail_text
+        # Dashboard overhaul (c30552f) inlined the former ActivityPanel
+        # into the agent detail render and removed the standalone
+        # FleetHealthPanel from the dashboard (it now lives on the
+        # operations screen). The activity line is sourced from
+        # FakeDashboardController's current_activity field.
+        assert "planning" in detail_text.lower()
         assert "output" in rendered_text(app.screen.query_one("#dashboard-log")).lower()
-        assert "activity" in rendered_text(app.screen.query_one("#dashboard-activity")).lower()
-        assert "fleet" in rendered_text(app.screen.query_one("#dashboard-health")).lower()
 
         await pilot.press("p")
         await pilot.pause()
@@ -677,7 +691,7 @@ async def test_textual_shell_navigation_and_updates() -> None:
         assert "jumped to problem" in rendered_text(app.screen.query_one("#shell-footer")).lower()
 
         app.screen.query_one("#replay-transcript-list").focus()
-        await pilot.press("e")
+        await pilot.press("E")
         await pilot.pause()
         assert "export json" in rendered_text(app.screen.query_one("#shell-footer")).lower()
 
