@@ -110,7 +110,8 @@ class ReplayServiceTests(unittest.TestCase):
                 "Prompt: summarize\n"
                 "Running command: pytest\n"
                 "waiting for confirmation before applying patch\n"
-                "fatal: merge conflict",
+                "CONFLICT (content): merge conflict in src/app.py\n"
+                "fatal: build aborted",
             ),
             captured_at=timestamp,
         )
@@ -129,7 +130,7 @@ class ReplayServiceTests(unittest.TestCase):
                 "prompt_start",
                 "waiting_for_confirmation",
                 "merge_conflict",
-                "fatal: merge conflict",
+                "fatal: build aborted",
             ],
         )
         self.assertIn("EVENT custom.note", transcript)

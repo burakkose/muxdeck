@@ -211,6 +211,34 @@ class WorktreeControllerTests(unittest.TestCase):
         self.assertIn("task/replay-state", start_intent.prompt)
         self.assertEqual(start_intent.suggested_window_name, "replay-state")
 
+    def test_list_worktrees_skips_conflict_detection(self) -> None:
+        """List view must not spawn per-repo git work — that's what made
+        the worktree screen sluggish. Conflict detection is reserved for
+        the detail view where only one worktree is inspected at a time.
+        """
+        self.controller.create_worktree(
+            self.repo_root,
+            task_title="Replay state",
+            attach_agent_id="agent-1",
+        )
+
+        detect_calls: list[object] = []
+        original_detect = self.service.detect_orphan_conflicts
+
+        def spy(repo_root: object) -> object:  # pragma: no cover - invoked only on regression
+            detect_calls.append(repo_root)
+            return original_detect(repo_root)
+
+        self.service.detect_orphan_conflicts = spy  # type: ignore[method-assign]
+        try:
+            rows = self.controller.list_worktrees(repo_root=str(self.repo_root))
+        finally:
+            self.service.detect_orphan_conflicts = original_detect  # type: ignore[method-assign]
+
+        self.assertEqual(detect_calls, [])
+        self.assertTrue(rows)
+        self.assertFalse(rows[0].has_conflicts)
+
 
 def _result(command: tuple[str, ...], *, cwd: Path) -> CommandResult:
     started_at = datetime(2025, 1, 1, tzinfo=UTC)

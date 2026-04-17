@@ -38,6 +38,9 @@ class FakeTmux:
     captured_text: str = ""
     select_window_calls: list[str] = field(default_factory=list)
     select_pane_calls: list[str] = field(default_factory=list)
+    select_window_calls: list[str] = field(default_factory=list)
+    switch_client_calls: list[str] = field(default_factory=list)
+    has_client: bool = True
     send_keys_calls: list[SendKeysCall] = field(default_factory=list)
     capture_calls: list[tuple[str, int | None]] = field(default_factory=list)
     new_window_pane_id: str = "%10"
@@ -50,6 +53,12 @@ class FakeTmux:
 
     def select_window(self, target_window: str, /) -> None:
         self.select_window_calls.append(target_window)
+
+    def switch_client(self, target: str, /) -> None:
+        self.switch_client_calls.append(target)
+
+    def has_attached_client(self) -> bool:
+        return self.has_client
 
     def send_keys(
         self,
@@ -140,6 +149,31 @@ class TestFocusPane:
         assert result.pane_id == "%5"
         assert tmux.select_window_calls == []
         assert tmux.select_pane_calls == ["%5"]
+        # With an attached client, switch-client is used to hand over the view.
+        assert tmux.switch_client_calls == ["%5"]
+
+    def test_cross_window_focus_selects_window_and_switches_client(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+
+        result = svc.focus_pane("%5", window_id="@42", session_name="muxdeck")
+
+        assert result.success is True
+        assert tmux.select_pane_calls == ["%5"]
+        assert tmux.select_window_calls == ["@42"]
+        assert tmux.switch_client_calls == ["%5"]
+
+    def test_no_attached_client_reports_advisory(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"}, has_client=False)
+        svc = TmuxActionService(tmux)
+
+        result = svc.focus_pane("%5", window_id="@42")
+
+        assert result.success is True
+        assert tmux.select_pane_calls == ["%5"]
+        assert tmux.select_window_calls == ["@42"]
+        assert tmux.switch_client_calls == []
+        assert "no attached tmux client" in result.message
 
     def test_pane_missing(self) -> None:
         tmux = FakeTmux(existing_panes=set())
@@ -158,12 +192,12 @@ class TestFocusPane:
 
         result = svc.focus_pane(
             "%5",
-            tmux_window_id="@2",
-            tmux_session_name="muxdeck",
+            window_id="@2",
+            session_name="muxdeck",
         )
 
         assert result.success is True
-        assert tmux.select_window_calls == ["=muxdeck:@2"]
+        assert tmux.select_window_calls == ["@2"]
         assert tmux.select_pane_calls == ["%5"]
 
     def test_execute_intent_open_pane_uses_agent_window_context(self) -> None:
@@ -173,7 +207,7 @@ class TestFocusPane:
         result = svc.execute_intent(_intent("open_pane"))
 
         assert result.success is True
-        assert tmux.select_window_calls == ["=muxdeck:@2"]
+        assert tmux.select_window_calls == ["@2"]
         assert tmux.select_pane_calls == ["%5"]
 
 
@@ -470,3 +504,57 @@ class TestStartAgent:
 
         assert result.success is True
         assert "my-agent" in result.message
+
+
+class TestResumeWindowsSession:
+    def test_local_session_uses_plain_copilot(self) -> None:
+        tmux = FakeTmux()
+        svc = TmuxActionService(tmux)
+
+        result = svc.resume_session("abc123", origin="local")
+
+        assert result.success is True
+        assert len(tmux.send_keys_calls) == 1
+        (sent,) = tmux.send_keys_calls[0].keys
+        assert sent == "copilot --resume=abc123"
+
+    def test_windows_session_wraps_in_pwsh_with_setlocation(self) -> None:
+        tmux = FakeTmux()
+        svc = TmuxActionService(tmux)
+
+        result = svc.resume_session(
+            "abc123",
+            origin="windows",
+            windows_cwd="C:\\Users\\alice\\proj",
+        )
+
+        assert result.success is True
+        (sent,) = tmux.send_keys_calls[0].keys
+        assert sent.startswith('pwsh.exe -NoExit -Command "')
+        assert "Set-Location -LiteralPath 'C:\\Users\\alice\\proj'" in sent
+        assert "copilot --resume=abc123" in sent
+
+    def test_windows_session_without_cwd_skips_setlocation(self) -> None:
+        tmux = FakeTmux()
+        svc = TmuxActionService(tmux)
+
+        result = svc.resume_session("abc123", origin="windows")
+
+        assert result.success is True
+        (sent,) = tmux.send_keys_calls[0].keys
+        assert "Set-Location" not in sent
+        assert "copilot --resume=abc123" in sent
+
+    def test_windows_session_escapes_single_quote(self) -> None:
+        tmux = FakeTmux()
+        svc = TmuxActionService(tmux)
+
+        svc.resume_session(
+            "abc123",
+            origin="windows",
+            windows_cwd="C:\\Users\\o'brien\\proj",
+        )
+
+        (sent,) = tmux.send_keys_calls[0].keys
+        # PowerShell single-quote escape doubles the quote.
+        assert "o''brien" in sent

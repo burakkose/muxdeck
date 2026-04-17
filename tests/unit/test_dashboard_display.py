@@ -335,3 +335,108 @@ class TestDashboardPanels:
         assert "fleet" in rendered
         assert "4 total / 3 active" in rendered
         assert "planner" in rendered
+
+    def test_subagent_detail_renders_structured_block_for_background(self):
+        from copilot_commander.controllers import DashboardSubAgentView
+        from copilot_commander.domain.subagents import ReadAgentInteraction
+        from copilot_commander.widgets.dashboard import AgentDetailPanel
+
+        interactions = (
+            ReadAgentInteraction(
+                timestamp=datetime(2026, 4, 5, 4, 14, 31, tzinfo=UTC),
+                arguments_summary='agent_id="risk-reviewer", wait=true, timeout=15',
+                result_content="progress update\nsecond line",
+            ),
+            ReadAgentInteraction(
+                timestamp=datetime(2026, 4, 5, 4, 15, 5, tzinfo=UTC),
+                arguments_summary='agent_id="risk-reviewer", wait=false',
+                result_content="final answer",
+            ),
+        )
+        view = DashboardSubAgentView(
+            tool_call_id="call_background_abcdef",
+            agent_name="general-purpose",
+            display_name="General Purpose Agent",
+            description="Assessing risks",
+            started_at=datetime(2026, 4, 5, 4, 12, 0, tzinfo=UTC),
+            completed_at=datetime(2026, 4, 5, 4, 16, 0, tzinfo=UTC),
+            is_running=False,
+            task_name="risk-reviewer",
+            mode="background",
+            read_interactions=interactions,
+            total_tokens=133463,
+            duration_ms=124335,
+            total_tool_calls=18,
+            model="claude-sonnet-4.5",
+            error_message="AbortError: aborted",
+        )
+        panel = AgentDetailPanel(id="focus")
+
+        panel.set_subagent(view)
+
+        rendered = _render(panel)
+        assert "risk-reviewer" in rendered
+        assert "[background]" in rendered
+        assert "133,463" in rendered
+        assert "claude-sonnet-4.5" in rendered
+        assert "AbortError" in rendered
+        assert "interactions (2)" in rendered
+        assert "read_agent(" in rendered
+        assert 'agent_id="risk-reviewer"' in rendered
+        assert "final answer" in rendered
+        # The launch-ack heading must NOT be rendered when we have a
+        # structured block to show instead.
+        assert "launch ack" not in rendered.lower()
+
+    def test_subagent_detail_falls_back_to_launch_ack_when_no_signals(self):
+        from copilot_commander.controllers import DashboardSubAgentView
+        from copilot_commander.widgets.dashboard import AgentDetailPanel
+
+        view = DashboardSubAgentView(
+            tool_call_id="call_new_launch",
+            agent_name="general-purpose",
+            display_name="General Purpose Agent",
+            description=None,
+            started_at=datetime(2026, 4, 5, 4, 12, 0, tzinfo=UTC),
+            completed_at=None,
+            is_running=True,
+            task_name="bg-worker",
+            mode="background",
+            result_content="Agent started in background with agent_id: bg-worker",
+        )
+        panel = AgentDetailPanel(id="focus")
+
+        panel.set_subagent(view)
+
+        rendered = _render(panel).lower()
+        assert "launch ack" in rendered
+        assert "bg-worker" in rendered
+        assert "interactions" not in rendered
+
+    def test_subagent_detail_foreground_keeps_output_rendering(self):
+        from copilot_commander.controllers import DashboardSubAgentView
+        from copilot_commander.widgets.dashboard import AgentDetailPanel
+
+        view = DashboardSubAgentView(
+            tool_call_id="call_fg_1234",
+            agent_name="explore",
+            display_name="Explore Agent",
+            description=None,
+            started_at=datetime(2026, 4, 5, 4, 12, 0, tzinfo=UTC),
+            completed_at=datetime(2026, 4, 5, 4, 12, 3, tzinfo=UTC),
+            is_running=False,
+            task_name="fg",
+            mode=None,
+            result_content="the exploration answer",
+            success=True,
+        )
+        panel = AgentDetailPanel(id="focus")
+
+        panel.set_subagent(view)
+
+        rendered = _render(panel)
+        assert "the exploration answer" in rendered
+        # Foreground has no metrics and no read_agent interactions — we
+        # must use the existing output rendering, not a metrics block.
+        assert "interactions" not in rendered.lower()
+        assert "output" in rendered.lower()

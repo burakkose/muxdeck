@@ -8,10 +8,16 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from copilot_commander.adapters.copilot_activity_reader import AgentActivity, TranscriptLine
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.events import Event, LogChunk
 from copilot_commander.domain.models import Agent, Session, Worktree
+from copilot_commander.domain.subagents import (
+    ReadAgentInteraction,
+    SubAgentSnapshot,
+    SubAgentTree,
+)
 from copilot_commander.domain.value_objects import utc_now
 from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
 from copilot_commander.perf import timed
@@ -179,6 +185,72 @@ class DashboardSelectedAgentView:
 
 
 @dataclass(frozen=True, slots=True)
+class DashboardSubAgentView:
+    """Presentation shape for one sub-agent row under a parent agent.
+
+    ``tool_call_id`` is the stable identity the widget uses to diff
+    rows across refreshes. Duration is pre-formatted so the widget
+    doesn't have to know about seconds/minutes math.
+    """
+
+    tool_call_id: str
+    agent_name: str
+    display_name: str
+    description: str | None
+    started_at: datetime
+    completed_at: datetime | None
+    is_running: bool
+    task_name: str | None = None
+    agent_type: str | None = None
+    prompt: str | None = None
+    mode: str | None = None
+    result_content: str | None = None
+    success: bool | None = None
+    read_interactions: tuple[ReadAgentInteraction, ...] = ()
+    total_tokens: int | None = None
+    duration_ms: int | None = None
+    total_tool_calls: int | None = None
+    model: str | None = None
+    error_message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardSubAgentTreeView:
+    """The full expanded view for one agent's sub-agent tree."""
+
+    agent_id: str
+    session_id: str | None
+    running: tuple[DashboardSubAgentView, ...]
+    recent: tuple[DashboardSubAgentView, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.running and not self.recent
+
+
+class SubAgentReaderPort(Protocol):
+    """The subset of ``SubAgentReader`` the controller needs."""
+
+    def read(self, session_id: str) -> SubAgentTree | None: ...
+
+
+class CopilotActivityReaderPort(Protocol):
+    """Resolve what an agent is doing right now from its events log."""
+
+    def read(self, session_id: str) -> AgentActivity | None: ...
+
+    def read_transcript(
+        self, session_id: str, *, limit: int = 40
+    ) -> tuple[TranscriptLine, ...]: ...
+
+
+class CopilotSessionResolverPort(Protocol):
+    """Resolve a tmux pane's pid to a live Copilot session id."""
+
+    def resolve_for_pid(self, pane_pid: int | None) -> str | None: ...
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardState:
     generated_at: datetime
     metrics: tuple[DashboardMetricView, ...]
@@ -200,12 +272,76 @@ class DashboardController:
         max_cost_usd: Decimal | None = None,
         max_runtime_minutes: int | None = None,
         subtask_registry: SubTaskRegistry | None = None,
+        subagent_reader: SubAgentReaderPort | None = None,
+        session_resolver: CopilotSessionResolverPort | None = None,
+        activity_reader: CopilotActivityReaderPort | None = None,
     ) -> None:
         self._store = store
         self._clock = clock
         self._max_cost_usd = max_cost_usd
         self._max_runtime_minutes = max_runtime_minutes
         self._subtask_registry = subtask_registry
+        self._subagent_reader = subagent_reader
+        self._session_resolver = session_resolver
+        self._activity_reader = activity_reader
+
+    def load_subagents(self, agent_id: str) -> DashboardSubAgentTreeView:
+        """Lazy-load the sub-agent tree for one agent.
+
+        Deliberately *not* called from :meth:`build_state` — the point
+        is that rendering the dashboard list stays cheap even when the
+        user has dozens of agents, and the parent-events parse only
+        runs for rows the operator has explicitly expanded.
+
+        Returns an empty tree (with ``session_id=None``) when the
+        agent has no known ``copilot_session_id``, no reader was
+        configured, or the session directory can't be resolved to any
+        of the reader's roots. The widget uses this shape to render a
+        friendly "no sub-agents" placeholder instead of hiding the
+        toggle.
+        """
+        agent = next(
+            (a for a in self._store.list_agents() if a.id == agent_id),
+            None,
+        )
+        if agent is None or self._subagent_reader is None:
+            return DashboardSubAgentTreeView(
+                agent_id=agent_id, session_id=None, running=(), recent=()
+            )
+        session_id = self._resolve_copilot_session_id(agent)
+        if session_id is None:
+            return DashboardSubAgentTreeView(
+                agent_id=agent_id, session_id=None, running=(), recent=()
+            )
+        tree = self._subagent_reader.read(session_id)
+        if tree is None:
+            return DashboardSubAgentTreeView(
+                agent_id=agent_id, session_id=session_id, running=(), recent=()
+            )
+        return DashboardSubAgentTreeView(
+            agent_id=agent_id,
+            session_id=session_id,
+            running=tuple(_to_view(snapshot) for snapshot in tree.running),
+            recent=tuple(_to_view(snapshot) for snapshot in tree.recent),
+        )
+
+    def _resolve_copilot_session_id(self, agent: Agent) -> str | None:
+        if agent.copilot_session_id:
+            return agent.copilot_session_id
+        # Fall back to the latest session linked to this agent in the
+        # sqlite store — some agents only record their copilot session
+        # id on the Session row, not the Agent row itself.
+        latest = self._store.get_latest_session_for_agent(agent.id)
+        if latest is not None and latest.copilot_session_id:
+            return latest.copilot_session_id
+        # Last resort: scan Copilot's ``inuse.<pid>.lock`` files and
+        # match against the pane's pid chain. Agent discovery does not
+        # always populate ``copilot_session_id`` (e.g. when the agent
+        # was adopted from a tmux pane that was already running), so
+        # the resolver fills that gap at read time.
+        if self._session_resolver is not None:
+            return self._session_resolver.resolve_for_pid(agent.pid)
+        return None
 
     def build_state(
         self,
@@ -280,6 +416,36 @@ class DashboardController:
 
         current_activity = _activity_from_task_title(agent.task_title)
         now = self._clock()
+
+        # Events-based current activity is much more reliable than regex
+        # parsing of the scrollback. When we have a real copilot session
+        # id and the reader is wired up, use the ground-truth tool-start
+        # stream to render "editing foo.py" / "running pytest" / "waiting:
+        # which DB?" instead of the stale task_title. Falls back to the
+        # old title-derived activity when the session hasn't persisted
+        # any events yet.
+        events_activity: AgentActivity | None = None
+        if self._activity_reader is not None and agent.copilot_session_id:
+            try:
+                events_activity = self._activity_reader.read(agent.copilot_session_id)
+            except Exception:
+                # The reader is best-effort; never let a stray IO error
+                # crash a dashboard render.
+                events_activity = None
+        if events_activity is not None and events_activity.summary:
+            current_activity = events_activity.summary
+        # ask_user pending in the events stream is the cleanest possible
+        # "agent is blocked on the operator" signal — much more reliable
+        # than regex-matching "Would you like me to..." in scrollback.
+        # Surface it as an attention reason when the status heuristic
+        # didn't already flag it (e.g. the pane hasn't been idle long
+        # enough for the scrollback-based rule to fire yet).
+        if events_activity is not None and events_activity.waiting_for_user:
+            needs_attention = True
+            if events_activity.tool_target:
+                attention_reason = f"waiting for input: {events_activity.tool_target}"
+            else:
+                attention_reason = "waiting for input"
 
         # Sparkline: record activity and build visualization
         _record_activity(agent.id, current_activity, now)
@@ -444,6 +610,20 @@ class DashboardController:
             if latest_session is not None
             else ()
         )
+        # The tmux pane capture is a noisy fallback: it picks up shell
+        # prompts, scrollback from before the agent started, and any
+        # other terminal chatter. When we have a Copilot session id
+        # we'd rather show the agent's actual speech from
+        # ``events.jsonl``, which is clean and attributable. Fall back
+        # to tmux only when no transcript is available yet.
+        log_preview = self._build_transcript_preview(
+            copilot_session_id=(
+                latest_session.copilot_session_id if latest_session is not None else None
+            ),
+            preview_line_limit=preview_line_limit,
+        )
+        if not log_preview:
+            log_preview = self._build_log_preview(logs, preview_line_limit=preview_line_limit)
         worktree_id = None
         if worktree is not None:
             worktree_id = worktree.id
@@ -461,7 +641,7 @@ class DashboardController:
             latest_event_kind=latest_event.kind if latest_event is not None else None,
             latest_event_severity=latest_event.severity if latest_event is not None else None,
             latest_event_at=latest_event.occurred_at if latest_event is not None else None,
-            log_preview=self._build_log_preview(logs, preview_line_limit=preview_line_limit),
+            log_preview=log_preview,
             recent_events=_extract_recent_events(logs),
             sub_tasks=(
                 tuple(
@@ -477,6 +657,33 @@ class DashboardController:
                 if self._subtask_registry is not None
                 else ()
             ),
+        )
+
+    def _build_transcript_preview(
+        self,
+        *,
+        copilot_session_id: str | None,
+        preview_line_limit: int,
+    ) -> tuple[DashboardLogLineView, ...]:
+        """Return agent speech as log preview lines, or empty tuple."""
+        if self._activity_reader is None or not copilot_session_id or preview_line_limit <= 0:
+            return ()
+        transcript = self._activity_reader.read_transcript(
+            copilot_session_id, limit=preview_line_limit
+        )
+        if not transcript:
+            return ()
+        return tuple(
+            DashboardLogLineView(
+                captured_at=line.at,
+                # Distinct source values so the widget can style
+                # agent vs operator speech differently and operators
+                # see at a glance which turn this line belongs to.
+                source="assistant" if line.role == "assistant" else "user",
+                sequence_no=line.sequence_no,
+                content=line.content,
+            )
+            for line in transcript
         )
 
     def _build_log_preview(
@@ -510,11 +717,21 @@ class DashboardController:
         limit: int,
     ) -> tuple[DashboardAlertView, ...]:
         alerts: list[DashboardAlertView] = []
+        # Terminal-status agents (DEAD/COMPLETED) are historical
+        # records, not actionable signals. A dead pane that was reaped
+        # minutes or days ago should not keep lighting up the
+        # dashboard with "tmux pane no longer exists" — the user has
+        # already moved on, and the alert has no remedy. We keep the
+        # row in the agent list (so the history is visible) but
+        # suppress the alert itself.
+        terminal_statuses = {AgentStatus.DEAD, AgentStatus.COMPLETED}
         for agent in agents:
             # Skip dead/completed agents — their alerts are stale and not actionable.
             if agent.status in {AgentStatus.DEAD, AgentStatus.COMPLETED}:
                 continue
             if not agent.needs_attention:
+                continue
+            if agent.status in terminal_statuses:
                 continue
             operator_status = agent.operator_status
             if operator_status is None:
@@ -641,16 +858,6 @@ class DashboardController:
         )
 
 
-_ACTIVITY_PREFIXES = (
-    "reading",
-    "writing",
-    "running",
-    "thinking",
-    "searching",
-    "using",
-)
-
-
 _EVENT_EMOJI: dict[str, str] = {
     "file_read": "📖",
     "file_write": "✏️",
@@ -698,12 +905,24 @@ def _extract_recent_events(
 
 
 def _activity_from_task_title(title: str | None) -> str | None:
+    """Surface whatever Copilot said it's doing, not just whitelisted verbs.
+
+    Earlier versions only passed titles that started with a known verb
+    ("reading", "writing", ...), which meant the dashboard said nothing
+    when the parser returned a free-form title ("Investigating test
+    failures", "Refactoring cache layer"). The user's top complaint was
+    "I do not easily know what an agent is doing", so show the title
+    verbatim when it's present and non-empty; trim overly long lines so
+    the detail panel stays compact.
+    """
     if title is None:
         return None
-    lower = title.lower().strip()
-    if any(lower.startswith(p) for p in _ACTIVITY_PREFIXES):
-        return title
-    return None
+    trimmed = title.strip()
+    if not trimmed:
+        return None
+    if len(trimmed) > 120:
+        trimmed = trimmed[:117].rstrip() + "…"
+    return trimmed
 
 
 def _path_name(value: str | None) -> str | None:
@@ -800,6 +1019,30 @@ def _check_stale_output(
     return stale_seconds > _STALE_THRESHOLD_SECONDS
 
 
+def _to_view(snapshot: SubAgentSnapshot) -> DashboardSubAgentView:
+    return DashboardSubAgentView(
+        tool_call_id=snapshot.tool_call_id,
+        agent_name=snapshot.agent_name,
+        display_name=snapshot.display_name,
+        description=snapshot.description,
+        started_at=snapshot.started_at,
+        completed_at=snapshot.completed_at,
+        is_running=snapshot.is_running,
+        task_name=snapshot.task_name,
+        agent_type=snapshot.agent_type,
+        prompt=snapshot.prompt,
+        mode=snapshot.mode,
+        result_content=snapshot.result_content,
+        success=snapshot.success,
+        read_interactions=snapshot.read_interactions,
+        total_tokens=snapshot.total_tokens,
+        duration_ms=snapshot.duration_ms,
+        total_tool_calls=snapshot.total_tool_calls,
+        model=snapshot.model,
+        error_message=snapshot.error_message,
+    )
+
+
 __all__ = [
     "DashboardAgentListItemView",
     "DashboardAlertView",
@@ -811,6 +1054,9 @@ __all__ = [
     "DashboardSelectedAgentView",
     "DashboardSort",
     "DashboardState",
+    "DashboardSubAgentTreeView",
+    "DashboardSubAgentView",
+    "SubAgentReaderPort",
     "_build_sparkline",
     "_check_stale_output",
 ]

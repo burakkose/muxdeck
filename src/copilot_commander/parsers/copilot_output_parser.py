@@ -63,32 +63,37 @@ _BLOCKING_PATTERNS: dict[BlockingKind, tuple[re.Pattern[str], ...]] = {
         re.compile(r"\brequires confirmation\b", re.IGNORECASE),
         re.compile(r"\bconfirm (?:to )?continue\b", re.IGNORECASE),
         re.compile(r"\bpress [yn](?:/| or )[yn] to continue\b", re.IGNORECASE),
+        # Copilot CLI approval prompts — the actual user-gating
+        # strings rendered in the TUI when the agent needs a yes/no
+        # from the operator.
+        re.compile(r"\bapprove (?:this )?(?:command|edit|tool)\b", re.IGNORECASE),
+        re.compile(r"\bdo you want (?:to|me) (?:to )?continue\b", re.IGNORECASE),
+        re.compile(r"\[\s*y\s*/\s*n\s*\]", re.IGNORECASE),
     ),
+    # The rest are kept for evidence gathering but are intentionally
+    # narrow. compute_status_heuristics() no longer uses them to set
+    # AgentStatus.BLOCKED — they only surface as attention reasons
+    # once the agent has also gone quiet. Loose matches here caused
+    # the dashboard to flag running agents as blocked whenever a tool
+    # call returned a non-zero exit, which is part of normal work.
     "merge_conflict": (
-        re.compile(r"\bmerge conflict\b(?!.*\bresolved\b)", re.IGNORECASE),
-        re.compile(r"\bconflict markers\b", re.IGNORECASE),
-        re.compile(r"\bcould not apply .*conflict", re.IGNORECASE),
+        re.compile(r"\bCONFLICT \(.+\): merge conflict in\b", re.IGNORECASE),
+        re.compile(r"^<<<<<<< ", re.MULTILINE),
     ),
     "authentication_issue": (
-        re.compile(r"\bauthentication (?:failed|required|error|expired)\b", re.IGNORECASE),
-        re.compile(r"\blogin required\b", re.IGNORECASE),
-        re.compile(r"\bnot authenticated\b", re.IGNORECASE),
-        re.compile(r"\binvalid token\b", re.IGNORECASE),
-        re.compile(r"\bsign in\b", re.IGNORECASE),
+        re.compile(r"\bauthentication (?:failed|required|expired)\b", re.IGNORECASE),
+        re.compile(r"\bplease sign in (?:to|with)\b", re.IGNORECASE),
+        re.compile(r"\bgh auth login\b", re.IGNORECASE),
     ),
     "rate_limit": (
-        re.compile(r"\brate limit(?: exceeded| hit| reached)\b", re.IGNORECASE),
-        re.compile(r"\btoo many requests\b", re.IGNORECASE),
-        re.compile(r"\bquota exceeded\b", re.IGNORECASE),
-        re.compile(r"\b429\b.*\b(?:rate limit|too many requests)\b", re.IGNORECASE),
+        re.compile(r"\brate limit exceeded\b", re.IGNORECASE),
+        re.compile(r"\bHTTP 429\b"),
     ),
-    "tool_failure": (
-        re.compile(r"\btool failed\b", re.IGNORECASE),
-        re.compile(r"\bfailed to run tool\b", re.IGNORECASE),
-        re.compile(r"\bcommand failed\b", re.IGNORECASE),
-        re.compile(r"\bexit code\s+[1-9]\d*\b", re.IGNORECASE),
-        re.compile(r"\bstderr:\b", re.IGNORECASE),
-    ),
+    # tool_failure deliberately unset — "command failed" / "exit code"
+    # / "stderr:" matched too eagerly across the scrollback. If a real
+    # tool-failure signal is ever needed, add it here with a pattern
+    # that can't be confused with routine tool output.
+    "tool_failure": (),
 }
 _ERROR_PATTERNS = (
     re.compile(r"(?:^|\b)error:", re.IGNORECASE),

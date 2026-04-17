@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -20,6 +21,10 @@ class TmuxOperations(Protocol):
     def select_pane(self, target_pane: str, /) -> CommandResult: ...
 
     def select_window(self, target_window: str, /) -> CommandResult: ...
+
+    def switch_client(self, target: str, /) -> CommandResult: ...
+
+    def has_attached_client(self) -> bool: ...
 
     def send_keys(
         self,
@@ -64,28 +69,6 @@ class ActionResult:
     pane_id: str = ""
 
 
-def _build_window_target(
-    *,
-    tmux_window_id: str | None,
-    tmux_session_name: str | None,
-) -> str | None:
-    window_id = _normalize_target_part(tmux_window_id)
-    if window_id is None:
-        return None
-    session_name = _normalize_target_part(tmux_session_name)
-    if session_name is None:
-        return window_id
-    exact_session_name = session_name if session_name.startswith("=") else f"={session_name}"
-    return f"{exact_session_name}:{window_id}"
-
-
-def _normalize_target_part(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = value.strip()
-    return normalized or None
-
-
 class TmuxActionService:
     """Executes agent actions via tmux."""
 
@@ -96,26 +79,66 @@ class TmuxActionService:
         self,
         pane_id: str,
         *,
-        tmux_window_id: str | None = None,
-        tmux_session_name: str | None = None,
+        window_id: str | None = None,
+        session_name: str | None = None,
     ) -> ActionResult:
-        """Switch tmux focus to the agent's pane."""
+        """Switch tmux focus to the agent's pane.
+
+        ``select-pane`` alone only flips the active pane **within the pane's
+        window**. If the agent's pane is in a different window (or session)
+        than the currently attached tmux client, the user's view won't move
+        unless we also point the window at it and hand the client over with
+        ``switch-client``. We do all three, best-effort, and report back
+        which hop succeeded so the dashboard can say something useful.
+        """
         if not self._tmux.pane_exists(pane_id):
             return ActionResult(
                 success=False,
                 message=f"pane {pane_id} does not exist",
                 pane_id=pane_id,
             )
-        window_target = _build_window_target(
-            tmux_window_id=tmux_window_id,
-            tmux_session_name=tmux_session_name,
-        )
-        if window_target is not None:
-            self._tmux.select_window(window_target)
+
+        # Always flip the active pane within its window — cheap and needed
+        # even when the client is already on that window.
         self._tmux.select_pane(pane_id)
+
+        # Point the window to the pane; harmless if it's already current.
+        if window_id:
+            with contextlib.suppress(Exception):
+                self._tmux.select_window(window_id)
+
+        # Hand the attached client over. When commander runs on a socket
+        # with no attached clients (e.g. the user is on a different tmux
+        # server), this is a genuine no-op and we say so rather than
+        # pretending we moved focus.
+        moved_client = False
+        if self._tmux.has_attached_client():
+            switch_target = pane_id
+            try:
+                self._tmux.switch_client(switch_target)
+                moved_client = True
+            except Exception:
+                # Some tmux versions reject pane targets for switch-client
+                # when the window isn't current; fall back to the window
+                # or session target if we have one.
+                fallback = window_id or session_name
+                if fallback is not None:
+                    try:
+                        self._tmux.switch_client(fallback)
+                        moved_client = True
+                    except Exception:
+                        moved_client = False
+
+        if moved_client:
+            message = f"focused pane {pane_id}"
+        else:
+            message = (
+                f"selected pane {pane_id} — no attached tmux client on this "
+                "socket, run `tmux attach` or press `a` to jump over"
+            )
         return ActionResult(
             success=True,
-            message=f"focused pane {pane_id}",
+            message=message,
             pane_id=pane_id,
         )
 
@@ -166,13 +189,12 @@ class TmuxActionService:
 
         if kind == "open_pane":
             pane_target = meta.get("pane_target", intent.agent.pane_target)
+            window_target = meta.get("window_target") or intent.agent.tmux_window_id
+            session_target = meta.get("session_target") or intent.agent.tmux_session_name
             return self.focus_pane(
                 pane_target,
-                tmux_window_id=meta.get("tmux_window_id", intent.agent.tmux_window_id),
-                tmux_session_name=meta.get(
-                    "tmux_session_name",
-                    intent.agent.tmux_session_name,
-                ),
+                window_id=window_target,
+                session_name=session_target,
             )
 
         if kind == "interrupt":
@@ -231,21 +253,39 @@ class TmuxActionService:
         *,
         cwd: Path | None = None,
         window_name: str | None = None,
+        origin: str = "local",
+        windows_cwd: str | None = None,
+        pwsh_binary: str = "pwsh.exe",
     ) -> ActionResult:
         """Resume a Copilot CLI session in a new tmux window.
 
         Creates a detached window and runs ``copilot --resume=<session_id>``
         so the session appears alongside existing panes.
+
+        When ``origin`` is ``"windows"`` the session was created on the
+        Windows side of WSL, so we wrap the resume in ``pwsh`` and use
+        the original Windows-style ``cwd`` the CLI persisted. The tmux
+        window still starts in the WSL directory (or ``None``) because
+        PowerShell's own ``Set-Location`` handles the Windows path.
         """
-        cmd = f"copilot --resume={session_id}"
         name = window_name or f"copilot-{session_id[:8]}"
+        if origin == "windows":
+            keys = self._build_windows_resume_keys(
+                session_id=session_id,
+                windows_cwd=windows_cwd,
+                pwsh_binary=pwsh_binary,
+            )
+            start_directory: Path | None = None
+        else:
+            keys = [f"copilot --resume={session_id}"]
+            start_directory = cwd
         try:
             meta = self._tmux.new_window(
                 window_name=name,
-                start_directory=cwd,
+                start_directory=start_directory,
                 detached=True,
             )
-            self._tmux.send_keys(meta.pane_id, [cmd], literal=True, append_enter=True)
+            self._tmux.send_keys(meta.pane_id, keys, literal=True, append_enter=True)
             return ActionResult(
                 success=True,
                 message=f"resumed session {session_id[:8]}… in {meta.pane_id}",
@@ -256,6 +296,31 @@ class TmuxActionService:
                 success=False,
                 message=f"failed to resume: {exc}",
             )
+
+    @staticmethod
+    def _build_windows_resume_keys(
+        *,
+        session_id: str,
+        windows_cwd: str | None,
+        pwsh_binary: str,
+    ) -> list[str]:
+        """Assemble the key sequence that starts pwsh + resumes copilot.
+
+        We run a single ``pwsh -NoExit -Command "..."`` invocation so the
+        pane keeps the interactive PowerShell prompt after the CLI exits,
+        which matches the user's existing workflow of running ``pwsh``
+        then ``copilot`` manually.
+        """
+        script_parts: list[str] = []
+        if windows_cwd:
+            # PowerShell accepts forward or back slashes; quote the path
+            # to survive spaces. Single quotes keep it literal so ``$``
+            # or backticks inside the path aren't expanded.
+            escaped = windows_cwd.replace("'", "''")
+            script_parts.append(f"Set-Location -LiteralPath '{escaped}'")
+        script_parts.append(f"copilot --resume={session_id}")
+        script = "; ".join(script_parts)
+        return [f'{pwsh_binary} -NoExit -Command "{script}"']
 
     def start_agent(
         self,

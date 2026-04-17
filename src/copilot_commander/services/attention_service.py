@@ -37,6 +37,10 @@ class AttentionInboxService:
         self._unread_ids: set[str] = set()
         self._notified_critical_ids: set[str] = set()
 
+    @property
+    def unread_count(self) -> int:
+        return len(self._unread_ids)
+
     def observe(self, signals: Sequence[AttentionSignal]) -> tuple[AttentionNotification, ...]:
         notifications: list[AttentionNotification] = []
         for signal in signals:

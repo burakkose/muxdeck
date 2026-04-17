@@ -136,7 +136,14 @@ class AgentControllerTests(unittest.TestCase):
         self.assertTrue(complete.session_ended)
         pane_intent = controller.open_pane_intent("agent-1")
         worktree_intent = controller.open_worktree_intent("agent-1")
-        self.assertEqual(pane_intent.metadata, (("pane_target", "%1"), ("window_id", "@1")))
+        self.assertEqual(
+            pane_intent.metadata,
+            (
+                ("pane_target", "%1"),
+                ("window_target", "@1"),
+                ("session_target", "muxdeck"),
+            ),
+        )
         self.assertEqual(pane_intent.agent.tmux_session_name, "muxdeck")
         self.assertEqual(pane_intent.agent.tmux_window_id, "@1")
         self.assertEqual(worktree_intent.metadata, (("path", "/repo/worktrees/task"),))
