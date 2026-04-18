@@ -189,16 +189,28 @@ class RuntimeSynchronizer:
         *,
         warnings: list[RuntimeSyncWarning],
     ) -> None:
-        """Mark agents as DEAD when their tmux pane no longer exists."""
+        """Mark agents as DEAD when their tmux pane no longer exists.
+
+        Also covers the "operator killed copilot CLI but the shell pane
+        survived" case: discovery demotes such panes to
+        ``non_agent_pane``, monitoring then skips them, and we reap
+        the stored agent here so it stops appearing on the dashboard.
+        """
         if self._agent_store is None:
             return
         live_pane_ids = frozenset(pane.snapshot.pane_id for pane in report.panes)
+        # Panes that are still alive but no longer count as agents
+        # (copilot exited, replaced by another AI CLI, etc.). Their
+        # managed_agent records must be reaped so they don't linger.
+        non_agent_pane_ids = frozenset(pane.snapshot.pane_id for pane in report.non_agent_panes)
         now = ensure_aware_datetime(self._clock(), field_name="value")
         terminal_statuses = {AgentStatus.DEAD, AgentStatus.COMPLETED}
         for agent in self._agent_store.list_agents():
             if agent.status in terminal_statuses:
                 continue
-            if agent.tmux_pane_id in live_pane_ids:
+            pane_missing = agent.tmux_pane_id not in live_pane_ids
+            pane_no_longer_agent = agent.tmux_pane_id in non_agent_pane_ids
+            if not pane_missing and not pane_no_longer_agent:
                 continue
             elapsed = (now - agent.last_seen_at).total_seconds()
             if elapsed < self._dead_grace_period_sec:
@@ -233,7 +245,13 @@ class RuntimeSynchronizer:
             )
             try:
                 self._agent_store.upsert_agent(dead_agent)
-                _log.info("reaped stale agent %s (pane %s)", agent.id, agent.tmux_pane_id)
+                reason = "pane gone" if pane_missing else "copilot CLI exited"
+                _log.info(
+                    "reaped stale agent %s (pane %s, reason: %s)",
+                    agent.id,
+                    agent.tmux_pane_id,
+                    reason,
+                )
             except Exception:
                 _log.exception("failed to reap agent %s", agent.id)
                 warnings.append(

@@ -205,12 +205,32 @@ def classify_pane(
         reasons.append("captured Copilot evidence")
 
     is_non_copilot = _is_non_copilot_command(snapshot.pane_current_command)
+    # Detect "operator killed copilot" panes: the pane is alive and now
+    # the foreground process is a known shell, AND the process tree
+    # walk found no copilot child. We deliberately ignore
+    # ``session_evidence`` here — the scrollback still contains the
+    # session id, banner, and usage from the just-exited copilot run,
+    # so any "evidence" signal would falsely keep the agent alive
+    # forever after copilot CLI was terminated. The shell+no-copilot
+    # combination is the authoritative live signal.
+    copilot_no_longer_running_in_managed_pane = (
+        managed_agent is not None
+        and not command_detection.is_likely_copilot
+        and _is_shell_command(snapshot.pane_current_command)
+    )
     if is_non_copilot and not command_detection.is_likely_copilot:
         # Pane now runs a known non-copilot AI CLI (e.g. claude, aider).
         # Override even if we have a stored agent record from before.
         classification: PaneClassification = "non_agent_pane"
         confidence = Decimal("0.9500")
         reasons.append("known non-copilot AI CLI")
+    elif copilot_no_longer_running_in_managed_pane:
+        # Operator terminated the copilot CLI; the pane survived as a
+        # plain shell. Demote so the agent can be reaped instead of
+        # lingering on the dashboard as if it were still running.
+        classification = "non_agent_pane"
+        confidence = Decimal("0.9000")
+        reasons.append("copilot CLI no longer running in pane")
     elif managed_agent is not None or matched_session is not None or matched_context is not None:
         classification = "managed_agent"
         confidence = Decimal("0.9900")

@@ -246,3 +246,89 @@ class TestStaleAgentReaping(unittest.TestCase):
         )
         sync.refresh()
         assert len(upserted) == 0, "Should skip already-dead agents"
+
+    def test_reaps_managed_agent_when_copilot_cli_exited(self):
+        # Operator killed the copilot CLI in a managed pane. The
+        # tmux pane survives as a plain shell, so discovery now
+        # classifies it as ``non_agent_pane`` and monitoring skips
+        # it. Without this reaper branch the stored agent record
+        # would linger forever as RUNNING on the dashboard, even
+        # though copilot is gone.
+        from copilot_commander.adapters.copilot_adapter import CopilotCommandDetection
+        from copilot_commander.services.discovery_service import (
+            DiscoveryPaneSnapshot,
+            PaneDiscovery,
+            PaneDiscoveryReport,
+        )
+        from copilot_commander.services.runtime_service import RuntimeSynchronizer
+
+        now = _TS + timedelta(seconds=60)
+        live_agent = _make_agent(
+            pane_id="%7",
+            status=AgentStatus.RUNNING,
+            last_seen_at=_TS,
+        )
+        non_agent_discovery = PaneDiscovery(
+            snapshot=DiscoveryPaneSnapshot(
+                pane_id="%7",
+                tmux_session_name="main",
+                tmux_window_id="@0",
+                pane_current_command="bash",
+            ),
+            discovered_at=now,
+            classification="non_agent_pane",
+            reasons=("copilot CLI no longer running in pane",),
+            command_detection=CopilotCommandDetection(
+                candidate=("bash",),
+                is_likely_copilot=False,
+                reason="not_copilot",
+            ),
+        )
+        upserted: list[Agent] = []
+
+        class FakeDiscovery:
+            def discover_panes(self):
+                return PaneDiscoveryReport(
+                    discovered_at=now,
+                    panes=(non_agent_discovery,),
+                    managed_agents=(),
+                    unmanaged_probable_agents=(),
+                    non_agent_panes=(non_agent_discovery,),
+                )
+
+        class FakeMonitoring:
+            def monitor_discoveries(self, discoveries, /):
+                from copilot_commander.services.monitoring_service import MonitoringReport
+
+                return MonitoringReport(monitored_at=now, results=())
+
+        class FakeGit:
+            def discover_repo_root(self, cwd, /):
+                return None
+
+            def current_branch(self, cwd, /):
+                return None
+
+        class FakeAgentStore:
+            def list_agents(self):
+                return [live_agent]
+
+            def upsert_agent(self, agent, /):
+                upserted.append(agent)
+
+        sync = RuntimeSynchronizer(
+            FakeDiscovery(),
+            FakeMonitoring(),
+            FakeGit(),
+            agent_store=FakeAgentStore(),
+            dead_grace_period_sec=10,
+            clock=lambda: now,
+        )
+        sync.refresh()
+
+        assert len(upserted) == 1
+        reaped = upserted[0]
+        assert reaped.status == AgentStatus.DEAD
+        assert reaped.tmux_pane_id == "%7"
+        assert reaped.needs_attention is False
+        assert reaped.attention_reason is None

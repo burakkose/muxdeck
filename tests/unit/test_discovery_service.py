@@ -126,7 +126,13 @@ class DiscoveryServiceTests(unittest.TestCase):
                 session_name="muxdeck",
                 window_id="@1",
                 window_name="agents",
-                pane_current_command="bash",
+                # Non-shell foreground process: copilot is still
+                # actually running here. A shell-foreground pane
+                # would be demoted to non_agent_pane (see
+                # ``test_managed_agent_pane_demoted_when_copilot_exited``)
+                # — the stored session id is not enough to keep an
+                # agent alive after copilot CLI has exited.
+                pane_current_command="node",
                 pane_current_path="/repo/worktrees/task-one",
             ),
         )
@@ -146,6 +152,57 @@ class DiscoveryServiceTests(unittest.TestCase):
         assert discovery.managed_agent is existing_agent
         assert discovery.matched_session is existing_session
         assert "matched stored agent" in discovery.reasons
+
+    def test_managed_agent_pane_demoted_when_copilot_exited(self) -> None:
+        # Operator killed the copilot CLI in a managed pane. The
+        # tmux pane survives as a plain shell, and the scrollback
+        # still carries the just-exited session's banner / id.
+        # Discovery must demote it to ``non_agent_pane`` so the
+        # runtime reaper can mark the agent DEAD instead of letting
+        # it linger on the dashboard as if copilot were still up.
+        existing_agent = Agent(
+            id="agent-1",
+            name="planner",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@9",
+            tmux_pane_id="%7",
+            cwd="/repo/worktrees/task-one",
+            copilot_session_id="copilot-123",
+            status=AgentStatus.RUNNING,
+            started_at=self.now,
+            last_seen_at=self.now,
+        )
+        existing_session = Session(
+            id="session-1",
+            agent_id="agent-1",
+            copilot_session_id="copilot-123",
+            created_at=self.now,
+        )
+        panes = (
+            TmuxPaneMetadata(
+                pane_id="%7",
+                session_name="muxdeck",
+                window_id="@1",
+                window_name="agents",
+                pane_current_command="bash",
+                pane_current_path="/repo/worktrees/task-one",
+            ),
+        )
+        tmux = FakeTmuxGateway(panes, {"%7": "Copilot session id: copilot-123\nPrompt: status"})
+        service = DiscoveryService(
+            tmux,
+            self.copilot,
+            InMemoryDiscoveryStore(agent=existing_agent, session=existing_session),
+            clock=lambda: self.now,
+        )
+
+        report = service.discover_panes()
+
+        assert len(report.managed_agents) == 0
+        assert len(report.non_agent_panes) == 1
+        discovery = report.non_agent_panes[0]
+        assert discovery.classification == "non_agent_pane"
+        assert "copilot CLI no longer running in pane" in discovery.reasons
 
     def test_discovers_unmanaged_probable_agent_from_command_and_output(self) -> None:
         panes = (
