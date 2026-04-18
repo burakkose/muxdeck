@@ -182,11 +182,11 @@ class TmuxActionService:
         """Switch tmux focus to the agent's pane.
 
         ``select-pane`` alone only flips the active pane **within the pane's
-        window**. If the agent's pane is in a different window (or session)
-        than the currently attached tmux client, the user's view won't move
-        unless we also point the window at it and hand the client over with
-        ``switch-client``. We do all three, best-effort, and report back
-        which hop succeeded so the dashboard can say something useful.
+        window**. If the agent lives in a different session/window than the
+        currently attached tmux client, we first switch the client to the
+        session (when known), then select the window, and only then activate
+        the pane. Falling back to ``switch-client`` with a pane target can
+        leave tmux on the wrong window even though the pane id resolves.
         """
         if not self._tmux.pane_exists(pane_id):
             return ActionResult(
@@ -195,38 +195,24 @@ class TmuxActionService:
                 pane_id=pane_id,
             )
 
-        # Always flip the active pane within its window — cheap and needed
-        # even when the client is already on that window.
-        self._tmux.select_pane(pane_id)
+        has_client = self._tmux.has_attached_client()
+        if has_client and session_name:
+            with contextlib.suppress(CommandError, ValueError):
+                self._tmux.switch_client(session_name)
 
-        # Point the window to the pane; harmless if it's already current.
         if window_id:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(CommandError, ValueError):
                 self._tmux.select_window(window_id)
 
-        # Hand the attached client over. When commander runs on a socket
-        # with no attached clients (e.g. the user is on a different tmux
-        # server), this is a genuine no-op and we say so rather than
-        # pretending we moved focus.
-        moved_client = False
-        if self._tmux.has_attached_client():
-            switch_target = pane_id
-            try:
-                self._tmux.switch_client(switch_target)
-                moved_client = True
-            except Exception:
-                # Some tmux versions reject pane targets for switch-client
-                # when the window isn't current; fall back to the window
-                # or session target if we have one.
-                fallback = window_id or session_name
-                if fallback is not None:
-                    try:
-                        self._tmux.switch_client(fallback)
-                        moved_client = True
-                    except Exception:
-                        moved_client = False
+        # Always flip the active pane within its window after the client is on
+        # the right session/window. This is also enough for same-window focus.
+        self._tmux.select_pane(pane_id)
 
-        if moved_client:
+        if has_client and window_id is None and session_name is None:
+            with contextlib.suppress(CommandError, ValueError):
+                self._tmux.switch_client(pane_id)
+
+        if has_client:
             message = f"focused pane {pane_id}"
         else:
             message = (

@@ -67,6 +67,7 @@ class FakeTmux:
 
     existing_panes: set[str] = field(default_factory=set)
     captured_text: str = ""
+    operation_calls: list[tuple[str, str]] = field(default_factory=list)
     select_window_calls: list[str] = field(default_factory=list)
     select_pane_calls: list[str] = field(default_factory=list)
     switch_client_calls: list[str] = field(default_factory=list)
@@ -93,14 +94,17 @@ class FakeTmux:
         return target_pane in self.existing_panes
 
     def select_pane(self, target_pane: str, /) -> CommandResult:
+        self.operation_calls.append(("select_pane", target_pane))
         self.select_pane_calls.append(target_pane)
         return _command_result(("tmux", "select-pane"))
 
     def select_window(self, target_window: str, /) -> CommandResult:
+        self.operation_calls.append(("select_window", target_window))
         self.select_window_calls.append(target_window)
         return _command_result(("tmux", "select-window"))
 
     def switch_client(self, target: str, /) -> CommandResult:
+        self.operation_calls.append(("switch_client", target))
         self.switch_client_calls.append(target)
         return _command_result(("tmux", "switch-client"))
 
@@ -241,10 +245,9 @@ class TestFocusPane:
         assert result.pane_id == "%5"
         assert tmux.select_window_calls == []
         assert tmux.select_pane_calls == ["%5"]
-        # With an attached client, switch-client is used to hand over the view.
         assert tmux.switch_client_calls == ["%5"]
 
-    def test_cross_window_focus_selects_window_and_switches_client(self) -> None:
+    def test_cross_window_focus_switches_session_then_window_then_pane(self) -> None:
         tmux = FakeTmux(existing_panes={"%5"})
         svc = TmuxActionService(tmux)
 
@@ -253,7 +256,12 @@ class TestFocusPane:
         assert result.success is True
         assert tmux.select_pane_calls == ["%5"]
         assert tmux.select_window_calls == ["@42"]
-        assert tmux.switch_client_calls == ["%5"]
+        assert tmux.switch_client_calls == ["muxdeck"]
+        assert tmux.operation_calls == [
+            ("switch_client", "muxdeck"),
+            ("select_window", "@42"),
+            ("select_pane", "%5"),
+        ]
 
     def test_no_attached_client_reports_advisory(self) -> None:
         tmux = FakeTmux(existing_panes={"%5"}, has_client=False)
@@ -291,6 +299,10 @@ class TestFocusPane:
         assert result.success is True
         assert tmux.select_window_calls == ["@2"]
         assert tmux.select_pane_calls == ["%5"]
+        assert tmux.operation_calls[:2] == [
+            ("switch_client", "muxdeck"),
+            ("select_window", "@2"),
+        ]
 
     def test_execute_intent_open_pane_uses_agent_window_context(self) -> None:
         tmux = FakeTmux(existing_panes={"%5"})
@@ -299,6 +311,7 @@ class TestFocusPane:
         result = svc.execute_intent(_intent("open_pane"))
 
         assert result.success is True
+        assert tmux.switch_client_calls == ["muxdeck"]
         assert tmux.select_window_calls == ["@2"]
         assert tmux.select_pane_calls == ["%5"]
 
