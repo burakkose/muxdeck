@@ -12,6 +12,8 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label
 
+from copilot_commander.bindings import BindingSpec
+
 _DELTA_RE: Final = re.compile(r"^([+-])(\d+)([smh])$")
 _HMS_RE: Final = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
 _DELTA_UNITS: Final = {"s": 1, "m": 60, "h": 3600}
@@ -98,7 +100,7 @@ class JumpToTimeScreen(ModalScreen[datetime | None]):
     }
     """
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[list[BindingSpec]] = [
         ("escape", "cancel", "Cancel"),
     ]
 

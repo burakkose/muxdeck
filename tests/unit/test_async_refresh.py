@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -23,6 +23,7 @@ from copilot_commander.controllers import (
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.models import Session
 from copilot_commander.services.runtime_service import RuntimeSyncReport
+from copilot_commander.widgets.common import KeyHintFooter
 
 _TIMESTAMP = datetime(2025, 1, 1, 12, tzinfo=UTC)
 
@@ -126,6 +127,12 @@ class FakeDashboardController:
                 log_preview=(),
             ),
         )
+
+
+class FailingDashboardController:
+    def build_state(self, **kwargs: object) -> DashboardState:
+        del kwargs
+        raise RuntimeError("dashboard not ready")
 
 
 class FakeWorktreeController:
@@ -250,6 +257,23 @@ async def test_no_synchronizer_still_refreshes_widgets() -> None:
         await pilot.pause()
         # Should not crash and should show default content
         assert app.last_sync_report is None
+
+
+@pytest.mark.asyncio
+async def test_dashboard_first_load_marks_widgets_loading_when_state_unavailable() -> None:
+    runtime = _build_fake_runtime(synchronizer=None)
+    runtime_any = cast(Any, runtime)
+    runtime_any.dashboard = FailingDashboardController()
+    app = CommanderApp(runtime)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert screen.query_one("#dashboard-agents").loading is True
+        assert screen.query_one("#dashboard-detail").loading is True
+        assert screen.query_one("#dashboard-log").loading is True
+        assert screen.query_one("#dashboard-alerts").loading is True
+        assert "loading dashboard" in screen.query_one(KeyHintFooter).status.lower()
 
 
 @pytest.mark.asyncio

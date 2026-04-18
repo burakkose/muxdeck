@@ -22,7 +22,7 @@ from copilot_commander.adapters.git_adapter import (
 )
 from copilot_commander.adapters.process_adapter import ProcessAdapter
 from copilot_commander.adapters.sqlite_store import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
-from copilot_commander.adapters.tmux_adapter import TmuxAdapter, TmuxPaneMetadata
+from copilot_commander.adapters.tmux_adapter import TmuxAdapter, TmuxPaneMetadata, TmuxWindowInfo
 
 __all__ = [
     "DEFAULT_DATABASE_FILE_NAME",
@@ -48,4 +48,5 @@ __all__ = [
     "SQLiteStore",
     "TmuxAdapter",
     "TmuxPaneMetadata",
+    "TmuxWindowInfo",
 ]

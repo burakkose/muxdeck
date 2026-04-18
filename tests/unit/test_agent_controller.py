@@ -128,6 +128,12 @@ class AgentControllerTests(unittest.TestCase):
         restart = controller.restart_intent("agent-1", model="gpt-5.4")
         send_input = controller.send_input_intent("agent-1", "Continue")
         complete = controller.mark_complete("agent-1")
+        rename_window = controller.rename_window_intent("agent-1", new_name="planner-ui")
+        move_window = controller.move_to_window_intent(
+            "agent-1",
+            new_window_name="planner-ui",
+        )
+        kill_pane = controller.kill_pane_intent("agent-1")
 
         self.assertTrue(adopted.session_created)
         self.assertEqual(adopted.session_id, "session-created")
@@ -147,6 +153,19 @@ class AgentControllerTests(unittest.TestCase):
         self.assertEqual(pane_intent.agent.tmux_session_name, "muxdeck")
         self.assertEqual(pane_intent.agent.tmux_window_id, "@1")
         self.assertEqual(worktree_intent.metadata, (("path", "/repo/worktrees/task"),))
+        self.assertEqual(
+            rename_window.metadata,
+            (("window_target", "@1"), ("window_name", "planner-ui")),
+        )
+        self.assertEqual(
+            move_window.metadata,
+            (
+                ("pane_target", "%1"),
+                ("session_target", "muxdeck"),
+                ("new_window_name", "planner-ui"),
+            ),
+        )
+        self.assertEqual(kill_pane.metadata, (("pane_target", "%1"),))
 
 
 if __name__ == "__main__":

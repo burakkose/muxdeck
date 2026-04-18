@@ -2,8 +2,8 @@
 
 The pane viewer works in two halves:
 
-* ``PaneStreamAdapter`` is a narrow tmux-facing adapter. It seeds the
-  viewer with the current scrollback (``capture-pane -p -e -J``), wires
+* ``PaneStreamAdapter`` is a narrow tmux-facing adapter. It captures the
+  current rendered pane (``capture-pane -p -e``), wires
   ``pipe-pane`` so every new byte written to the real pane is appended
   to a session-scoped ring file, and on close tears the pipe down. It
   also forwards translated key events via ``send-keys``.
@@ -318,6 +318,38 @@ class RingLineBuffer:
         dropped so a caller passing whole lines doesn't accidentally
         store a blank tail. Empty input returns an empty tuple.
         """
+        added = self._split_lines(text)
+        if not added:
+            return ()
+        self._buf.extend(added)
+        return added
+
+    def replace_tail_text(self, text: str) -> tuple[str, ...]:
+        """Replace the newest lines with ``text``.
+
+        Used when a fresh tmux snapshot should correct the tail of the
+        live mirror (for carriage-return heavy / dynamically redrawn
+        output) without discarding older history already captured from
+        the stream.
+        """
+        replacement = self._split_lines(text)
+        if not replacement:
+            return ()
+        existing = list(self._buf)
+        replace_count = min(len(replacement), len(existing))
+        merged = (
+            [*existing[:-replace_count], *replacement]
+            if replace_count
+            else [*existing, *replacement]
+        )
+        self._buf = deque(merged[-self._max :], maxlen=self._max)
+        return replacement
+
+    def lines(self) -> tuple[str, ...]:
+        return tuple(self._buf)
+
+    @staticmethod
+    def _split_lines(text: str) -> tuple[str, ...]:
         if not text:
             return ()
         parts = text.split("\n")
@@ -325,14 +357,7 @@ class RingLineBuffer:
         # ``"line\n"`` stores exactly one line, not one + "".
         if parts[-1] == "":
             parts.pop()
-        if not parts:
-            return ()
-        added = tuple(parts)
-        self._buf.extend(added)
-        return added
-
-    def lines(self) -> tuple[str, ...]:
-        return tuple(self._buf)
+        return tuple(parts)
 
 
 # ── adapter ──────────────────────────────────────────────────────────
@@ -352,15 +377,24 @@ class PaneStreamAdapter:
         self._tmux = tmux
 
     def seed(self, pane_id: str) -> str:
-        """Return the current scrollback with ANSI sequences preserved.
+        """Return a rendered snapshot of the pane with ANSI preserved.
 
-        Raises whatever :class:`TmuxPaneStream` raises — callers wrap
-        in try/except to surface "pane vanished" as a status message
-        rather than a crash.
+        Alias for :meth:`capture_snapshot`, kept so the screen can keep
+        its "seed, then stream" structure while using the same
+        tmux-facing capture semantics as later resyncs.
+        """
+        return self.capture_snapshot(pane_id)
+
+    def capture_snapshot(self, pane_id: str) -> str:
+        """Capture the pane as tmux currently renders it on screen.
+
+        We intentionally do *not* use ``-J`` / joined-wrapped-lines
+        here: the compose mirror should match what the operator sees in
+        tmux, including hard visual wraps from the pane width.
         """
         return self._tmux.capture_pane(
             pane_id,
-            join_wrapped_lines=True,
+            join_wrapped_lines=False,
             include_escape_sequences=True,
         )
 

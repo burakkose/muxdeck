@@ -17,9 +17,12 @@ from copilot_commander.types import Clock
 AgentIntentKind = Literal[
     "send_input",
     "interrupt",
+    "kill_pane",
     "restart",
     "open_pane",
     "open_worktree",
+    "rename_window",
+    "move_to_window",
 ]
 
 
@@ -146,6 +149,16 @@ class AgentController:
             metadata=(("pane_target", target.pane_target), ("key", "C-c")),
         )
 
+    def kill_pane_intent(self, agent_id: str) -> AgentIntentView:
+        agent = self._require_agent(agent_id)
+        target = self._target_from_agent(agent)
+        return AgentIntentView(
+            kind="kill_pane",
+            agent=target,
+            label="Kill pane",
+            metadata=(("pane_target", target.pane_target),),
+        )
+
     def restart_intent(self, agent_id: str, *, model: str | None = None) -> AgentIntentView:
         agent = self._require_agent(agent_id)
         target = self._target_from_agent(agent)
@@ -228,6 +241,54 @@ class AgentController:
             agent=target,
             label="Open worktree",
             metadata=(("path", target.worktree_path),),
+        )
+
+    def rename_window_intent(self, agent_id: str, *, new_name: str) -> AgentIntentView:
+        agent = self._require_agent(agent_id)
+        target = self._target_from_agent(agent)
+        if target.tmux_window_id is None:
+            msg = f"agent {agent_id} has no tmux window"
+            raise PersistenceError(msg)
+        normalized_name = new_name.strip()
+        if not normalized_name:
+            msg = "new_name must not be empty"
+            raise PersistenceError(msg)
+        return AgentIntentView(
+            kind="rename_window",
+            agent=target,
+            label="Rename window",
+            metadata=(
+                ("window_target", target.tmux_window_id),
+                ("window_name", normalized_name),
+            ),
+        )
+
+    def move_to_window_intent(
+        self,
+        agent_id: str,
+        *,
+        target_window: str | None = None,
+        new_window_name: str | None = None,
+    ) -> AgentIntentView:
+        agent = self._require_agent(agent_id)
+        target = self._target_from_agent(agent)
+        normalized_target = target_window.strip() if target_window is not None else None
+        normalized_new_name = new_window_name.strip() if new_window_name is not None else None
+        if not normalized_target and not normalized_new_name:
+            msg = "target_window or new_window_name must be provided"
+            raise PersistenceError(msg)
+        metadata: list[tuple[str, str]] = [("pane_target", target.pane_target)]
+        if target.tmux_session_name is not None:
+            metadata.append(("session_target", target.tmux_session_name))
+        if normalized_target:
+            metadata.append(("window_target", normalized_target))
+        if normalized_new_name:
+            metadata.append(("new_window_name", normalized_new_name))
+        return AgentIntentView(
+            kind="move_to_window",
+            agent=target,
+            label="Move to window",
+            metadata=tuple(metadata),
         )
 
     def _target_from_agent(

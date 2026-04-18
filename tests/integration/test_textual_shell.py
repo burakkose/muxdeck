@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import shutil
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -22,6 +24,9 @@ from copilot_commander.controllers import (
     ReplayJumpMarkerView,
     ReplayStateView,
     ReplayTranscriptEntryView,
+    SessionDetailView,
+    SessionListItemView,
+    SessionsState,
     WorktreeActionView,
     WorktreeConflictView,
     WorktreeDetailView,
@@ -34,11 +39,17 @@ from copilot_commander.services import SetupCheck, SetupDoctorReport, TmuxSocket
 
 
 class FakeConfig:
+    class Paths:
+        def __init__(self, state_dir: Path) -> None:
+            self.state_dir = state_dir
+
     class General:
         discovery_interval_sec = 60
         log_preview_lines = 8
 
-    general = General()
+    def __init__(self, state_dir: Path) -> None:
+        self.general = self.General()
+        self.paths = self.Paths(state_dir)
 
 
 class FakeStore:
@@ -48,6 +59,22 @@ class FakeStore:
             "session-1": Session(id="session-1", agent_id="agent-1", created_at=timestamp),
             "session-2": Session(id="session-2", agent_id="agent-2", created_at=timestamp),
         }
+        self.list_agents_calls = 0
+
+    def list_agents(self) -> tuple[object, ...]:
+        self.list_agents_calls += 1
+        return (
+            type(
+                "AgentRecord",
+                (),
+                {
+                    "copilot_session_id": "session-1",
+                    "tmux_pane_id": "%1",
+                    "tmux_window_id": "@1",
+                    "tmux_session_name": "muxdeck",
+                },
+            )(),
+        )
 
     def get_session(self, session_id: str) -> Session | None:
         return self.sessions.get(session_id)
@@ -57,6 +84,18 @@ class FakeStore:
         if agent_id is None:
             return sessions
         return tuple(session for session in sessions if session.agent_id == agent_id)
+
+
+class ThreadBoundFakeStore(FakeStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self._owner_thread = threading.get_ident()
+
+    def list_agents(self) -> tuple[object, ...]:
+        if threading.get_ident() != self._owner_thread:
+            msg = "SQLite objects created in a thread can only be used in that same thread."
+            raise RuntimeError(msg)
+        return super().list_agents()
 
 
 class FakeDashboardController:
@@ -231,10 +270,57 @@ class FakeAgentController:
             },
         )()
 
+    def rename_window_intent(self, agent_id: str, *, new_name: str) -> object:
+        return type(
+            "Intent",
+            (),
+            {
+                "kind": "rename_window",
+                "label": "Rename window",
+                "agent": type("AgentTarget", (), {"name": agent_id})(),
+                "metadata": (("window_target", "@1"), ("window_name", new_name)),
+            },
+        )()
+
+    def move_to_window_intent(
+        self,
+        agent_id: str,
+        *,
+        target_window: str | None = None,
+        new_window_name: str | None = None,
+    ) -> object:
+        metadata: list[tuple[str, str]] = [("pane_target", "%1")]
+        if target_window is not None:
+            metadata.append(("window_target", target_window))
+        if new_window_name is not None:
+            metadata.append(("new_window_name", new_window_name))
+        return type(
+            "Intent",
+            (),
+            {
+                "kind": "move_to_window",
+                "label": "Move to window",
+                "agent": type("AgentTarget", (), {"name": agent_id})(),
+                "metadata": tuple(metadata),
+            },
+        )()
+
+    def kill_pane_intent(self, agent_id: str) -> object:
+        return type(
+            "Intent",
+            (),
+            {
+                "kind": "kill_pane",
+                "label": "Kill pane",
+                "agent": type("AgentTarget", (), {"name": agent_id})(),
+                "metadata": (("pane_target", "%1"),),
+            },
+        )()
+
 
 class FakeActionService:
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[object, ...]] = []
 
     def execute_intent(self, intent: object) -> object:
         record = cast(Any, intent)
@@ -245,6 +331,9 @@ class FakeActionService:
         message = {
             "interrupt": f"sent interrupt to pane {pane_id}",
             "open_pane": f"focused pane {pane_id}",
+            "kill_pane": f"killed pane {pane_id}",
+            "rename_window": "renamed window @1 to ui-agent",
+            "move_to_window": f"moved pane {pane_id} to review",
         }.get(kind, f"executed {kind}")
         return type(
             "ActionResult",
@@ -252,6 +341,83 @@ class FakeActionService:
             {
                 "success": True,
                 "message": message,
+                "pane_id": pane_id,
+            },
+        )()
+
+    def launch_model_hint(self) -> object:
+        return type(
+            "ActionModelHint",
+            (),
+            {
+                "configured_model": "gpt-5.4",
+                "message": (
+                    "Configured model: gpt-5.4. "
+                    "Model availability depends on your Copilot account/provider. "
+                    "Enter a model manually or leave it blank to use Copilot's default."
+                ),
+            },
+        )()
+
+    def start_agent(
+        self,
+        *,
+        cwd: Path,
+        model: str | None = None,
+        window_name: str | None = None,
+        target_session: str | None = None,
+        prompt: str | None = None,
+    ) -> object:
+        self.calls.append(("start_agent", str(cwd), model, window_name, target_session, prompt))
+        return type(
+            "ActionResult",
+            (),
+            {
+                "success": True,
+                "message": f"started agent in %10 ({window_name or 'copilot'})",
+                "pane_id": "%10",
+            },
+        )()
+
+    def window_choices(self) -> tuple[object, ...]:
+        return ()
+
+    def resume_session(
+        self,
+        session_id: str,
+        *,
+        cwd: Path | None = None,
+        window_name: str | None = None,
+        origin: str = "local",
+        windows_cwd: str | None = None,
+    ) -> object:
+        del cwd, window_name, origin, windows_cwd
+        self.calls.append(("resume_session", session_id))
+        return type(
+            "ActionResult",
+            (),
+            {
+                "success": True,
+                "message": f"resumed session {session_id}",
+                "pane_id": "%9",
+            },
+        )()
+
+    def focus_pane(
+        self,
+        pane_id: str,
+        *,
+        window_id: str | None = None,
+        session_name: str | None = None,
+    ) -> object:
+        del window_id, session_name
+        self.calls.append(("focus_pane", pane_id))
+        return type(
+            "ActionResult",
+            (),
+            {
+                "success": True,
+                "message": f"focused pane {pane_id}",
                 "pane_id": pane_id,
             },
         )()
@@ -315,17 +481,21 @@ class FakeWorktreeController:
         self,
         worktree_id: str,
         *,
+        prompt: str | None = None,
         model: str | None = None,
+        target_session_name: str | None = None,
+        window_name: str | None = None,
     ) -> WorktreeStartAgentIntent:
         summary = self.get_worktree_detail(worktree_id).summary
+        suggested_window_name = summary.branch.rsplit("/", 1)[-1]
         return WorktreeStartAgentIntent(
             worktree_id=summary.worktree_id,
             repo_root=summary.repo_root,
             worktree_path=summary.path,
             branch=summary.branch,
-            suggested_session_name="muxdeck",
-            suggested_window_name=summary.branch.rsplit("/", 1)[-1],
-            prompt=f"Continue work for {summary.branch}",
+            suggested_session_name=target_session_name or "muxdeck",
+            suggested_window_name=window_name or suggested_window_name,
+            prompt=prompt or f"Continue work for {summary.branch}",
             model=model,
         )
 
@@ -402,7 +572,128 @@ class FakeWorktreeController:
         return "-".join(parts) or "worktree"
 
 
+class FakeSessionsController:
+    def __init__(self) -> None:
+        self.build_state_calls = 0
+        self._details = {
+            "session-1": SessionDetailView(
+                session_id="session-1",
+                summary="Plan UI shell",
+                repository="repo",
+                branch="task/planner",
+                cwd="/repo/planner",
+                git_root="/repo",
+                status="active",
+                status_glyph="🟢",
+                created_at="5m ago",
+                updated_at="10s ago",
+                last_event_type="agent.updated",
+                last_event_at="10s ago",
+                checkpoint_count=2,
+                is_resumable=True,
+                resume_command="copilot --resume=session-1",
+            ),
+            "session-2": SessionDetailView(
+                session_id="session-2",
+                summary="Review logs",
+                repository="repo",
+                branch="task/reviewer",
+                cwd="/repo/reviewer",
+                git_root="/repo",
+                status="completed",
+                status_glyph="⚪",
+                created_at="20m ago",
+                updated_at="2m ago",
+                last_event_type="session.shutdown",
+                last_event_at="2m ago",
+                checkpoint_count=1,
+                is_resumable=False,
+                resume_command="copilot --resume=session-2",
+            ),
+        }
+
+    def build_state(
+        self,
+        *,
+        live_session_ids: frozenset[str] = frozenset(),
+        selected_session_id: str | None = None,
+        filter_text: str = "",
+        show_completed: bool = True,
+    ) -> SessionsState:
+        self.build_state_calls += 1
+        items = (
+            SessionListItemView(
+                session_id="session-1",
+                summary="Plan UI shell",
+                repository="repo",
+                branch="task/planner",
+                status="active",
+                status_glyph="🟢",
+                updated="10s ago",
+                created="5m ago",
+                checkpoint_count=2,
+                last_event_type="agent.updated",
+                cwd="/repo/planner",
+                is_resumable=True,
+            ),
+            SessionListItemView(
+                session_id="session-2",
+                summary="Review logs",
+                repository="repo",
+                branch="task/reviewer",
+                status="completed",
+                status_glyph="⚪",
+                updated="2m ago",
+                created="20m ago",
+                checkpoint_count=1,
+                last_event_type="session.shutdown",
+                cwd="/repo/reviewer",
+                is_resumable=False,
+            ),
+        )
+        visible = tuple(
+            item
+            for item in items
+            if (show_completed or item.status != "completed")
+            and (
+                not filter_text
+                or filter_text.casefold()
+                in " ".join(
+                    (item.summary, item.repository, item.branch, item.session_id)
+                ).casefold()
+            )
+        )
+        visible_ids = {item.session_id for item in visible}
+        resolved = selected_session_id if selected_session_id in visible_ids else None
+        if resolved is None and visible:
+            resolved = visible[0].session_id
+        selected = self._details.get(resolved) if resolved is not None else None
+        return SessionsState(
+            sessions=visible,
+            selected=selected,
+            total_count=2,
+            active_count=len(live_session_ids),
+            unclosed_count=0,
+            completed_count=1,
+            selected_session_id=resolved,
+        )
+
+    def get_session_detail(
+        self,
+        session_id: str | None,
+        *,
+        live_session_ids: frozenset[str] = frozenset(),
+    ) -> SessionDetailView | None:
+        del live_session_ids
+        if session_id is None:
+            return None
+        return self._details.get(session_id)
+
+
 class FakeReplayController:
+    def __init__(self) -> None:
+        self.load_state_calls = 0
+
     def load_state(
         self,
         *,
@@ -413,9 +704,10 @@ class FakeReplayController:
         follow_latest: bool = False,
         **_: object,
     ) -> ReplayStateView:
+        self.load_state_calls += 1
         timestamp = "2025-01-01T12:00:00+00:00"
         target_index = 1 if follow_latest else selected_index
-        transcript = (
+        transcript: tuple[ReplayTranscriptEntryView, ...] = (
             ReplayTranscriptEntryView(
                 ordinal=0,
                 kind="event",
@@ -425,6 +717,7 @@ class FakeReplayController:
                 marker_kind=None,
                 lines=("session start",),
                 is_selected=(target_index == 0),
+                raw_lines=("session start",),
             ),
             ReplayTranscriptEntryView(
                 ordinal=1,
@@ -439,6 +732,7 @@ class FakeReplayController:
                     else ("tail line",)
                 ),
                 is_selected=(target_index == 1),
+                raw_lines=("waiting for operator", "tail line"),
             ),
         )
         if filter_text:
@@ -460,6 +754,7 @@ class FakeReplayController:
                 marker_kind=entry.marker_kind,
                 lines=entry.lines,
                 is_selected=entry.ordinal == resolved_index,
+                raw_lines=entry.raw_lines,
             )
             for entry in transcript
         )
@@ -485,6 +780,8 @@ class FakeReplayController:
             follow_latest=follow_latest,
             total_entries=2,
             total_markers=2,
+            session_ids=((session_id or "session-1"),),
+            agent_ids=("agent-1",),
         )
 
     def jump_to_marker(
@@ -508,6 +805,7 @@ class FakeReplayController:
                     marker_kind=entry.marker_kind,
                     lines=entry.lines,
                     is_selected=entry.ordinal == target_index,
+                    raw_lines=entry.raw_lines,
                 )
                 for entry in state.transcript
             ),
@@ -517,6 +815,50 @@ class FakeReplayController:
             follow_latest=state.follow_latest,
             total_entries=state.total_entries,
             total_markers=state.total_markers,
+            session_ids=state.session_ids,
+            agent_ids=state.agent_ids,
+            playback=state.playback,
+            files_touched=state.files_touched,
+            tool_calls=state.tool_calls,
+            worktree_path=state.worktree_path,
+            annotations=state.annotations,
+            insights=state.insights,
+        )
+
+    def select_entry(self, state: ReplayStateView, ordinal: int) -> ReplayStateView:
+        return ReplayStateView(
+            session_id=state.session_id,
+            agent_id=state.agent_id,
+            task_title=state.task_title,
+            selected_index=ordinal,
+            transcript=tuple(
+                ReplayTranscriptEntryView(
+                    ordinal=entry.ordinal,
+                    kind=entry.kind,
+                    timestamp=entry.timestamp,
+                    label=entry.label,
+                    severity=entry.severity,
+                    marker_kind=entry.marker_kind,
+                    lines=entry.lines,
+                    is_selected=entry.ordinal == ordinal,
+                    raw_lines=entry.raw_lines,
+                )
+                for entry in state.transcript
+            ),
+            jump_markers=state.jump_markers,
+            presentation=state.presentation,
+            filter_text=state.filter_text,
+            follow_latest=state.follow_latest,
+            total_entries=state.total_entries,
+            total_markers=state.total_markers,
+            session_ids=state.session_ids,
+            agent_ids=state.agent_ids,
+            playback=state.playback,
+            files_touched=state.files_touched,
+            tool_calls=state.tool_calls,
+            worktree_path=state.worktree_path,
+            annotations=state.annotations,
+            insights=state.insights,
         )
 
     def jump_to_next_marker(self, state: ReplayStateView) -> ReplayStateView | None:
@@ -536,12 +878,16 @@ class FakeReplayController:
         self,
         state: ReplayStateView,
         *,
-        export_format: Literal["text", "json"] = "text",
+        export_format: Literal["text", "json", "markdown"] = "text",
     ) -> ReplayExportIntent:
         return ReplayExportIntent(
             session_id=state.session_id,
             format=export_format,
-            filename_hint=f"replay-{state.session_id}.{export_format}",
+            filename_hint=(
+                f"replay-{state.session_id}.md"
+                if export_format == "markdown"
+                else f"replay-{state.session_id}.{export_format}"
+            ),
             content="payload",
         )
 
@@ -551,7 +897,7 @@ class FakeReplayController:
         # bar-hidden state and matches the documented contract for
         # empty / non-applicable transcripts.
         del state
-        return None
+        return
 
 
 class FakeSetupService:
@@ -603,17 +949,30 @@ class FakeSetupService:
 
 class FakeRuntime:
     def __init__(self) -> None:
-        self.config = FakeConfig()
-        self.store = FakeStore()
+        self.runtime_dir = Path(__file__).resolve().parent / "_runtime_textual_shell"
+        if self.runtime_dir.exists():
+            shutil.rmtree(self.runtime_dir)
+        (self.runtime_dir / "state").mkdir(parents=True, exist_ok=True)
+        self.config = FakeConfig(self.runtime_dir / "state")
+        self.store: FakeStore = FakeStore()
         self.dashboard = FakeDashboardController()
         self.worktrees = FakeWorktreeController()
         self.replay = FakeReplayController()
         self.replay_worker = None
+        self.sessions_ctrl = FakeSessionsController()
         self.setup = FakeSetupService()
         self.agents = FakeAgentController()
         self.synchronizer = None
-        self.sync_store = None
-        self.actions = FakeActionService()
+        self.sync_store: FakeStore | None = None
+        self.actions: FakeActionService = FakeActionService()
+        self.pane_stream = None
+
+    def export_path(self, filename: str) -> Path:
+        return self.config.paths.state_dir / "replay-exports" / filename
+
+    def cleanup(self) -> None:
+        if self.runtime_dir.exists():
+            shutil.rmtree(self.runtime_dir)
 
 
 def rendered_text(widget: object) -> str:
@@ -625,117 +984,269 @@ def rendered_text(widget: object) -> str:
 async def test_textual_shell_navigation_and_updates() -> None:
     runtime = FakeRuntime()
     app = CommanderApp(cast(CommanderRuntime, runtime))
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            detail_text = rendered_text(app.screen.query_one("#dashboard-detail"))
+            assert "Planner" in detail_text
+            # Dashboard overhaul (c30552f) inlined the former ActivityPanel
+            # into the agent detail render and removed the standalone
+            # FleetHealthPanel from the dashboard (it now lives on the
+            # operations screen). The activity line is sourced from
+            # FakeDashboardController's current_activity field.
+            assert "planning" in detail_text.lower()
+            assert "output" in rendered_text(app.screen.query_one("#dashboard-log")).lower()
 
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        detail_text = rendered_text(app.screen.query_one("#dashboard-detail"))
-        assert "Planner" in detail_text
-        # Dashboard overhaul (c30552f) inlined the former ActivityPanel
-        # into the agent detail render and removed the standalone
-        # FleetHealthPanel from the dashboard (it now lives on the
-        # operations screen). The activity line is sourced from
-        # FakeDashboardController's current_activity field.
-        assert "planning" in detail_text.lower()
-        assert "output" in rendered_text(app.screen.query_one("#dashboard-log")).lower()
+            await pilot.press("p")
+            await pilot.pause()
+            assert runtime.actions.calls[-1] == ("open_pane", "%1")
+            assert "focused pane %1" in rendered_text(app.screen.query_one("#shell-footer")).lower()
 
-        await pilot.press("p")
-        await pilot.pause()
-        assert runtime.actions.calls[-1] == ("open_pane", "%1")
-        assert "focused pane %1" in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            await pilot.press("i")
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+            assert runtime.actions.calls[-1] == ("interrupt", "%1")
+            assert (
+                "sent interrupt to pane %1"
+                in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            )
 
-        await pilot.press("i")
-        await pilot.pause()
-        await pilot.press("y")
-        await pilot.pause()
-        assert runtime.actions.calls[-1] == ("interrupt", "%1")
-        assert (
-            "sent interrupt to pane %1"
-            in rendered_text(app.screen.query_one("#shell-footer")).lower()
-        )
+            await pilot.press("slash")
+            await pilot.press("p", "l", "a", "n", "n", "e", "r")
+            await pilot.pause()
+            assert "1 agents" in rendered_text(app.screen.query_one("#shell-footer"))
 
-        await pilot.press("slash")
-        await pilot.press("p", "l", "a", "n", "n", "e", "r")
-        await pilot.pause()
-        assert "1 agents" in rendered_text(app.screen.query_one("#shell-footer"))
+            app.action_show_worktrees()
+            await pilot.pause()
+            assert "task/ui" in rendered_text(app.screen.query_one("#worktrees-detail"))
 
-        app.action_show_worktrees()
-        await pilot.pause()
-        assert "task/ui" in rendered_text(app.screen.query_one("#worktrees-detail"))
+            await pilot.press("s")
+            await pilot.pause()
+            assert "task/ui" in rendered_text(app.screen.query_one("#launch-agent-summary"))
+            assert (
+                "Continue work for task/ui"
+                in app.screen.query_one("#launch-agent-prompt", Input).value
+            )
+            assert app.screen.query_one("#launch-agent-model", Input).value == "gpt-5.4"
+            assert (
+                "depends on your copilot account/provider"
+                in rendered_text(app.screen.query_one("#launch-agent-model-help")).lower()
+            )
 
-        await pilot.press("s")
-        await pilot.pause()
-        assert "Continue work for task/ui" in rendered_text(
-            app.screen.query_one("#worktrees-intent")
-        )
+            await pilot.press("enter")
+            await pilot.pause()
+            assert cast(tuple[object, ...], runtime.actions.calls[-1]) == (
+                "start_agent",
+                "/repo/worktrees/ui",
+                "gpt-5.4",
+                "ui",
+                "muxdeck",
+                "Continue work for task/ui",
+            )
+            assert (
+                "started agent in %10"
+                in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            )
 
-        app.action_show_replay()
-        await pilot.pause()
-        assert "session-1" in rendered_text(app.screen.query_one("#replay-summary"))
-        assert "parsed" in rendered_text(app.screen.query_one("#replay-summary"))
+            app.action_show_replay()
+            await pilot.pause()
+            assert "session-1" in rendered_text(app.screen.query_one("#replay-summary"))
+            assert "parsed" in rendered_text(app.screen.query_one("#replay-summary"))
 
-        app.screen.query_one("#replay-transcript-list").focus()
-        await pilot.press("v")
-        await pilot.pause()
-        assert "stdout#1" in rendered_text(app.screen.query_one("#replay-detail"))
+            load_calls = runtime.replay.load_state_calls
+            app.screen.query_one("#replay-transcript-list").focus()
+            await pilot.press("k")
+            await pilot.pause()
+            assert runtime.replay.load_state_calls == load_calls
+            assert "session.created" in rendered_text(app.screen.query_one("#replay-detail"))
 
-        await pilot.press("v")
-        await pilot.pause()
-        await pilot.press("slash")
-        await pilot.press("o", "p", "e", "r", "a", "t", "o", "r")
-        await pilot.pause()
-        assert "waiting for operator" in rendered_text(app.screen.query_one("#replay-detail"))
+            await pilot.press("j")
+            await pilot.pause()
+            await pilot.press("v")
+            await pilot.pause()
+            assert "stdout#1" in rendered_text(app.screen.query_one("#replay-detail"))
 
-        cast(Any, app.screen).action_focus_transcript()
-        cast(Any, app.screen).action_jump_next_problem()
-        await pilot.pause()
-        assert "jumped to problem" in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            await pilot.press("v")
+            await pilot.pause()
+            await pilot.press("slash")
+            await pilot.press("o", "p", "e", "r", "a", "t", "o", "r")
+            await pilot.pause()
+            assert "waiting for operator" in rendered_text(app.screen.query_one("#replay-detail"))
 
-        app.screen.query_one("#replay-transcript-list").focus()
-        await pilot.press("E")
-        await pilot.pause()
-        assert "export json" in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            cast(Any, app.screen).action_focus_transcript()
+            cast(Any, app.screen).action_jump_next_problem()
+            await pilot.pause()
 
-        app.action_show_help()
-        await pilot.pause()
-        assert "Copilot Commander" in rendered_text(app.screen.query_one("#help-content"))
+            app.screen.query_one("#replay-transcript-list").focus()
+            await pilot.press("E")
+            await pilot.pause()
+            assert runtime.export_path("replay-session-1.json").exists()
 
-        app.action_show_setup()
-        await pilot.pause()
-        assert "/tmp/tmux-1000/default" in rendered_text(app.screen.query_one("#setup-summary"))
+            app.action_show_help()
+            await pilot.pause()
+            assert "Copilot Commander" in rendered_text(app.screen.query_one("#help-content"))
+
+            app.action_show_setup()
+            await pilot.pause()
+            assert "/tmp/tmux-1000/default" in rendered_text(app.screen.query_one("#setup-summary"))
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_worktrees_launch_uses_default_model_hint_when_actions_lack_helper() -> None:
+    runtime = FakeRuntime()
+    cast(Any, runtime).actions = object()
+    app = CommanderApp(cast(CommanderRuntime, runtime))
+
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_show_worktrees()
+            await pilot.pause()
+
+            await pilot.press("s")
+            await pilot.pause()
+
+            assert app.screen.query_one("#launch-agent-model", Input).value == ""
+            assert (
+                "enter a model manually"
+                in rendered_text(app.screen.query_one("#launch-agent-model-help")).lower()
+            )
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_sessions_screen_open_replay_uses_selected_session() -> None:
+    runtime = FakeRuntime()
+    app = CommanderApp(cast(CommanderRuntime, runtime))
+
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_show_sessions()
+            await pilot.pause()
+
+            assert "session-1" in rendered_text(app.screen.query_one("#sessions-detail"))
+            assert "replay" in rendered_text(app.screen.query_one("#sessions-actions")).lower()
+
+            await pilot.press("j")
+            await pilot.pause()
+            assert "session-2" in rendered_text(app.screen.query_one("#sessions-detail"))
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert "session-2" in rendered_text(app.screen.query_one("#replay-summary"))
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_sessions_screen_uses_sync_store_for_worker_load() -> None:
+    runtime = FakeRuntime()
+    runtime.store = ThreadBoundFakeStore()
+    runtime.sync_store = FakeStore()
+    app = CommanderApp(cast(CommanderRuntime, runtime))
+
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_show_sessions()
+            for _ in range(5):
+                await pilot.pause()
+                if not cast(Any, app.screen)._loading:
+                    break
+
+            assert "session-1" in rendered_text(app.screen.query_one("#sessions-detail"))
+            assert runtime.sync_store is not None
+            assert runtime.sync_store.list_agents_calls >= 1
+            assert runtime.store.list_agents_calls == 0
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_replay_and_sessions_skip_duplicate_initial_show_refresh() -> None:
+    runtime = FakeRuntime()
+    app = CommanderApp(cast(CommanderRuntime, runtime))
+
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app.action_show_sessions()
+            for _ in range(3):
+                await pilot.pause()
+                if not cast(Any, app.screen)._loading:
+                    break
+            assert "session-1" in rendered_text(app.screen.query_one("#sessions-detail"))
+            assert runtime.sessions_ctrl.build_state_calls == 1
+
+            app.action_show_dashboard()
+            await pilot.pause()
+            app.action_show_sessions()
+            for _ in range(3):
+                await pilot.pause()
+                if not cast(Any, app.screen)._loading:
+                    break
+            assert runtime.sessions_ctrl.build_state_calls == 2
+
+            app.action_show_replay()
+            for _ in range(3):
+                await pilot.pause()
+                if not cast(Any, app.screen)._loading:
+                    break
+            assert "session-1" in rendered_text(app.screen.query_one("#replay-summary"))
+            assert runtime.replay.load_state_calls == 1
+
+            app.action_show_dashboard()
+            await pilot.pause()
+            app.action_show_replay()
+            for _ in range(3):
+                await pilot.pause()
+                if not cast(Any, app.screen)._loading:
+                    break
+            assert runtime.replay.load_state_calls == 2
+    finally:
+        runtime.cleanup()
 
 
 @pytest.mark.asyncio
 async def test_worktrees_screen_can_create_and_select_existing_worktrees() -> None:
     runtime = FakeRuntime()
     app = CommanderApp(cast(CommanderRuntime, runtime))
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_show_worktrees()
+            await pilot.pause()
 
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.action_show_worktrees()
-        await pilot.pause()
+            await pilot.press("c")
+            await pilot.pause()
+            app.screen.query_one("#create-worktree-title", Input).value = "New task"
+            await pilot.press("enter")
+            await pilot.pause()
 
-        await pilot.press("c")
-        await pilot.pause()
-        app.screen.query_one("#create-worktree-title", Input).value = "New task"
-        await pilot.press("enter")
-        await pilot.pause()
+            assert runtime.worktrees.create_calls == [("/repo", "New task")]
+            assert "task/new-task" in rendered_text(app.screen.query_one("#worktrees-detail"))
+            assert (
+                "created /repo/worktrees/new-task"
+                in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            )
 
-        assert runtime.worktrees.create_calls == [("/repo", "New task")]
-        assert "task/new-task" in rendered_text(app.screen.query_one("#worktrees-detail"))
-        assert (
-            "created /repo/worktrees/new-task"
-            in rendered_text(app.screen.query_one("#shell-footer")).lower()
-        )
+            await pilot.press("a")
+            await pilot.pause()
+            app.screen.query_one("#attach-worktree-path", Input).value = "/repo/worktrees/ops"
+            await pilot.press("enter")
+            await pilot.pause()
 
-        await pilot.press("a")
-        await pilot.pause()
-        app.screen.query_one("#attach-worktree-path", Input).value = "/repo/worktrees/ops"
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert runtime.worktrees.attach_calls == ["/repo/worktrees/ops"]
-        assert "/repo/worktrees/ops" in rendered_text(app.screen.query_one("#worktrees-detail"))
-        assert (
-            "attached /repo/worktrees/ops"
-            in rendered_text(app.screen.query_one("#shell-footer")).lower()
-        )
+            assert runtime.worktrees.attach_calls == ["/repo/worktrees/ops"]
+            assert "/repo/worktrees/ops" in rendered_text(app.screen.query_one("#worktrees-detail"))
+            assert (
+                "attached /repo/worktrees/ops"
+                in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            )
+    finally:
+        runtime.cleanup()

@@ -146,6 +146,7 @@ class SessionsState:
     active_count: int
     unclosed_count: int
     completed_count: int
+    selected_session_id: str | None = None
 
 
 class SessionsController:
@@ -208,10 +209,15 @@ class SessionsController:
                 )
             )
 
+        visible_session_ids = {item.session_id for item in items}
+        resolved_selected_session_id = selected_session_id
+        if resolved_selected_session_id not in visible_session_ids:
+            resolved_selected_session_id = items[0].session_id if items else None
+
         # Build selected detail
         selected: SessionDetailView | None = None
-        if selected_session_id:
-            raw = self._store.get_session(selected_session_id)
+        if resolved_selected_session_id:
+            raw = self._store.get_session(resolved_selected_session_id)
             if raw is not None:
                 status = _session_status(raw, live_session_ids)
                 selected = SessionDetailView(
@@ -241,6 +247,7 @@ class SessionsController:
             active_count=active_count,
             unclosed_count=unclosed_count,
             completed_count=completed_count,
+            selected_session_id=resolved_selected_session_id,
         )
 
     def get_session_detail(

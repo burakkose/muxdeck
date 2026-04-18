@@ -264,6 +264,25 @@ class TestAgentListTable:
         assert "●" in str(cell)
         assert YELLOW in str(cell.style)
 
+    def test_list_surfaces_activity_and_status_columns(self):
+        from copilot_commander.widgets.dashboard import AgentListPanel
+
+        agent = _agent(
+            status=AgentStatus.WAITING_INPUT,
+            needs_attention=True,
+            attention_reason="waiting for operator confirmation",
+            current_activity="Reviewing dashboard layout",
+        )
+        panel = AgentListPanel(widget_id="test")
+        panel._agents = (agent,)
+        panel._selected_index = 0
+        table = panel._build_table()
+
+        activity_cells = table.columns[3]._cells
+        status_cells = table.columns[4]._cells
+        assert "waiting for operator confirmation" in str(activity_cells[0])
+        assert "needs input" in str(status_cells[0]).lower()
+
 
 class TestDashboardPanels:
     def test_focus_panel_highlights_attention_and_session_summary(self):
@@ -290,6 +309,7 @@ class TestDashboardPanels:
         assert "focus" in rendered
         assert "waiting for operator" in rendered
         assert "session-1 (2 total)" in rendered
+        assert "branch main │ repo myrepo │ worktree myworktree" in rendered
 
     def test_activity_panel_renders_recent_markers(self):
         from copilot_commander.widgets.dashboard import ActivityPanel
@@ -322,6 +342,45 @@ class TestDashboardPanels:
         assert "output" in rendered.lower()
         assert "stdout line" in rendered
         assert "stderr line" in rendered
+
+    def test_log_preview_panel_shows_launch_loading_state(self):
+        from copilot_commander.widgets.dashboard import LogPreviewPanel
+
+        panel = LogPreviewPanel(id="output")
+
+        panel.set_logs(
+            _selected_agent(
+                _agent(status=AgentStatus.STARTING, current_activity="Starting agent"),
+                log_preview=(),
+            )
+        )
+
+        rendered = _render(panel).lower()
+        assert "waiting for first output" in rendered
+
+    def test_status_bar_shows_non_overlapping_attention_counts_and_focus(self):
+        from copilot_commander.widgets.dashboard import StatusBar
+
+        bar = StatusBar(id="status")
+        health = DashboardHealthSummary(
+            tone="warning",
+            message="some agents need review",
+            total_agents=4,
+            active_agents=3,
+            attention_agents=2,
+            waiting_input_agents=1,
+            blocked_agents=0,
+            error_agents=1,
+        )
+
+        bar.set_state(health, (), _agent(current_activity="Planning dashboard layout"))
+
+        rendered = _render(bar).lower()
+        assert "3 active" in rendered
+        assert "1 waiting" in rendered
+        assert "1 failed" in rendered
+        assert "focus node" in rendered
+        assert "planning dashboard layout" in rendered
 
     def test_fleet_health_panel_renders_counts_and_selected_status(self):
         from copilot_commander.widgets.dashboard import FleetHealthPanel

@@ -150,7 +150,7 @@ def _get_tmux_safe_driver() -> type[Driver] | None:
 
     class _TmuxSafeDriver(LinuxDriver):
         def start_application_mode(self) -> None:
-            super().start_application_mode()
+            super().start_application_mode()  # type: ignore[no-untyped-call]
             # Pop the Kitty keyboard protocol so tmux can see its prefix key.
             self.write("\x1b[<u")
             self.flush()
@@ -432,9 +432,9 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     process_adapter = ProcessAdapter()
     git_adapter = GitAdapter(process_adapter)
     tmux_adapter = TmuxAdapter(process_adapter, socket_path=resolved_config.tmux.socket_path)
-    action_service = TmuxActionService(tmux=tmux_adapter)
-    pane_stream_adapter = PaneStreamAdapter(tmux=tmux_adapter)
     copilot_adapter = CopilotAdapter(process_adapter)
+    action_service = TmuxActionService(tmux=tmux_adapter, copilot=copilot_adapter)
+    pane_stream_adapter = PaneStreamAdapter(tmux=tmux_adapter)
     sessions = SessionService(store=store)
     replay_service = ReplayService(store=store, sessions=sessions)
     annotations_service = AnnotationsService(SqliteReplayAnnotationsRepository(store))

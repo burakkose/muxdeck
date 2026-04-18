@@ -137,6 +137,9 @@ def test_controller_build_state_basic() -> None:
     assert state.unclosed_count == 1
     assert state.completed_count == 1
     assert len(state.sessions) == 2
+    assert state.selected_session_id == "s1"
+    assert state.selected is not None
+    assert state.selected.session_id == "s1"
 
 
 def test_controller_build_state_with_active() -> None:
@@ -183,6 +186,18 @@ def test_controller_selected_not_found() -> None:
     ctrl = SessionsController(FakeSessionStore([]))  # type: ignore[arg-type]
     state = ctrl.build_state(selected_session_id="nonexistent")
     assert state.selected is None
+
+
+def test_controller_falls_back_to_first_visible_selection() -> None:
+    sessions = [
+        _session("s1", summary="Selected"),
+        _session("s2", summary="Other"),
+    ]
+    ctrl = SessionsController(FakeSessionStore(sessions))  # type: ignore[arg-type]
+    state = ctrl.build_state(selected_session_id="missing")
+    assert state.selected_session_id == "s1"
+    assert state.selected is not None
+    assert state.selected.session_id == "s1"
 
 
 # ── Windows-origin sessions ─────────────────────────────────────

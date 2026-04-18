@@ -73,9 +73,20 @@ def test_describe_operator_status_distinguishes_operator_states() -> None:
         task_title="Ship it",
         current_activity=None,
     )
+    starting = describe_operator_status(
+        agent_status=AgentStatus.STARTING,
+        needs_attention=False,
+        attention_reason=None,
+        idle_seconds=0,
+        is_potentially_stuck=False,
+        task_title=None,
+        current_activity=None,
+    )
 
     assert working.kind == OperatorStatusKind.WORKING
     assert working.reason == "building widgets"
+    assert starting.kind == OperatorStatusKind.STARTING
+    assert starting.headline == "launching"
     assert waiting.kind == OperatorStatusKind.WAITING_INPUT
     assert waiting.headline == "waiting for input"
     assert blocked.kind == OperatorStatusKind.BLOCKED

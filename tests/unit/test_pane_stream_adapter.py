@@ -111,11 +111,11 @@ class FakeTmuxPaneStream:
 
 
 class TestSeed:
-    def test_passes_colour_and_join_flags(self) -> None:
+    def test_passes_colour_and_wrap_preserving_flags(self) -> None:
         tmux = FakeTmuxPaneStream(capture_output="hello")
         adapter = PaneStreamAdapter(tmux)
         assert adapter.seed("%1") == "hello"
-        assert tmux.capture_calls == [("%1", True, True)]
+        assert tmux.capture_calls == [("%1", False, True)]
 
     def test_returns_empty_when_pane_is_empty(self) -> None:
         tmux = FakeTmuxPaneStream(capture_output="")
@@ -282,6 +282,12 @@ class TestRingLineBuffer:
         buf.append_text("a\nb\nc\nd\ne\n")
         assert buf.lines() == ("c", "d", "e")
         assert len(buf) == 3
+
+    def test_replace_tail_preserves_older_history(self) -> None:
+        buf = RingLineBuffer(max_lines=5)
+        buf.append_text("one\ntwo\nthree\nfour\nfive\n")
+        buf.replace_tail_text("three\nFOUR\nFIVE\n")
+        assert buf.lines() == ("one", "two", "three", "FOUR", "FIVE")
 
     def test_empty_input_is_noop(self) -> None:
         buf = RingLineBuffer(max_lines=3)

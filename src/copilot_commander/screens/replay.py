@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -12,9 +13,12 @@ from textual.timer import Timer
 from textual.widgets import Input, ListView
 from textual.worker import Worker, WorkerState
 
-from copilot_commander.adapters.diff_adapter import DiffAdapter, DiffPort
 from copilot_commander.bindings import REPLAY_BINDINGS, REPLAY_HINTS
-from copilot_commander.controllers import ReplayStateView, ReplayTranscriptEntryView
+from copilot_commander.controllers import (
+    ReplayExportIntent,
+    ReplayStateView,
+    ReplayTranscriptEntryView,
+)
 from copilot_commander.controllers.replay_controller import (
     ReplayExportFormat,
     ReplayPresentation,
@@ -23,6 +27,7 @@ from copilot_commander.screens.base import ShellScreen
 from copilot_commander.screens.replay_note_input import ReplayNoteInputScreen
 from copilot_commander.services.playback_controller import PlaybackState
 from copilot_commander.widgets.replay import (
+    ReplayActionBar,
     ReplayDetailPanel,
     ReplayDiffPanel,
     ReplayFilterBar,
@@ -45,8 +50,6 @@ class ReplayScreen(ShellScreen):
     def __init__(
         self,
         runtime: CommanderRuntime,
-        *,
-        diff_adapter: DiffPort | None = None,
     ) -> None:
         super().__init__(runtime)
         self._session_id: str | None = None
@@ -58,20 +61,20 @@ class ReplayScreen(ShellScreen):
         self._presentation: ReplayPresentation = "parsed"
         self._follow_latest: bool = True
         self._refreshing: bool = False
-        self._filter_debounce_timer: object | None = None
+        self._loading: bool = False
+        self._filter_debounce_timer: Timer | None = None
         self._load_version: int = 0
         self._playback: PlaybackState | None = None
         self._playback_timer: Timer | None = None
         self._playback_last_tick: float | None = None
-        self._diff_adapter: DiffPort = diff_adapter or DiffAdapter()
-        self._diff_version: int = 0
-        self._diff_cache: dict[tuple[int, str], str] = {}
+        self._skip_next_show_refresh: bool = True
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="replay-root"):
             yield ReplaySummaryPanel(id="replay-summary", classes="muted")
             yield ReplayProgressBar(id="replay-progress", classes="muted")
             yield ReplayFilterBar(id="replay-filter-row")
+            yield ReplayActionBar(id="replay-actions", classes="muted")
             with Horizontal(id="replay-main", classes="frame"):
                 yield ReplayMarkerListPanel(widget_id="replay-markers", classes="divider-right")
                 yield ReplayTranscriptPanel(widget_id="replay-transcript", classes="section")
@@ -86,6 +89,19 @@ class ReplayScreen(ShellScreen):
         self.call_after_refresh(self.query_one(ReplayTranscriptPanel).focus_list)
 
     def on_show(self) -> None:
+        self._refresh_on_activate()
+
+    def on_screen_resume(self) -> None:
+        self._refresh_on_activate()
+
+    def _refresh_on_activate(self) -> None:
+        # Textual mode switches resume cached screens, but the first
+        # activation can also emit a show event around mount.
+        if self._skip_next_show_refresh:
+            self._skip_next_show_refresh = False
+            return
+        if self._loading:
+            return
         self.refresh_data()
 
     @property
@@ -107,6 +123,20 @@ class ReplayScreen(ShellScreen):
             session_ids = self._session_ids
             first_load = self._state is None
             if first_load:
+                session_label = (
+                    f"{len(session_ids)} sessions" if len(session_ids) > 1 else session_ids[0]
+                )
+                self.query_one(ReplaySummaryPanel).show_loading(
+                    session_label=session_label,
+                    presentation=self._presentation,
+                    follow_latest=self._follow_latest,
+                    filter_text=self._filter_text,
+                )
+                self.query_one(ReplayActionBar).show_loading(
+                    session_label=session_label,
+                    export_format=self._export_format,
+                    filter_text=self._filter_text,
+                )
                 self.begin_loading(
                     self.query_one(ReplayMarkerListPanel),
                     self.query_one(ReplayTranscriptPanel),
@@ -128,16 +158,15 @@ class ReplayScreen(ShellScreen):
                     follow_latest=follow_latest,
                 )
 
+            self._loading = True
             self.run_worker(_load_multi, thread=True, exclusive=True, name="replay_load")
             return
         resolved_session_id = self.commander_app.resolve_replay_session_id(self._session_id)
         self._session_id = resolved_session_id
         if resolved_session_id is None:
+            self._loading = False
             self._state = None
-            self.query_one(ReplaySummaryPanel).set_state(None)
-            self.query_one(ReplayMarkerListPanel).set_markers((), selected_index=None)
-            self.query_one(ReplayTranscriptPanel).set_transcript(())
-            self.query_one(ReplayDetailPanel).set_entry(None)
+            self._refresh_panels()
             self.set_status("no replayable sessions")
             return
         # Offload the heavy load_state call to a worker thread so the UI
@@ -147,6 +176,17 @@ class ReplayScreen(ShellScreen):
         session_id = resolved_session_id
         first_load = self._state is None
         if first_load:
+            self.query_one(ReplaySummaryPanel).show_loading(
+                session_label=session_id,
+                presentation=self._presentation,
+                follow_latest=self._follow_latest,
+                filter_text=self._filter_text,
+            )
+            self.query_one(ReplayActionBar).show_loading(
+                session_label=session_id,
+                export_format=self._export_format,
+                filter_text=self._filter_text,
+            )
             self.begin_loading(
                 self.query_one(ReplayMarkerListPanel),
                 self.query_one(ReplayTranscriptPanel),
@@ -169,27 +209,14 @@ class ReplayScreen(ShellScreen):
                 follow_latest=follow_latest,
             )
 
+        self._loading = True
         self.run_worker(_load, thread=True, exclusive=True, name="replay_load")
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
-        if event.worker.name == "replay_diff":
-            if event.state != WorkerState.SUCCESS:
-                return
-            result = cast(
-                "tuple[int, tuple[int, str], str] | None",
-                event.worker.result,
-            )
-            if result is None:
-                return
-            version, cache_key, text = result
-            if version != self._diff_version:
-                return
-            self._diff_cache[cache_key] = text
-            self._refresh_panels()
-            return
         if event.worker.name != "replay_load":
             return
         if event.state == WorkerState.ERROR:
+            self._loading = False
             self.end_loading(
                 self.query_one(ReplayMarkerListPanel),
                 self.query_one(ReplayTranscriptPanel),
@@ -201,12 +228,13 @@ class ReplayScreen(ShellScreen):
             return
         if event.state != WorkerState.SUCCESS:
             return
+        self._loading = False
         self.end_loading(
             self.query_one(ReplayMarkerListPanel),
             self.query_one(ReplayTranscriptPanel),
             self.query_one(ReplayDetailPanel),
         )
-        state: ReplayStateView = event.worker.result
+        state = cast(ReplayStateView, event.worker.result)
         self._state = state
         self._selected_index = state.selected_index
         session_id = self._session_id
@@ -230,7 +258,7 @@ class ReplayScreen(ShellScreen):
             return
         self._filter_text = event.value
         if self._filter_debounce_timer is not None:
-            self._filter_debounce_timer.stop()  # type: ignore[union-attr]
+            self._filter_debounce_timer.stop()
         self._filter_debounce_timer = self.set_timer(0.3, self.refresh_data)
 
     def on_replay_marker_list_panel_marker_selected(
@@ -239,9 +267,12 @@ class ReplayScreen(ShellScreen):
     ) -> None:
         if self._state is None:
             return
-        self._state = self.runtime.replay.jump_to_marker(self._state, message.marker_ordinal)
+        self._state = self._sync_follow_flag(
+            self.runtime.replay.jump_to_marker(self._state, message.marker_ordinal)
+        )
         self._selected_index = self._state.selected_index
         self._release_follow_latest()
+        self._state = self._sync_follow_flag(self._state)
         self._refresh_panels()
         marker = self._state.jump_markers[message.marker_ordinal]
         self.set_status(f"jumped to {marker.kind}: {marker.label}")
@@ -259,7 +290,10 @@ class ReplayScreen(ShellScreen):
         self._selected_index = message.transcript_index
         if self._follow_latest and message.transcript_index != self._latest_visible_index():
             self._follow_latest = False
-        self.refresh_data()
+        self._state = self._sync_follow_flag(
+            self.runtime.replay.select_entry(self._state, message.transcript_index)
+        )
+        self._refresh_panels()
 
     def action_cursor_down(self) -> None:
         self._active_list().move_cursor(1)
@@ -310,7 +344,13 @@ class ReplayScreen(ShellScreen):
             self._state,
             export_format=self._export_format,
         )
-        self.set_status(f"export {intent.format} -> {intent.filename_hint}")
+        try:
+            export_path = self._write_export(intent)
+        except OSError as exc:
+            self.set_status(f"export failed: {exc}")
+            return
+        self._refresh_panels()
+        self.set_status(f"exported {intent.format} -> {export_path}")
 
     @staticmethod
     def _next_export_format(current: ReplayExportFormat) -> ReplayExportFormat:
@@ -437,6 +477,7 @@ class ReplayScreen(ShellScreen):
         self._state = next_state
         self._selected_index = next_state.selected_index
         self._release_follow_latest()
+        self._state = self._sync_follow_flag(self._state)
         self._refresh_panels()
         entry = self._selected_entry()
         target = entry.label if entry is not None else label
@@ -543,6 +584,7 @@ class ReplayScreen(ShellScreen):
         self._playback = playback
         self._selected_index = state.selected_index
         self._release_follow_latest()
+        self._state = self._sync_follow_flag(self._state)
         self._refresh_panels()
         if playback.mode == "playing":
             self._start_playback_timer()
@@ -578,7 +620,7 @@ class ReplayScreen(ShellScreen):
         if next_pb is self._playback:
             return
         new_state = self.runtime.replay.apply_playback(self._state, next_pb)
-        self._state = new_state
+        self._state = self._sync_follow_flag(new_state)
         self._playback = next_pb
         self._selected_index = new_state.selected_index
         self._refresh_panels()
@@ -591,6 +633,7 @@ class ReplayScreen(ShellScreen):
 
     def _refresh_panels(self) -> None:
         summary = self.query_one(ReplaySummaryPanel)
+        actions = self.query_one(ReplayActionBar)
         markers = self.query_one(ReplayMarkerListPanel)
         transcript = self.query_one(ReplayTranscriptPanel)
         detail = self.query_one(ReplayDetailPanel)
@@ -598,6 +641,7 @@ class ReplayScreen(ShellScreen):
         diff_panel = self.query_one(ReplayDiffPanel)
         insights = self.query_one(ReplayInsightsPanel)
         summary.set_state(self._state)
+        actions.set_state(self._state, export_format=self._export_format)
         if self._state is None:
             markers.set_markers((), selected_index=None)
             transcript.set_transcript(())
@@ -617,27 +661,19 @@ class ReplayScreen(ShellScreen):
 
     def _refresh_diff_panel(self, entry: ReplayTranscriptEntryView | None) -> None:
         diff_panel = self.query_one(ReplayDiffPanel)
-        state = self._state
-        if entry is None or not entry.file_path or state is None or state.worktree_path is None:
-            diff_panel.set_entry_diff(entry, None)
-            return
-        cache_key = (entry.ordinal, entry.file_path)
-        cached = self._diff_cache.get(cache_key)
-        if cached is not None:
-            diff_panel.set_entry_diff(entry, cached)
-            return
-        diff_panel.set_entry_diff(entry, "")
-        self._diff_version += 1
-        version = self._diff_version
-        repo_path = Path(state.worktree_path)
-        path = entry.file_path
-        adapter = self._diff_adapter
+        diff_panel.set_entry_diff(entry, None)
 
-        def _resolve() -> tuple[int, tuple[int, str], str]:
-            text = adapter.diff_for_path(repo_path, path, before=None, after=None)
-            return version, cache_key, text
+    def _write_export(self, intent: ReplayExportIntent) -> Path:
+        export_root = self.runtime.config.paths.state_dir / "replay-exports"
+        export_root.mkdir(parents=True, exist_ok=True)
+        export_path = export_root / intent.filename_hint
+        export_path.write_text(intent.content, encoding="utf-8")
+        return export_path
 
-        self.run_worker(_resolve, thread=True, exclusive=False, name="replay_diff")
+    def _sync_follow_flag(self, state: ReplayStateView) -> ReplayStateView:
+        if state.follow_latest == self._follow_latest:
+            return state
+        return replace(state, follow_latest=self._follow_latest)
 
     def _release_follow_latest(self) -> None:
         if self._follow_latest:

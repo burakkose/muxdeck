@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 import contextlib
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from copilot_commander.adapters.copilot_adapter import CopilotLaunchParameters
+from copilot_commander.exceptions import CommandError
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from copilot_commander.adapters.tmux_adapter import TmuxPaneMetadata
+    from copilot_commander.adapters.tmux_adapter import TmuxPaneMetadata, TmuxWindowInfo
     from copilot_commander.controllers.agent_controller import AgentIntentView
     from copilot_commander.domain.value_objects import CommandResult
 
 
 class TmuxOperations(Protocol):
     """Minimal protocol for tmux operations needed by the action service."""
+
+    def list_windows(self) -> Sequence[TmuxWindowInfo]: ...
 
     def select_pane(self, target_pane: str, /) -> CommandResult: ...
 
@@ -48,6 +54,30 @@ class TmuxOperations(Protocol):
 
     def pane_exists(self, target_pane: str, /) -> bool: ...
 
+    def break_pane(
+        self,
+        source_pane: str,
+        /,
+        *,
+        window_name: str | None = None,
+        target_window: str | None = None,
+        detached: bool = True,
+    ) -> TmuxPaneMetadata: ...
+
+    def join_pane(
+        self,
+        source_pane: str,
+        target_pane: str,
+        /,
+        *,
+        detached: bool = True,
+        vertical: bool = True,
+    ) -> TmuxPaneMetadata: ...
+
+    def rename_window(self, target_window: str, new_name: str, /) -> CommandResult: ...
+
+    def kill_pane(self, target_pane: str, /) -> CommandResult: ...
+
     def new_window(
         self,
         target_session: str | None = None,
@@ -60,6 +90,18 @@ class TmuxOperations(Protocol):
     ) -> TmuxPaneMetadata: ...
 
 
+class CopilotOperations(Protocol):
+    def launch_in_pane(self, parameters: CopilotLaunchParameters, /) -> object: ...
+
+    def configured_model(self) -> str | None: ...
+
+
+_MODEL_HINT_MESSAGE = (
+    "Model availability depends on your Copilot account/provider. "
+    "Enter a model manually or leave it blank to use Copilot's default."
+)
+
+
 @dataclass(frozen=True, slots=True)
 class ActionResult:
     """Result of executing an agent action."""
@@ -69,11 +111,66 @@ class ActionResult:
     pane_id: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class ActionModelHint:
+    configured_model: str | None = None
+    message: str = _MODEL_HINT_MESSAGE
+
+
+@dataclass(frozen=True, slots=True)
+class WindowChoice:
+    session_name: str
+    window_id: str
+    window_name: str | None
+    pane_count: int
+
+    @property
+    def label(self) -> str:
+        title = self.window_name or self.window_id
+        pane_label = "pane" if self.pane_count == 1 else "panes"
+        return f"{self.session_name}:{title} ({self.pane_count} {pane_label})"
+
+
 class TmuxActionService:
     """Executes agent actions via tmux."""
 
-    def __init__(self, tmux: TmuxOperations) -> None:
+    def __init__(
+        self,
+        tmux: TmuxOperations,
+        *,
+        copilot: CopilotOperations | None = None,
+    ) -> None:
         self._tmux = tmux
+        self._copilot = copilot
+
+    def launch_model_hint(self) -> ActionModelHint:
+        if self._copilot is None:
+            return ActionModelHint()
+        configured_model = self._copilot.configured_model()
+        if configured_model is None:
+            return ActionModelHint(
+                message=f"No configured Copilot model detected. {_MODEL_HINT_MESSAGE}"
+            )
+        return ActionModelHint(
+            configured_model=configured_model,
+            message=f"Configured model: {configured_model}. {_MODEL_HINT_MESSAGE}",
+        )
+
+    def window_choices(self, *, exclude_window_id: str | None = None) -> tuple[WindowChoice, ...]:
+        try:
+            windows = self._tmux.list_windows()
+        except CommandError:
+            return ()
+        return tuple(
+            WindowChoice(
+                session_name=window.session_name,
+                window_id=window.window_id,
+                window_name=window.window_name,
+                pane_count=window.pane_count,
+            )
+            for window in windows
+            if exclude_window_id is None or window.window_id != exclude_window_id
+        )
 
     def focus_pane(
         self,
@@ -157,6 +254,27 @@ class TmuxActionService:
             pane_id=pane_id,
         )
 
+    def kill_pane(self, pane_id: str) -> ActionResult:
+        if not self._tmux.pane_exists(pane_id):
+            return ActionResult(
+                success=False,
+                message=f"pane {pane_id} does not exist",
+                pane_id=pane_id,
+            )
+        try:
+            self._tmux.kill_pane(pane_id)
+        except (CommandError, ValueError) as exc:
+            return ActionResult(
+                success=False,
+                message=f"failed to kill pane {pane_id}: {exc}",
+                pane_id=pane_id,
+            )
+        return ActionResult(
+            success=True,
+            message=f"killed pane {pane_id}",
+            pane_id=pane_id,
+        )
+
     def send_message(self, pane_id: str, text: str) -> ActionResult:
         """Send text message to agent's pane (with Enter)."""
         if not text.strip():
@@ -182,6 +300,66 @@ class TmuxActionService:
         """Capture the last N lines of pane output."""
         return self._tmux.capture_pane(pane_id, start_line=-lines, join_wrapped_lines=True)
 
+    def rename_window(self, window_id: str, new_name: str) -> ActionResult:
+        try:
+            self._tmux.rename_window(window_id, new_name)
+        except (CommandError, ValueError) as exc:
+            return ActionResult(success=False, message=f"failed to rename window: {exc}")
+        return ActionResult(success=True, message=f"renamed window {window_id} to {new_name}")
+
+    def move_pane_to_window(
+        self,
+        pane_id: str,
+        *,
+        target_window: str | None = None,
+        new_window_name: str | None = None,
+        target_session: str | None = None,
+    ) -> ActionResult:
+        if not self._tmux.pane_exists(pane_id):
+            return ActionResult(
+                success=False,
+                message=f"pane {pane_id} does not exist",
+                pane_id=pane_id,
+            )
+        if target_window is None and new_window_name is None:
+            return ActionResult(
+                success=False,
+                message="move target must specify an existing window or a new window name",
+                pane_id=pane_id,
+            )
+        try:
+            if target_window is not None:
+                metadata = self._tmux.join_pane(pane_id, target_window, detached=True)
+                destination = metadata.window_name or metadata.window_id or target_window
+                return ActionResult(
+                    success=True,
+                    message=f"moved pane {pane_id} to {destination}",
+                    pane_id=metadata.pane_id,
+                )
+            session_target = None
+            if target_session is not None:
+                session_target = (
+                    target_session if target_session.endswith(":") else f"{target_session}:"
+                )
+            metadata = self._tmux.break_pane(
+                pane_id,
+                window_name=new_window_name,
+                target_window=session_target,
+                detached=True,
+            )
+        except (CommandError, ValueError) as exc:
+            return ActionResult(
+                success=False,
+                message=f"failed to move pane {pane_id}: {exc}",
+                pane_id=pane_id,
+            )
+        destination = metadata.window_name or new_window_name or metadata.window_id or "new window"
+        return ActionResult(
+            success=True,
+            message=f"moved pane {pane_id} to {destination}",
+            pane_id=metadata.pane_id,
+        )
+
     def execute_intent(self, intent: AgentIntentView) -> ActionResult:
         """Execute an agent intent by dispatching to the appropriate method."""
         meta = dict(intent.metadata)
@@ -201,6 +379,10 @@ class TmuxActionService:
             pane_target = meta.get("pane_target", intent.agent.pane_target)
             return self.interrupt_pane(pane_target)
 
+        if kind == "kill_pane":
+            pane_target = meta.get("pane_target", intent.agent.pane_target)
+            return self.kill_pane(pane_target)
+
         if kind == "send_input":
             pane_target = meta.get("pane_target", intent.agent.pane_target)
             prompt = intent.prompt or ""
@@ -214,6 +396,26 @@ class TmuxActionService:
                 pane_id=intent.agent.pane_target,
             )
 
+        if kind == "rename_window":
+            window_target = meta.get("window_target") or intent.agent.tmux_window_id
+            new_name = meta.get("window_name", "")
+            if window_target is None:
+                return ActionResult(
+                    success=False,
+                    message=f"window metadata unavailable for {intent.agent.name}",
+                    pane_id=intent.agent.pane_target,
+                )
+            return self.rename_window(window_target, new_name)
+
+        if kind == "move_to_window":
+            pane_target = meta.get("pane_target", intent.agent.pane_target)
+            return self.move_pane_to_window(
+                pane_target,
+                target_window=meta.get("window_target"),
+                new_window_name=meta.get("new_window_name"),
+                target_session=meta.get("session_target") or intent.agent.tmux_session_name,
+            )
+
         if kind == "restart":
             pane = meta.get("pane_target", intent.agent.pane_target)
             if not self._tmux.pane_exists(pane):
@@ -225,6 +427,9 @@ class TmuxActionService:
             self._tmux.send_keys(pane, ["C-c"])
             task = meta.get("task_title", "")
             cmd = "copilot --resume" if task else "copilot"
+            model = meta.get("model")
+            if model and not task:
+                cmd = f"{cmd} --model {model}"
             self._tmux.send_keys(
                 pane,
                 [cmd],
@@ -291,7 +496,7 @@ class TmuxActionService:
                 message=f"resumed session {session_id[:8]}… in {meta.pane_id}",
                 pane_id=meta.pane_id,
             )
-        except Exception as exc:
+        except (CommandError, RuntimeError, ValueError) as exc:
             return ActionResult(
                 success=False,
                 message=f"failed to resume: {exc}",
@@ -328,29 +533,53 @@ class TmuxActionService:
         cwd: Path,
         model: str | None = None,
         window_name: str | None = None,
+        target_session: str | None = None,
+        prompt: str | None = None,
     ) -> ActionResult:
         """Start a new Copilot CLI agent in a tmux window.
 
         Creates a detached window and runs ``copilot`` (optionally with
         ``--model``) so the agent appears alongside existing panes.
         """
-        cmd = "copilot"
-        if model:
-            cmd += f" --model {model}"
-        name = window_name or "copilot"
+        normalized_model = model.strip() if model and model.strip() else None
+        normalized_prompt = prompt.strip() if prompt and prompt.strip() else None
+        name = (window_name or "copilot").strip() or "copilot"
         try:
             meta = self._tmux.new_window(
+                target_session,
                 window_name=name,
                 start_directory=cwd,
                 detached=True,
             )
-            self._tmux.send_keys(meta.pane_id, [cmd], literal=True, append_enter=True)
+            if self._copilot is not None:
+                extra_args = ("-i", normalized_prompt) if normalized_prompt is not None else ()
+                self._copilot.launch_in_pane(
+                    CopilotLaunchParameters(
+                        pane_target=meta.pane_id,
+                        cwd=cwd,
+                        model=normalized_model,
+                        command_prefix=("copilot",),
+                        extra_args=extra_args,
+                    )
+                )
+            else:
+                command = ["copilot"]
+                if normalized_model is not None:
+                    command.extend(("--model", normalized_model))
+                if normalized_prompt is not None:
+                    command.extend(("-i", normalized_prompt))
+                self._tmux.send_keys(
+                    meta.pane_id,
+                    [shlex.join(command)],
+                    literal=True,
+                    append_enter=True,
+                )
             return ActionResult(
                 success=True,
                 message=f"started agent in {meta.pane_id} ({name})",
                 pane_id=meta.pane_id,
             )
-        except Exception as exc:
+        except (CommandError, ValueError) as exc:
             return ActionResult(
                 success=False,
                 message=f"failed to start agent: {exc}",
@@ -368,7 +597,9 @@ class TmuxActionService:
 
 
 __all__ = [
+    "ActionModelHint",
     "ActionResult",
     "TmuxActionService",
     "TmuxOperations",
+    "WindowChoice",
 ]

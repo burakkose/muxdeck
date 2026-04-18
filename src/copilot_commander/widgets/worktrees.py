@@ -5,6 +5,7 @@ from pathlib import Path
 
 from rich.text import Text
 from textual.message import Message
+from textual.widget import Widget
 from textual.widgets import Static
 
 from copilot_commander.controllers import (
@@ -131,7 +132,8 @@ class WorktreeListPanel(Static, can_focus=True):
         # Use the parent container's height as the viewport, since
         # Static widget's own height equals content height (auto).
         parent = self.parent
-        viewport = (parent.size.height if parent else self.size.height) - 2
+        viewport_widget = parent if isinstance(parent, Widget) else self
+        viewport = viewport_widget.size.height - 2
         visible = max(viewport, 5)
         total = len(self._worktrees)
         if total <= visible:
@@ -295,15 +297,13 @@ class ConflictPanel(Static):
 
 
 class StartIntentPanel(Static):
-    """Start agent intent preview."""
+    """Launch defaults for the selected worktree."""
 
     def set_intent(self, intent: WorktreeStartAgentIntent | None) -> None:
         result = Text()
-        _section_header(result, "start agent")
+        _section_header(result, "launch agent")
         if intent is None:
-            result.append("  press ", style=FG4)
-            result.append("s", style=f"bold {BLUE}")
-            result.append(" to preview start intent\n", style=FG4)
+            result.append("  select a worktree to launch an agent\n", style=FG4)
             self.update(result)
             return
         for label, value in (
@@ -316,8 +316,12 @@ class StartIntentPanel(Static):
         ):
             _field_row(result, label, str(value), FG1)
         result.append("\n  press ", style=FG4)
-        result.append("x", style=f"bold {BLUE}")
-        result.append(" to execute\n", style=FG4)
+        result.append("s/x/↵", style=f"bold {BLUE}")
+        result.append(" to open launch settings\n", style=FG4)
+        result.append(
+            "  launch settings can create or attach a worktree before starting\n",
+            style=FG4,
+        )
         self.update(result)
 
 

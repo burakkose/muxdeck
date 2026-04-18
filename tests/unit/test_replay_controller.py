@@ -182,10 +182,13 @@ class ReplayControllerTests(unittest.TestCase):
         previous_marker = self.controller.jump_to_previous_marker(state)
 
         self.assertIsNotNone(next_activity)
+        assert next_activity is not None
         self.assertEqual(next_activity.selected_index, 2)
         self.assertIsNotNone(next_problem)
+        assert next_problem is not None
         self.assertEqual(next_problem.selected_index, 2)
         self.assertIsNotNone(previous_marker)
+        assert previous_marker is not None
         self.assertEqual(previous_marker.selected_index, 0)
 
     def test_parsed_transcript_drops_redundant_first_signal_line(self) -> None:
@@ -249,6 +252,34 @@ class ReplayControllerTests(unittest.TestCase):
             multi_signal.lines,
             "additional distinct signals must still be surfaced",
         )
+        self.assertEqual(
+            multi_signal.raw_lines,
+            ("Running command: ruff", "fatal: merge conflict"),
+        )
+
+    def test_select_entry_updates_view_without_reloading(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Running command: pytest", "fatal: merge conflict"),
+            captured_at=timestamp,
+        )
+
+        state = self.controller.load_state(
+            session_id=bundle.session.id,
+            follow_latest=False,
+            selected_index=0,
+        )
+        updated = self.controller.select_entry(state, 2)
+
+        self.assertEqual(updated.selected_index, 2)
+        self.assertTrue(updated.transcript[2].is_selected)
+        self.assertFalse(updated.transcript[0].is_selected)
 
     def test_load_state_single_session_omits_agent_label_and_lists_session_id(self) -> None:
         bundle = self.sessions.create_session(

@@ -58,6 +58,20 @@ def _marker_style(kind: str) -> str:
     return f"bold {YELLOW}"
 
 
+def _append_chip(text: Text, label: str, value: str, *, value_style: str) -> None:
+    if text.plain:
+        text.append(" │ ", style=FG4)
+    text.append(f"{label} ", style=FG4)
+    text.append(value, style=value_style)
+
+
+def _append_action(text: Text, key: str, label: str) -> None:
+    if text.plain:
+        text.append("  ")
+    text.append(key, style=f"bold {AQUA}")
+    text.append(f" {label}", style=FG)
+
+
 class ReplayFilterBar(Vertical):
     def compose(self) -> ComposeResult:
         yield Input(
@@ -370,6 +384,29 @@ class ReplayProgressBar(Static):
 
 
 class ReplaySummaryPanel(Static):
+    def show_loading(
+        self,
+        *,
+        session_label: str,
+        presentation: str,
+        follow_latest: bool,
+        filter_text: str,
+    ) -> None:
+        line = Text()
+        line.append(" loading replay… ", style=f"bold {AQUA}")
+        line.append(session_label, style=FG1)
+        line.append(" │ ", style=FG4)
+        line.append("view ", style=FG4)
+        line.append(presentation, style=AQUA)
+        line.append(" │ ", style=FG4)
+        line.append("follow ", style=FG4)
+        line.append("on" if follow_latest else "off", style=GREEN if follow_latest else FG4)
+        if filter_text.strip():
+            line.append(" │ ", style=FG4)
+            line.append("filter ", style=FG4)
+            line.append(filter_text.strip(), style=YELLOW)
+        self.update(line)
+
     def set_state(self, state: ReplayStateView | None) -> None:
         if state is None:
             self.update(Text("No replayable sessions", style=FG4))
@@ -379,6 +416,11 @@ class ReplaySummaryPanel(Static):
             ("session", state.session_id, FG1),
             ("agent", state.agent_id, FG1),
             ("task", state.task_title or "-", FG1),
+            (
+                "selected",
+                f"#{state.selected_index}" if state.selected_index is not None else "—",
+                FG1,
+            ),
             ("entries", f"{len(state.transcript)}/{state.total_entries}", FG1),
             ("markers", f"{len(state.jump_markers)}/{state.total_markers}", FG1),
             ("files", str(state.files_touched), BLUE if state.files_touched else FG4),
@@ -406,6 +448,95 @@ class ReplaySummaryPanel(Static):
         self.update(line)
 
 
+class ReplayActionBar(Static):
+    """Visible replay quick actions, chips, and counts."""
+
+    def show_loading(
+        self,
+        *,
+        session_label: str,
+        export_format: str,
+        filter_text: str,
+    ) -> None:
+        text = Text()
+        text.append(" preparing replay actions… ", style=f"bold {AQUA}")
+        text.append(session_label, style=FG1)
+        if filter_text.strip():
+            text.append(" │ ", style=FG4)
+            text.append("filter ", style=FG4)
+            text.append(filter_text.strip(), style=YELLOW)
+        text.append("\n")
+        _append_action(text, "/", "filter")
+        _append_action(text, "m", "markers")
+        _append_action(text, "T", "transcript")
+        _append_action(text, "A/x/F", "jump")
+        _append_action(text, "e/a/t/c", "chips")
+        _append_action(text, "b/n", "annotate")
+        _append_action(text, "E", f"export {export_format}")
+        self.update(text)
+
+    def set_state(
+        self,
+        state: ReplayStateView | None,
+        *,
+        export_format: str,
+    ) -> None:
+        if state is None:
+            text = Text()
+            text.append(" no replay loaded ", style=f"bold {FG}")
+            text.append("Use latest or open one from Sessions.", style=FG4)
+            text.append("\n")
+            _append_action(text, "g", "latest")
+            _append_action(text, "/", "filter")
+            _append_action(text, "m", "markers")
+            _append_action(text, "T", "transcript")
+            _append_action(text, "M", "multi-session")
+            _append_action(text, "E", f"export {export_format}")
+            self.update(text)
+            return
+        marker_counts = self._marker_counts(state)
+        text = Text()
+        scope = f"{len(state.session_ids)} merged" if len(state.session_ids) > 1 else "single"
+        _append_chip(text, "scope", scope, value_style=FG1)
+        _append_chip(text, "activity", str(marker_counts["activity"]), value_style=GREEN)
+        _append_chip(text, "problems", str(marker_counts["problems"]), value_style=ORANGE)
+        _append_chip(text, "files", str(marker_counts["file_edit"]), value_style=BLUE)
+        _append_chip(text, "notes", str(marker_counts["annotation"]), value_style=PURPLE)
+        _append_chip(text, "export", export_format, value_style=AQUA)
+        if state.filter_text.strip():
+            _append_chip(text, "filter", state.filter_text.strip(), value_style=YELLOW)
+        text.append("\n")
+        _append_action(text, "/", "filter")
+        _append_action(text, "m", "markers")
+        _append_action(text, "T", "transcript")
+        _append_action(text, "[/]", "markers")
+        _append_action(text, "A", "activity")
+        _append_action(text, "x", "problem")
+        _append_action(text, "F", "file edit")
+        _append_action(text, "e/a/t/c", "chips")
+        _append_action(text, "b/n", "annotate")
+        _append_action(text, "E", "export")
+        self.update(text)
+
+    def _marker_counts(self, state: ReplayStateView) -> dict[str, int]:
+        counts = {
+            "activity": 0,
+            "problems": 0,
+            "file_edit": 0,
+            "annotation": 0,
+        }
+        for marker in state.jump_markers:
+            if marker.kind == "activity":
+                counts["activity"] += 1
+            elif marker.kind in {"blocking", "error"}:
+                counts["problems"] += 1
+            elif marker.kind == "file_edit":
+                counts["file_edit"] += 1
+            elif marker.kind == "annotation":
+                counts["annotation"] += 1
+        return counts
+
+
 class ReplayDetailPanel(Static):
     def set_entry(self, entry: ReplayTranscriptEntryView | None) -> None:
         if entry is None:
@@ -425,13 +556,7 @@ class ReplayDetailPanel(Static):
 
 
 class ReplayDiffPanel(Static):
-    """Render a unified diff for the selected file-mutation entry.
-
-    The screen owns diff resolution (so it can run off the UI thread)
-    and feeds the result to :meth:`set_entry_diff`. The widget is
-    purely presentation: it picks a placeholder when the entry has no
-    file mutation or when the diff text is empty/whitespace.
-    """
+    """Render historical file-mutation evidence for the selected entry."""
 
     def set_entry_diff(
         self,
@@ -445,7 +570,25 @@ class ReplayDiffPanel(Static):
             self.update(Text("non-file entry", style=FG4))
             return
         if diff_text is None or not diff_text.strip():
-            self.update(Text(f"no diff available for {entry.file_path}", style=FG4))
+            evidence = Text()
+            evidence.append(" historical file evidence ", style=f"bold {BLUE}")
+            evidence.append("\n")
+            evidence.append(entry.file_path, style=f"bold {FG}")
+            evidence.append("\n")
+            raw_excerpt = tuple(line for line in entry.raw_lines if line.strip())
+            if raw_excerpt:
+                evidence.append("\n".join(raw_excerpt[:8]), style=FG)
+                if len(raw_excerpt) > 8:
+                    evidence.append("\n…", style=FG4)
+                evidence.append("\n", style=FG4)
+            evidence.append(
+                (
+                    "Replay keeps recorded log context here; "
+                    "it does not guess from the current working tree."
+                ),
+                style=FG4,
+            )
+            self.update(evidence)
             return
         self.update(Syntax(diff_text, "diff", theme="ansi_dark", word_wrap=False))
 
@@ -508,6 +651,7 @@ class ReplayInsightsPanel(Static):
 
 
 __all__ = [
+    "ReplayActionBar",
     "ReplayDetailPanel",
     "ReplayDiffPanel",
     "ReplayFilterBar",

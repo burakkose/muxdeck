@@ -1,4 +1,4 @@
-"""Tests for emergency stop-all binding and execute-start action logic."""
+"""Tests for emergency stop-all binding and launch-agent action logic."""
 
 from __future__ import annotations
 
@@ -87,19 +87,19 @@ class TestBindingsPresent:
         labels = [h.label for h in DASHBOARD_HINTS]
         assert "stop all" in labels
 
-    def test_execute_start_binding_in_worktrees(self) -> None:
+    def test_launch_agent_binding_in_worktrees(self) -> None:
         actions = [b.action if hasattr(b, "action") else b[1] for b in WORKTREE_BINDINGS]
-        assert "execute_start" in actions
+        assert "launch_agent" in actions
 
-    def test_execute_start_uses_x(self) -> None:
-        binding = next(
-            b for b in WORKTREE_BINDINGS if hasattr(b, "action") and b.action == "execute_start"
-        )
-        assert binding.key == "x"
+    def test_launch_agent_uses_all_launch_keys(self) -> None:
+        keys = {
+            b.key for b in WORKTREE_BINDINGS if hasattr(b, "action") and b.action == "launch_agent"
+        }
+        assert keys == {"enter", "s", "x"}
 
-    def test_execute_hint_in_worktrees(self) -> None:
+    def test_launch_hint_in_worktrees(self) -> None:
         labels = [h.label for h in WORKTREE_HINTS]
-        assert "execute" in labels
+        assert "launch" in labels
 
 
 # -------------------------------------------------------------------
@@ -157,12 +157,12 @@ class TestStopAllStatusMessages:
 
 
 # -------------------------------------------------------------------
-# Execute start intent logic
+# Launch-agent intent logic
 # -------------------------------------------------------------------
 
 
-class TestExecuteStartIntent:
-    """Test logic used by action_execute_start."""
+class TestLaunchAgentIntent:
+    """Test logic used by the worktree launch flow."""
 
     def test_intent_with_model(self) -> None:
         intent = _start_intent(model="gpt-5.4")

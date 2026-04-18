@@ -4,17 +4,23 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import pytest
 
+from copilot_commander.adapters.copilot_adapter import CopilotLaunchParameters
+from copilot_commander.adapters.tmux_adapter import TmuxPaneMetadata, TmuxWindowInfo
 from copilot_commander.controllers.agent_controller import (
     AgentIntentView,
     AgentTargetView,
 )
 from copilot_commander.domain.enums import AgentStatus
+from copilot_commander.domain.value_objects import CommandResult
 from copilot_commander.services.action_service import (
+    ActionModelHint,
     ActionResult,
     TmuxActionService,
+    WindowChoice,
 )
 
 # ---------------------------------------------------------------------------
@@ -30,6 +36,31 @@ class SendKeysCall:
     append_enter: bool
 
 
+_TIMESTAMP = datetime(2025, 1, 1, 12, tzinfo=UTC)
+
+
+def _command_result(command: tuple[str, ...] = ("tmux",)) -> CommandResult:
+    return CommandResult(
+        command=command,
+        exit_code=0,
+        started_at=_TIMESTAMP,
+        finished_at=_TIMESTAMP,
+    )
+
+
+@dataclass
+class FakeCopilot:
+    launch_calls: list[CopilotLaunchParameters] = field(default_factory=list)
+    current_model: str | None = "gpt-5.4"
+
+    def launch_in_pane(self, parameters: CopilotLaunchParameters, /) -> object:
+        self.launch_calls.append(parameters)
+        return object()
+
+    def configured_model(self) -> str | None:
+        return self.current_model
+
+
 @dataclass
 class FakeTmux:
     """Minimal fake satisfying TmuxOperations protocol."""
@@ -38,24 +69,40 @@ class FakeTmux:
     captured_text: str = ""
     select_window_calls: list[str] = field(default_factory=list)
     select_pane_calls: list[str] = field(default_factory=list)
-    select_window_calls: list[str] = field(default_factory=list)
     switch_client_calls: list[str] = field(default_factory=list)
     has_client: bool = True
     send_keys_calls: list[SendKeysCall] = field(default_factory=list)
-    capture_calls: list[tuple[str, int | None]] = field(default_factory=list)
+    capture_calls: list[tuple[str, str | int | None]] = field(default_factory=list)
     new_window_pane_id: str = "%10"
+    new_window_calls: list[tuple[str | None, str | None, object | None, bool]] = field(
+        default_factory=list
+    )
+    rename_window_calls: list[tuple[str, str]] = field(default_factory=list)
+    kill_pane_calls: list[str] = field(default_factory=list)
+    break_pane_calls: list[tuple[str, str | None, str | None, bool]] = field(default_factory=list)
+    join_pane_calls: list[tuple[str, str, bool, bool]] = field(default_factory=list)
+    windows: tuple[TmuxWindowInfo, ...] = (
+        TmuxWindowInfo("muxdeck", "@2", window_name="editor", pane_ids=("%5",)),
+        TmuxWindowInfo("muxdeck", "@3", window_name="review", pane_ids=("%7", "%8")),
+    )
+
+    def list_windows(self) -> tuple[TmuxWindowInfo, ...]:
+        return self.windows
 
     def pane_exists(self, target_pane: str, /) -> bool:
         return target_pane in self.existing_panes
 
-    def select_pane(self, target_pane: str, /) -> None:
+    def select_pane(self, target_pane: str, /) -> CommandResult:
         self.select_pane_calls.append(target_pane)
+        return _command_result(("tmux", "select-pane"))
 
-    def select_window(self, target_window: str, /) -> None:
+    def select_window(self, target_window: str, /) -> CommandResult:
         self.select_window_calls.append(target_window)
+        return _command_result(("tmux", "select-window"))
 
-    def switch_client(self, target: str, /) -> None:
+    def switch_client(self, target: str, /) -> CommandResult:
         self.switch_client_calls.append(target)
+        return _command_result(("tmux", "switch-client"))
 
     def has_attached_client(self) -> bool:
         return self.has_client
@@ -68,8 +115,9 @@ class FakeTmux:
         *,
         literal: bool = False,
         append_enter: bool = False,
-    ) -> None:
+    ) -> CommandResult:
         self.send_keys_calls.append(SendKeysCall(target_pane, keys, literal, append_enter))
+        return _command_result(("tmux", "send-keys"))
 
     def capture_pane(
         self,
@@ -92,12 +140,56 @@ class FakeTmux:
         start_directory: object | None = None,
         shell_command: Sequence[str] | None = None,
         detached: bool = False,
-    ) -> object:
-        @dataclass
-        class FakePaneMeta:
-            pane_id: str
+    ) -> TmuxPaneMetadata:
+        self.new_window_calls.append((target_session, window_name, start_directory, detached))
+        return TmuxPaneMetadata(
+            pane_id=self.new_window_pane_id,
+            session_name=target_session,
+            window_id="@10",
+            window_name=window_name,
+        )
 
-        return FakePaneMeta(pane_id=self.new_window_pane_id)
+    def break_pane(
+        self,
+        source_pane: str,
+        /,
+        *,
+        window_name: str | None = None,
+        target_window: str | None = None,
+        detached: bool = True,
+    ) -> TmuxPaneMetadata:
+        self.break_pane_calls.append((source_pane, window_name, target_window, detached))
+        return TmuxPaneMetadata(
+            pane_id=source_pane,
+            session_name="muxdeck",
+            window_id="@20",
+            window_name=window_name or "new-window",
+        )
+
+    def join_pane(
+        self,
+        source_pane: str,
+        target_pane: str,
+        /,
+        *,
+        detached: bool = True,
+        vertical: bool = True,
+    ) -> TmuxPaneMetadata:
+        self.join_pane_calls.append((source_pane, target_pane, detached, vertical))
+        return TmuxPaneMetadata(
+            pane_id=source_pane,
+            session_name="muxdeck",
+            window_id=target_pane,
+            window_name="joined-window",
+        )
+
+    def rename_window(self, target_window: str, new_name: str, /) -> CommandResult:
+        self.rename_window_calls.append((target_window, new_name))
+        return _command_result(("tmux", "rename-window"))
+
+    def kill_pane(self, target_pane: str, /) -> CommandResult:
+        self.kill_pane_calls.append(target_pane)
+        return _command_result(("tmux", "kill-pane"))
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +538,59 @@ class TestExecuteIntent:
         assert result.success is True
         assert "worktree path:" in result.message
 
+    def test_rename_window(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+        intent = _intent(
+            "rename_window",
+            metadata=(("window_target", "@2"), ("window_name", "agent-ui")),
+        )
+
+        result = svc.execute_intent(intent)
+
+        assert result.success is True
+        assert tmux.rename_window_calls == [("@2", "agent-ui")]
+
+    def test_move_to_existing_window(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+        intent = _intent(
+            "move_to_window",
+            metadata=(("pane_target", "%5"), ("window_target", "@3")),
+        )
+
+        result = svc.execute_intent(intent)
+
+        assert result.success is True
+        assert tmux.join_pane_calls == [("%5", "@3", True, True)]
+
+    def test_move_to_new_window(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+        intent = _intent(
+            "move_to_window",
+            metadata=(
+                ("pane_target", "%5"),
+                ("session_target", "muxdeck"),
+                ("new_window_name", "agent-ui"),
+            ),
+        )
+
+        result = svc.execute_intent(intent)
+
+        assert result.success is True
+        assert tmux.break_pane_calls == [("%5", "agent-ui", "muxdeck:", True)]
+
+    def test_kill_pane(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+        intent = _intent("kill_pane", metadata=(("pane_target", "%5"),))
+
+        result = svc.execute_intent(intent)
+
+        assert result.success is True
+        assert tmux.kill_pane_calls == ["%5"]
+
 
 # ---------------------------------------------------------------------------
 # ActionResult dataclass
@@ -461,6 +606,60 @@ class TestActionResult:
         result = ActionResult(success=True, message="ok", pane_id="%1")
         with pytest.raises(AttributeError):
             result.success = False  # type: ignore[misc]
+
+
+class TestWindowChoices:
+    def test_window_choices_use_tmux_metadata(self) -> None:
+        svc = TmuxActionService(FakeTmux())
+
+        choices = svc.window_choices()
+
+        assert choices == (
+            WindowChoice(
+                session_name="muxdeck",
+                window_id="@2",
+                window_name="editor",
+                pane_count=1,
+            ),
+            WindowChoice(
+                session_name="muxdeck",
+                window_id="@3",
+                window_name="review",
+                pane_count=2,
+            ),
+        )
+
+
+class TestLaunchModelHint:
+    def test_uses_configured_copilot_model(self) -> None:
+        svc = TmuxActionService(FakeTmux(), copilot=FakeCopilot())
+
+        hint = svc.launch_model_hint()
+
+        assert hint == ActionModelHint(
+            configured_model="gpt-5.4",
+            message=(
+                "Configured model: gpt-5.4. "
+                "Model availability depends on your Copilot account/provider. "
+                "Enter a model manually or leave it blank to use Copilot's default."
+            ),
+        )
+
+    def test_without_copilot_falls_back_to_manual_entry(self) -> None:
+        svc = TmuxActionService(FakeTmux())
+
+        hint = svc.launch_model_hint()
+
+        assert hint.configured_model is None
+        assert "Enter a model manually" in hint.message
+
+    def test_without_configured_model_reports_honest_fallback(self) -> None:
+        svc = TmuxActionService(FakeTmux(), copilot=FakeCopilot(current_model=None))
+
+        hint = svc.launch_model_hint()
+
+        assert hint.configured_model is None
+        assert "No configured Copilot model detected." in hint.message
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +703,28 @@ class TestStartAgent:
 
         assert result.success is True
         assert "my-agent" in result.message
+
+    def test_start_with_copilot_uses_launch_parameters(self) -> None:
+        tmux = FakeTmux()
+        copilot = FakeCopilot()
+        svc = TmuxActionService(tmux, copilot=copilot)
+        from pathlib import Path
+
+        result = svc.start_agent(
+            cwd=Path("/repo"),
+            model="gpt-5.4",
+            window_name="my-agent",
+            target_session="muxdeck",
+            prompt="Continue work for task/ui",
+        )
+
+        assert result.success is True
+        assert tmux.new_window_calls == [("muxdeck", "my-agent", Path("/repo"), True)]
+        assert len(copilot.launch_calls) == 1
+        launch = copilot.launch_calls[0]
+        assert launch.pane_target == "%10"
+        assert launch.model == "gpt-5.4"
+        assert launch.extra_args == ("-i", "Continue work for task/ui")
 
 
 class TestResumeWindowsSession:

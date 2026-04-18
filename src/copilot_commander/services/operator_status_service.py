@@ -10,6 +10,7 @@ OperatorStatusTone = Literal["info", "warning", "error", "success"]
 
 
 class OperatorStatusKind(StrEnum):
+    STARTING = "starting"
     WORKING = "working"
     WAITING_INPUT = "waiting_input"
     BLOCKED = "blocked"
@@ -60,6 +61,15 @@ def describe_operator_status(
             headline="completed",
             reason=reason or "task completed",
             tone="success",
+            needs_attention=False,
+        )
+    if agent_status in {AgentStatus.DISCOVERED, AgentStatus.STARTING}:
+        return OperatorStatus(
+            kind=OperatorStatusKind.STARTING,
+            label="loading",
+            headline="launching",
+            reason=reason or "starting up",
+            tone="info",
             needs_attention=False,
         )
     if agent_status is AgentStatus.DEAD:

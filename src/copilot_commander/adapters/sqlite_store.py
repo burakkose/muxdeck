@@ -769,14 +769,14 @@ class SQLiteStore:
         if agent_id is not None:
             return self.list_events_for_agent(agent_id)
         rows = self._fetch_all(
-            f"{_SELECT_EVENT_SQL} ORDER BY occurred_at ASC, rowid ASC",
+            f"{_SELECT_EVENT_SQL} ORDER BY occurred_at ASC, storage_order ASC",
             operation="list events",
         )
         return tuple(_row_to_event(row) for row in rows)
 
     def list_events_for_session(self, session_id: str, /) -> tuple[Event, ...]:
         rows = self._fetch_all(
-            f"{_SELECT_EVENT_SQL} WHERE session_id = ? ORDER BY occurred_at ASC, rowid ASC",
+            f"{_SELECT_EVENT_SQL} WHERE session_id = ? ORDER BY occurred_at ASC, storage_order ASC",
             (session_id,),
             operation="list session events",
         )
@@ -787,7 +787,7 @@ class SQLiteStore:
         row = self._fetch_one(
             (
                 f"{_SELECT_EVENT_SQL} WHERE session_id = ? "
-                "ORDER BY occurred_at DESC, rowid DESC LIMIT 1"
+                "ORDER BY occurred_at DESC, storage_order DESC LIMIT 1"
             ),
             (session_id,),
             operation="get latest session event",
@@ -796,7 +796,7 @@ class SQLiteStore:
 
     def list_events_for_agent(self, agent_id: str, /) -> tuple[Event, ...]:
         rows = self._fetch_all(
-            f"{_SELECT_EVENT_SQL} WHERE agent_id = ? ORDER BY occurred_at ASC, rowid ASC",
+            f"{_SELECT_EVENT_SQL} WHERE agent_id = ? ORDER BY occurred_at ASC, storage_order ASC",
             (agent_id,),
             operation="list agent events",
         )
@@ -815,7 +815,7 @@ class SQLiteStore:
         rows = self._fetch_all(
             (
                 f"{_SELECT_LOG_CHUNK_SQL} WHERE session_id = ? "
-                "ORDER BY sequence_no ASC, captured_at ASC, rowid ASC"
+                "ORDER BY sequence_no ASC, captured_at ASC, storage_order ASC"
             ),
             (session_id,),
             operation="list log chunks",
@@ -827,7 +827,7 @@ class SQLiteStore:
         row = self._fetch_one(
             (
                 f"{_SELECT_LOG_CHUNK_SQL} WHERE session_id = ? "
-                "ORDER BY sequence_no DESC, captured_at DESC, rowid DESC LIMIT 1"
+                "ORDER BY sequence_no DESC, captured_at DESC, storage_order DESC LIMIT 1"
             ),
             (session_id,),
             operation="get latest log chunk",
@@ -870,10 +870,11 @@ class SQLiteStore:
         """Return the most recent *limit* log chunks for a session, in chronological order."""
         rows = self._fetch_all(
             (
-                f"SELECT * FROM (SELECT {', '.join(_LOG_CHUNK_COLUMNS)} FROM log_chunks "
+                "SELECT * FROM ("
+                f"SELECT storage_order, {', '.join(_LOG_CHUNK_COLUMNS)} FROM log_chunks "
                 "WHERE session_id = ? "
-                "ORDER BY sequence_no DESC, captured_at DESC, rowid DESC "
-                f"LIMIT ?) ORDER BY sequence_no ASC, captured_at ASC, rowid ASC"
+                "ORDER BY sequence_no DESC, captured_at DESC, storage_order DESC "
+                f"LIMIT ?) ORDER BY sequence_no ASC, captured_at ASC, storage_order ASC"
             ),
             (session_id, limit),
             operation="list recent log chunks",
@@ -884,7 +885,7 @@ class SQLiteStore:
         rows = self._fetch_all(
             (
                 f"{_SELECT_LOG_CHUNK_SQL} WHERE agent_id = ? "
-                "ORDER BY sequence_no ASC, captured_at ASC, rowid ASC"
+                "ORDER BY sequence_no ASC, captured_at ASC, storage_order ASC"
             ),
             (agent_id,),
             operation="list agent log chunks",

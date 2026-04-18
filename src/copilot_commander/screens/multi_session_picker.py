@@ -10,6 +10,8 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label
 
+from copilot_commander.bindings import BindingSpec
+
 
 class MultiSessionPickerScreen(ModalScreen[tuple[str, ...] | None]):
     """Prompt the operator for a comma-separated list of session ids.
@@ -54,7 +56,7 @@ class MultiSessionPickerScreen(ModalScreen[tuple[str, ...] | None]):
     }
     """
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[list[BindingSpec]] = [
         ("escape", "cancel", "Cancel"),
     ]
 

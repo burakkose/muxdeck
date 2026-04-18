@@ -92,6 +92,10 @@ class LivePaneViewer(RichLog):
         return len(self._buffer)
 
     @property
+    def buffer_lines(self) -> tuple[str, ...]:
+        return self._buffer.lines()
+
+    @property
     def has_content(self) -> bool:
         return self._has_content
 
@@ -116,11 +120,24 @@ class LivePaneViewer(RichLog):
         if not payload:
             return
         self._buffer.append_text(payload)
-        # AnsiDecoder emits one Text per newline-separated line.  Feed
-        # them in order; RichLog adds its own newline separation.
-        for line in self._decoder.decode(payload.rstrip("\n")):
-            self._write_styled(line)
+        self._render_string(payload)
         self._has_content = True
+
+    def set_snapshot(self, payload: str | Text) -> None:
+        """Replace the entire viewer contents with a fresh pane snapshot."""
+        self.clear_buffer()
+        self.append(payload)
+        if self.is_mounted:
+            self.scroll_end(animate=False, immediate=True, force=True, x_axis=False)
+
+    def replace_tail(self, payload: str | Text) -> None:
+        """Replace only the newest lines with a corrected tmux snapshot."""
+        text = payload.plain if isinstance(payload, Text) else payload
+        if not text:
+            return
+        self._buffer.replace_tail_text(text)
+        self._has_content = self.buffer_line_count > 0
+        self._rerender_from_buffer()
 
     def clear_buffer(self) -> None:
         """Drop all rendered content and reset the ring buffer."""
@@ -129,6 +146,26 @@ class LivePaneViewer(RichLog):
         self.clear()
 
     # ── internals ────────────────────────────────────────────────────
+
+    def _render_string(self, payload: str) -> None:
+        # AnsiDecoder emits one Text per newline-separated line.  Feed
+        # them in order; RichLog adds its own newline separation.
+        for line in self._decoder.decode(payload.rstrip("\n")):
+            self._write_styled(line)
+
+    def _rerender_from_buffer(self) -> None:
+        if not self.is_mounted:
+            return
+        follow_tail = self.is_vertical_scroll_end
+        previous_scroll_y = self.scroll_y
+        lines = self._buffer.lines()
+        self.clear()
+        for raw_line in lines:
+            self._render_string(raw_line)
+        if follow_tail:
+            self.scroll_end(animate=False, immediate=True, force=True, x_axis=False)
+            return
+        self.scroll_to(y=previous_scroll_y, animate=False, immediate=True, force=True)
 
     def _write_styled(self, text: Text) -> None:
         # RichLog.write is the documented append API. Guard with

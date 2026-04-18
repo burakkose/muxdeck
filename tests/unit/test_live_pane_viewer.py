@@ -17,6 +17,7 @@ class TestAppend:
         viewer = LivePaneViewer()
         viewer.append("alpha\nbeta\n")
         assert viewer.buffer_line_count == 2
+        assert viewer.buffer_lines == ("alpha", "beta")
         assert viewer.has_content is True
 
     def test_ansi_string_is_decoded(self) -> None:
@@ -63,3 +64,15 @@ class TestLineCap:
         viewer.clear_buffer()
         assert viewer.buffer_line_count == 0
         assert viewer.has_content is False
+
+    def test_set_snapshot_replaces_existing_buffer(self) -> None:
+        viewer = LivePaneViewer(max_lines=4)
+        viewer.append("a\nb\nc\n")
+        viewer.set_snapshot("x\ny\n")
+        assert viewer.buffer_lines == ("x", "y")
+
+    def test_replace_tail_preserves_history(self) -> None:
+        viewer = LivePaneViewer(max_lines=6)
+        viewer.append("one\ntwo\nthree\nfour\nfive\n")
+        viewer.replace_tail("three\nFOUR\nFIVE\n")
+        assert viewer.buffer_lines == ("one", "two", "three", "FOUR", "FIVE")

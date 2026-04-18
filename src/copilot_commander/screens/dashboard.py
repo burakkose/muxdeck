@@ -22,6 +22,12 @@ from copilot_commander.screens.base import ShellScreen
 from copilot_commander.screens.compose_mirror import ComposeWithMirrorScreen
 from copilot_commander.screens.confirm_dialog import ConfirmScreen
 from copilot_commander.screens.message_input import MessageResult, SendMessageScreen
+from copilot_commander.screens.window_input import (
+    MoveWindowResult,
+    MoveWindowScreen,
+    RenameWindowResult,
+    RenameWindowScreen,
+)
 from copilot_commander.services.attention_service import AttentionNotification
 from copilot_commander.widgets.dashboard import (
     AgentDetailPanel,
@@ -64,6 +70,7 @@ class DashboardScreen(ShellScreen):
         self._selected_agent_id: str | None = None
         self._state: DashboardState | None = None
         self._detail_timer: Timer | None = None
+        self._loading: bool = False
 
     @property
     def current_filters(self) -> DashboardFilterState:
@@ -102,6 +109,17 @@ class DashboardScreen(ShellScreen):
         sync_report = self.commander_app.last_sync_report
         # Prefer pre-built state from worker thread (no main-thread queries).
         pre_built = self.commander_app.last_dashboard_state
+        loading_widgets = (
+            self.query_one(AgentListPanel),
+            self.query_one(AgentDetailPanel),
+            self.query_one(LogPreviewPanel),
+            self.query_one(AlertPanel),
+        )
+        first_load = self._state is None
+        if first_load and not self._loading and pre_built is None:
+            self._loading = True
+            self.set_status("loading dashboard…")
+            self.begin_loading(*loading_widgets)
         if pre_built is not None:
             self._state = pre_built
             self.commander_app.last_dashboard_state = None
@@ -115,9 +133,11 @@ class DashboardScreen(ShellScreen):
                     preview_line_limit=self._preview_line_limit(),
                 )
             except Exception:
-                if self._state is None:
-                    self.set_status("Discovering agents…")
+                if first_load:
+                    self.set_status("loading dashboard…")
                 return
+        self._loading = False
+        self.end_loading(*loading_widgets)
         # Preserve the live selection across async refreshes.
         #
         # The sync worker captures ``_selected_agent_id`` at kickoff and
@@ -134,7 +154,11 @@ class DashboardScreen(ShellScreen):
         effective_selected = self._selected_agent_id
         if effective_selected is not None:
             self.commander_app.remember_agent_selection(effective_selected)
-        self.query_one(StatusBar).set_state(self._state.health, self._state.metrics)
+        selected_item = next(
+            (agent for agent in self._state.agents if agent.agent_id == effective_selected),
+            None,
+        )
+        self.query_one(StatusBar).set_state(self._state.health, self._state.metrics, selected_item)
         filter_bar = self.query_one(FilterBar)
         filter_bar.set_query(self._filters.text_query)
         self.query_one(AgentListPanel).set_agents(
@@ -184,6 +208,12 @@ class DashboardScreen(ShellScreen):
             return
         self._selected_agent_id = message.agent_id
         self.commander_app.remember_agent_selection(self._selected_agent_id)
+        if self._state is not None:
+            self.query_one(StatusBar).set_state(
+                self._state.health,
+                self._state.metrics,
+                self._find_selected_agent(),
+            )
         # Debounce: cancel any pending detail load and schedule a new one.
         # This prevents stacking 200ms DB calls while the user holds arrow keys.
         if self._detail_timer is not None:
@@ -321,11 +351,10 @@ class DashboardScreen(ShellScreen):
         if self._selected_agent_id is None:
             self.set_status("no agent selected")
             return
-        agent = self._find_selected_agent()
-        name = (agent.repo_name or agent.name) if agent else "agent"
+        name = self._selected_action_subject()
         self.app.push_screen(
             ConfirmScreen(
-                message=f"Interrupt {name}? This sends Ctrl-C.",
+                message=f"Interrupt {name}? This sends Ctrl-C to the parent pane.",
                 title="Interrupt Agent",
             ),
             callback=self._on_interrupt_confirmed,
@@ -337,8 +366,94 @@ class DashboardScreen(ShellScreen):
             return
         self._execute_agent_intent("interrupt", self.runtime.agents.interrupt_intent)
 
+    def action_kill_agent(self) -> None:
+        if self._selected_agent_id is None:
+            self.set_status("no agent selected")
+            return
+        agent = self._find_selected_agent()
+        if agent is None or not agent.pane_id:
+            self.set_status("✗ agent has no pane")
+            return
+        self.app.push_screen(
+            ConfirmScreen(
+                message=(
+                    f"Kill the tmux pane for {self._selected_action_subject()}? "
+                    "This force-stops the agent and any active sub-agent."
+                ),
+                title="Kill Agent Pane",
+            ),
+            callback=self._on_kill_confirmed,
+        )
+
+    def _on_kill_confirmed(self, confirmed: bool | None) -> None:
+        if not confirmed:
+            self.set_status("kill cancelled")
+            return
+        self._execute_agent_intent("kill", self.runtime.agents.kill_pane_intent)
+
     def action_open_pane(self) -> None:
         self._execute_agent_intent("focus console", self.runtime.agents.open_pane_intent)
+
+    def action_rename_window(self) -> None:
+        if self._selected_agent_id is None:
+            self.set_status("no agent selected")
+            return
+        agent = self._find_selected_agent()
+        if agent is None:
+            self.set_status("no agent detail loaded")
+            return
+        self.app.push_screen(
+            RenameWindowScreen(
+                self._selected_action_subject(),
+                current_name=agent.window_name,
+            ),
+            callback=self._on_rename_window_result,
+        )
+
+    def _on_rename_window_result(self, result: RenameWindowResult | None) -> None:
+        if result is None:
+            self.set_status("rename cancelled")
+            return
+        self._execute_agent_intent(
+            "rename window",
+            lambda agent_id: self.runtime.agents.rename_window_intent(
+                agent_id,
+                new_name=result.name,
+            ),
+        )
+
+    def action_move_to_window(self) -> None:
+        if self._selected_agent_id is None:
+            self.set_status("no agent selected")
+            return
+        if self.runtime.actions is None:
+            self.set_status("✗ action service unavailable")
+            return
+        agent = self._find_selected_agent()
+        if agent is None or not agent.pane_id:
+            self.set_status("✗ agent has no pane")
+            return
+        self.app.push_screen(
+            MoveWindowScreen(
+                self._selected_action_subject(),
+                current_window_name=agent.window_name,
+                choices=self.runtime.actions.window_choices(),
+            ),
+            callback=self._on_move_window_result,
+        )
+
+    def _on_move_window_result(self, result: MoveWindowResult | None) -> None:
+        if result is None:
+            self.set_status("move cancelled")
+            return
+        self._execute_agent_intent(
+            "move to window",
+            lambda agent_id: self.runtime.agents.move_to_window_intent(
+                agent_id,
+                target_window=result.target_window,
+                new_window_name=result.new_window_name,
+            ),
+        )
 
     def action_open_worktree(self) -> None:
         self._set_agent_intent_status("open_worktree", self.runtime.agents.open_worktree_intent)
@@ -499,10 +614,21 @@ class DashboardScreen(ShellScreen):
                 return agent
         return None
 
+    def _selected_action_subject(self) -> str:
+        subagent = self.query_one(AgentListPanel).selected_subagent
+        if subagent is not None:
+            return subagent.display_name
+        agent = self._find_selected_agent()
+        if agent is None:
+            return "agent"
+        return agent.repo_name or agent.name
+
     def _update_selected_detail(self) -> None:
         """Lightweight: rebuild only the detail panels for the newly selected agent."""
         item = self._find_selected_agent()
         if item is None:
+            if self._state is not None:
+                self.query_one(StatusBar).set_state(self._state.health, self._state.metrics, None)
             self.query_one(AgentDetailPanel).set_agent(None)
             self.query_one(LogPreviewPanel).set_logs(None)
             return
@@ -525,6 +651,11 @@ class DashboardScreen(ShellScreen):
                 selected_agent_id=item.agent_id,
                 selected_agent=selected_view,
             )
+            self.query_one(StatusBar).set_state(
+                self._state.health,
+                self._state.metrics,
+                selected_view.item,
+            )
         # Don't clobber a sub-agent detail view if the cursor is currently
         # parked on a sub-agent row under this parent.
         panel = self.query_one(AgentListPanel)
@@ -535,7 +666,7 @@ class DashboardScreen(ShellScreen):
         self.query_one(LogPreviewPanel).set_logs(selected_view)
 
     def _preview_line_limit(self) -> int:
-        return min(self.runtime.config.general.log_preview_lines, 24)
+        return min(max(self.runtime.config.general.log_preview_lines, 12), 24)
 
     def _emit_notifications(self, notifications: tuple[AttentionNotification, ...]) -> None:
         if not notifications:

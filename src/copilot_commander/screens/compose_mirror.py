@@ -1,37 +1,32 @@
 """Full-screen compose-with-live-mirror screen.
 
-Opened from the Dashboard via ``v``.  The layout:
+Opened from the Dashboard via ``v``. The layout:
 
 * **Top (most of the screen)** — a live mirror of the agent's tmux
-  pane.  We seed it with the current scrollback, then wire
-  ``tmux pipe-pane`` so every new byte written to the real pane is
-  streamed in.  The widget is a scrollable RichLog, so the user can
-  scroll up through history, follow the tail, and select text using
-  Textual's built-in selection.
-
+  pane. We seed it with the pane's current rendered contents, follow
+  new bytes via ``tmux pipe-pane``, and periodically resync with
+  ``capture-pane`` so carriage-return heavy / dynamically redrawn output
+  stays faithful to what tmux actually shows.
 * **Bottom** — a multi-line :class:`TextArea` composer backed by
-  Textual's full editor bindings (cursor motion, selection, copy,
-  cut, paste, word-wise motion, delete, undo).  This is where the
-  user types a message to send to the agent.
+  Textual's full editor bindings (cursor motion, selection, copy, cut,
+  paste, delete, undo).
 
 Key bindings:
 
-* ``tab`` / ``shift+tab`` — move focus between the editor and the
-  mirror (so the user can scroll the mirror without leaving the
-  screen).
-* ``ctrl+s`` / ``ctrl+enter`` / ``ctrl+j`` — send the composed text
-  to the pane (via ``tmux send-keys``, appending Enter).
-* ``escape`` — close the screen.  Also exits the compose editor when
-  it currently has focus; pressing ``escape`` a second time (while
-  the mirror has focus) closes the screen.
+* ``tab`` / ``shift+tab`` — move focus between the editor and mirror.
+* ``ctrl+s`` / ``ctrl+enter`` / ``ctrl+j`` — send the composed text.
+* ``i`` (while the mirror is focused) — enter live-input mode; keys go
+  directly to the tmux pane until ``escape``.
+* ``alt+up`` / ``alt+down`` — shrink / grow the compose editor.
+* ``escape`` — leave live-input mode, otherwise close the screen.
 
-Closing the screen tears the ``pipe-pane`` down so tmux doesn't keep
-a dangling writer open against a vanished sink.
+Closing the screen tears the ``pipe-pane`` down and removes the per-pane
+ring file.
 """
 
 from __future__ import annotations
 
-import tempfile
+import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -45,6 +40,7 @@ from copilot_commander.adapters.pane_stream import (
     PaneRingReader,
     PaneStreamAdapter,
     ring_file_for_pane,
+    translate_textual_key,
 )
 from copilot_commander.bindings import BindingSpec, KeyHint
 from copilot_commander.exceptions import TmuxCommandError
@@ -55,23 +51,33 @@ if TYPE_CHECKING:
     from copilot_commander.app import CommanderRuntime
 
 
-# Poll the ring file often enough that the mirror feels live (100ms)
-# without pummelling the filesystem.  The reader short-circuits on an
-# unchanged ``st_size`` so idle panes are effectively free.
+# Ring-file polling stays fast for fresh line-oriented output; the
+# snapshot poll is slower and corrects dynamic redraws so the mirror
+# matches the current tmux screen.
 _POLL_INTERVAL_SEC = 0.1
+_SNAPSHOT_SYNC_INTERVAL_SEC = 0.25
+_DEFAULT_EDITOR_HEIGHT = 10
+_MIN_EDITOR_HEIGHT = 7
+_MAX_EDITOR_HEIGHT = 24
+_EDITOR_HEIGHT_STEP = 2
+_RING_DIR_NAME = "pane-mirror"
 
 
 COMPOSE_MIRROR_BINDINGS: list[BindingSpec] = [
     Binding("ctrl+s", "send", "Send", show=False),
     Binding("ctrl+enter", "send", "Send", show=False),
     Binding("ctrl+j", "send", "Send", show=False),
+    Binding("alt+up", "shrink_editor", "More mirror", show=False),
+    Binding("alt+down", "grow_editor", "More editor", show=False),
 ]
 
 COMPOSE_MIRROR_HINTS: tuple[KeyHint, ...] = (
     KeyHint("ctrl+s", "send"),
-    KeyHint("tab", "focus mirror/editor"),
-    KeyHint("pgup/pgdn", "scroll mirror"),
-    KeyHint("esc", "close"),
+    KeyHint("tab", "focus"),
+    KeyHint("i", "interact"),
+    KeyHint("alt+up/down", "resize"),
+    KeyHint("r", "resync"),
+    KeyHint("esc", "back"),
 )
 
 
@@ -99,7 +105,7 @@ class ComposeWithMirrorScreen(ShellScreen):
     }
 
     ComposeWithMirrorScreen #compose-editor-wrap {
-        height: 14;
+        height: 10;
         width: 1fr;
         margin-top: 1;
     }
@@ -133,12 +139,28 @@ class ComposeWithMirrorScreen(ShellScreen):
         super().__init__(runtime)
         self._pane_id = pane_id
         self._display_name = display_name
-        resolved_root = ring_dir if ring_dir is not None else Path(tempfile.gettempdir())
+        resolved_root = (
+            ring_dir if ring_dir is not None else runtime.config.paths.state_dir / _RING_DIR_NAME
+        )
         self._ring_path = ring_file_for_pane(resolved_root, pane_id)
         self._adapter: PaneStreamAdapter | None = runtime.pane_stream
         self._reader = PaneRingReader(self._ring_path)
         self._pipe_started = False
         self._loading_cleared = False
+        self._mirror_input_active = False
+        self._editor_height = _DEFAULT_EDITOR_HEIGHT
+        self._last_snapshot = ""
+        self._capture_error: str | None = None
+        self._stream_warning: str | None = None
+        self._sync_warning: str | None = None
+
+    @property
+    def editor_height(self) -> int:
+        return self._editor_height
+
+    @property
+    def mirror_input_active(self) -> bool:
+        return self._mirror_input_active
 
     # ── composition & mount ──────────────────────────────────────────
 
@@ -149,10 +171,7 @@ class ComposeWithMirrorScreen(ShellScreen):
                 viewer.border_title = self._format_mirror_title()
                 yield viewer
             with Vertical(id="compose-editor-wrap"):
-                yield Label(
-                    "compose · ctrl+s send · tab switch focus · esc close",
-                    id="compose-editor-label",
-                )
+                yield Label("loading pane mirror…", id="compose-editor-label")
                 editor = TextArea(
                     id="compose-editor",
                     show_line_numbers=False,
@@ -164,54 +183,68 @@ class ComposeWithMirrorScreen(ShellScreen):
     def on_mount(self) -> None:
         viewer = self.query_one(LivePaneViewer)
         self.begin_loading(viewer)
+        viewer.border_subtitle = "loading tmux snapshot…"
+        self.set_status("loading pane snapshot… live mirror will follow tmux output")
+        self._apply_editor_height()
         if self._adapter is None:
+            self._capture_error = "✗ pane streaming unavailable"
             self.end_loading(viewer)
-            self.set_status("✗ pane streaming unavailable")
+            self._loading_cleared = True
         else:
             self._seed_and_stream(viewer)
-        # Land focus in the editor so typing just works.  The mirror
-        # can be reached with tab.
+        # Land focus in the editor so typing just works. The mirror can
+        # be reached with tab.
         self.query_one("#compose-editor", TextArea).focus()
-        self.set_status(self._default_status())
+        self._refresh_guidance()
 
     def on_unmount(self) -> None:
         self._teardown_pipe()
 
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        del event
+        mirror = self.query_one(LivePaneViewer)
+        if self._mirror_input_active and not mirror.has_focus:
+            self._mirror_input_active = False
+        self._refresh_guidance()
+
     def _seed_and_stream(self, viewer: LivePaneViewer) -> None:
         assert self._adapter is not None
         try:
-            seed = self._adapter.seed(self._pane_id)
+            snapshot = self._adapter.capture_snapshot(self._pane_id)
         except TmuxCommandError as exc:
-            self.end_loading(viewer)
-            self.set_status(f"✗ capture failed: {exc.stderr or 'tmux error'}")
-            return
-        except OSError as exc:
-            self.end_loading(viewer)
-            self.set_status(f"✗ capture failed: {exc}")
-            return
-        if seed:
-            viewer.append(seed)
+            self._capture_error = f"✗ capture failed: {exc.stderr or 'tmux error'}"
             self.end_loading(viewer)
             self._loading_cleared = True
+            return
+        except OSError as exc:
+            self._capture_error = f"✗ capture failed: {exc}"
+            self.end_loading(viewer)
+            self._loading_cleared = True
+            return
+        self._capture_error = None
+        self._sync_warning = None
+        viewer.set_snapshot(snapshot)
+        self._last_snapshot = snapshot
+        self.end_loading(viewer)
+        self._loading_cleared = True
         try:
             self._adapter.start_pipe(self._pane_id, self._ring_path)
             self._pipe_started = True
+            self._stream_warning = None
         except TmuxCommandError as exc:
-            self.set_status(f"⚠ live stream unavailable: {exc.stderr or 'tmux error'}")
+            detail = exc.stderr or "tmux error"
+            self._stream_warning = f"⚠ live stream unavailable ({detail}); snapshot sync only"
         except OSError as exc:
-            self.set_status(f"⚠ live stream unavailable: {exc}")
+            self._stream_warning = f"⚠ live stream unavailable ({exc}); snapshot sync only"
         self.set_interval(_POLL_INTERVAL_SEC, self._drain_ring)
+        self.set_interval(_SNAPSHOT_SYNC_INTERVAL_SEC, self._sync_snapshot)
 
     # ── polling ──────────────────────────────────────────────────────
 
     def _drain_ring(self) -> None:
         if self._adapter is None:
             return
-        try:
-            chunk = self._reader.read_new()
-        except OSError as exc:
-            self.set_status(f"⚠ ring read failed: {exc}")
-            return
+        chunk = self._reader.read_new()
         if not chunk:
             return
         viewer = self.query_one(LivePaneViewer)
@@ -219,11 +252,63 @@ class ComposeWithMirrorScreen(ShellScreen):
         if not self._loading_cleared:
             self.end_loading(viewer)
             self._loading_cleared = True
+            self._refresh_guidance()
+
+    def _sync_snapshot(self, *, force: bool = False) -> None:
+        if self._adapter is None:
+            return
+        viewer = self.query_one(LivePaneViewer)
+        try:
+            snapshot = self._adapter.capture_snapshot(self._pane_id)
+        except TmuxCommandError as exc:
+            self._sync_warning = f"⚠ snapshot sync failed: {exc.stderr or 'tmux error'}"
+            if force and not viewer.has_content:
+                self._capture_error = self._sync_warning
+            if force or not self._loading_cleared:
+                self.end_loading(viewer)
+                self._loading_cleared = True
+            self._refresh_guidance(update_status=True)
+            return
+        except OSError as exc:
+            self._sync_warning = f"⚠ snapshot sync failed: {exc}"
+            if force and not viewer.has_content:
+                self._capture_error = self._sync_warning
+            if force or not self._loading_cleared:
+                self.end_loading(viewer)
+                self._loading_cleared = True
+            self._refresh_guidance(update_status=True)
+            return
+        had_warning = self._capture_error is not None or self._sync_warning is not None
+        self._capture_error = None
+        self._sync_warning = None
+        if snapshot != self._last_snapshot:
+            if viewer.has_content:
+                viewer.replace_tail(snapshot)
+            else:
+                viewer.set_snapshot(snapshot)
+            self._last_snapshot = snapshot
+        if force or not self._loading_cleared:
+            self.end_loading(viewer)
+            self._loading_cleared = True
+        self._refresh_guidance(update_status=force or had_warning)
+
+    def refresh_data(self) -> None:
+        viewer = self.query_one(LivePaneViewer)
+        self.begin_loading(viewer)
+        self._sync_snapshot(force=True)
 
     # ── key handling ─────────────────────────────────────────────────
 
     async def on_key(self, event: events.Key) -> None:
-        # Tab/Shift+Tab cycles focus between editor and mirror.  The
+        if self._handle_live_input_key(event):
+            return
+        mirror = self.query_one(LivePaneViewer)
+        if event.key == "i" and mirror.has_focus and self._adapter is not None:
+            self._set_mirror_input_mode(True)
+            event.stop()
+            event.prevent_default()
+            return
+        # Tab/Shift+Tab cycles focus between editor and mirror. The
         # editor consumes tab for indentation by default, so we handle
         # the swap at the screen level *before* it gets there.
         if event.key == "tab":
@@ -236,14 +321,29 @@ class ComposeWithMirrorScreen(ShellScreen):
             event.stop()
             event.prevent_default()
             return
-        # Escape closes the screen regardless of which child has focus.
-        # TextArea doesn't consume escape, and RichLog doesn't either,
-        # so we never steal the key from a legitimate handler.
         if event.key == "escape":
             event.stop()
             event.prevent_default()
             self.action_close()
             return
+
+    def _handle_live_input_key(self, event: events.Key) -> bool:
+        if not self._mirror_input_active or self._adapter is None:
+            return False
+        mirror = self.query_one(LivePaneViewer)
+        if not mirror.has_focus:
+            return False
+        event.stop()
+        event.prevent_default()
+        if event.key == "escape":
+            self._set_mirror_input_mode(False)
+            return True
+        translation = translate_textual_key(event.key)
+        if translation is None:
+            self.set_status(f"live input ignores {event.key!r} · esc stops live input")
+            return True
+        self._adapter.send_keys(self._pane_id, translation)
+        return True
 
     def _swap_focus(self, *, forward: bool) -> None:
         del forward  # two-widget cycle — direction doesn't matter
@@ -274,31 +374,119 @@ class ComposeWithMirrorScreen(ShellScreen):
         else:
             self.set_status(f"✗ {result.message}")
 
+    def action_grow_editor(self) -> None:
+        self._set_editor_height(self._editor_height + _EDITOR_HEIGHT_STEP)
+
+    def action_shrink_editor(self) -> None:
+        self._set_editor_height(self._editor_height - _EDITOR_HEIGHT_STEP)
+
     def action_close(self) -> None:
         self._teardown_pipe()
         self.app.pop_screen()
 
     # ── helpers ──────────────────────────────────────────────────────
 
+    def _set_editor_height(self, next_height: int) -> None:
+        clamped = max(_MIN_EDITOR_HEIGHT, min(_MAX_EDITOR_HEIGHT, next_height))
+        if clamped == self._editor_height:
+            return
+        self._editor_height = clamped
+        self._apply_editor_height()
+        self._refresh_guidance()
+
+    def _apply_editor_height(self) -> None:
+        editor_wrap = self.query_one("#compose-editor-wrap", Vertical)
+        editor_wrap.styles.height = self._editor_height
+
+    def _set_mirror_input_mode(self, enabled: bool) -> None:
+        if self._mirror_input_active == enabled:
+            return
+        self._mirror_input_active = enabled
+        if enabled:
+            self.query_one(LivePaneViewer).focus()
+        self._refresh_guidance()
+
+    def _refresh_guidance(self, *, update_status: bool = True) -> None:
+        if not self.is_mounted:
+            return
+        viewer = self.query_one(LivePaneViewer)
+        label = self.query_one("#compose-editor-label", Label)
+        label.update(self._editor_label(viewer))
+        if self._mirror_input_active and viewer.has_focus:
+            viewer.add_class("-input-on")
+        else:
+            viewer.remove_class("-input-on")
+        viewer.border_subtitle = self._viewer_subtitle(viewer)
+        if update_status:
+            self.set_status(self._status_message(viewer))
+
+    def _editor_label(self, viewer: LivePaneViewer) -> str:
+        if self._mirror_input_active and viewer.has_focus:
+            return (
+                f"live input on · keys go to tmux · esc stop · editor {self._editor_height} lines"
+            )
+        editor = self.query_one("#compose-editor", TextArea)
+        if editor.has_focus:
+            return (
+                f"compose ({self._editor_height} lines) · ctrl+s send · "
+                "tab mirror · i on mirror to interact"
+            )
+        return (
+            f"mirror focus · i interact · tab editor · alt+up/down resize · "
+            f"editor {self._editor_height} lines"
+        )
+
+    def _viewer_subtitle(self, viewer: LivePaneViewer) -> str:
+        if self._mirror_input_active and viewer.has_focus:
+            return "live input · esc stops"
+        if self._capture_error is not None:
+            return "capture failed"
+        if self._sync_warning is not None:
+            return "snapshot sync warning · r retry"
+        if self._stream_warning is not None:
+            return "snapshot sync only · r resync"
+        if not viewer.has_content:
+            return "waiting for pane output · live mirror armed"
+        return "live mirror + snapshot sync · r resync"
+
+    def _status_message(self, viewer: LivePaneViewer) -> str:
+        if self._capture_error is not None:
+            return self._capture_error
+        if self._mirror_input_active and viewer.has_focus:
+            guidance = (
+                f"live input → {self._display_name} ({self._pane_id}) · keys go to tmux · esc stops"
+            )
+        elif viewer.has_focus:
+            guidance = (
+                f"mirror → {self._display_name} ({self._pane_id}) · "
+                "scroll freely · i interact · tab editor"
+            )
+        else:
+            guidance = (
+                f"compose → {self._display_name} ({self._pane_id}) · "
+                "ctrl+s send · tab focus · alt+up/down resize · i interact"
+            )
+        warning = self._sync_warning or self._stream_warning
+        if warning is not None:
+            return f"{warning} · {guidance}"
+        if not viewer.has_content:
+            return f"{guidance} · waiting for pane output"
+        return guidance
+
     def _teardown_pipe(self) -> None:
-        if self._adapter is None or not self._pipe_started:
-            return
-        self._pipe_started = False
-        try:
-            self._adapter.stop_pipe(self._pane_id)
-        except TmuxCommandError:
-            return
-        except OSError:
-            return
+        if self._adapter is not None and self._pipe_started:
+            self._pipe_started = False
+            try:
+                self._adapter.stop_pipe(self._pane_id)
+            except TmuxCommandError:
+                pass
+            except OSError:
+                pass
+        with contextlib.suppress(FileNotFoundError, OSError):
+            self._ring_path.unlink()
 
     def _format_mirror_title(self) -> str:
         return f"mirror · pane {self._pane_id} — {self._display_name}"
-
-    def _default_status(self) -> str:
-        return (
-            f"compose → {self._display_name} ({self._pane_id}) · "
-            "ctrl+s send · tab switch focus · esc close"
-        )
 
 
 __all__ = [

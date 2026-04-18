@@ -35,6 +35,22 @@ _STATUS_COLORS = {
 }
 
 
+def _append_chip(text: Text, label: str, value: str, *, value_style: str) -> None:
+    if text.plain:
+        text.append(" │ ", style=FG4)
+    text.append(f"{label} ", style=FG4)
+    text.append(value, style=value_style)
+
+
+def _append_action(text: Text, key: str, label: str, *, enabled: bool = True) -> None:
+    if text.plain:
+        text.append("  ")
+    key_style = f"bold {AQUA}" if enabled else FG4
+    label_style = FG if enabled else FG4
+    text.append(key, style=key_style)
+    text.append(f" {label}", style=label_style)
+
+
 class SessionSelected(Message):
     """Emitted when a session is selected in the list."""
 
@@ -55,8 +71,13 @@ class SessionListPanel(Static, can_focus=True):
 
     selected_index: reactive[int] = reactive(0)
 
-    def __init__(self, *, widget_id: str | None = None, **kwargs: object) -> None:
-        super().__init__(id=widget_id, **kwargs)
+    def __init__(
+        self,
+        *,
+        widget_id: str | None = None,
+        classes: str | None = None,
+    ) -> None:
+        super().__init__(id=widget_id, classes=classes)
         self._items: tuple[SessionListItemView, ...] = ()
         self._selected_session_id: str | None = None
         # Parallel to ``_items``: each entry is a 2-tuple of (unselected,
@@ -203,8 +224,8 @@ def _build_row_cells(
 class SessionDetailPanel(Static):
     """Detail panel showing selected session metadata."""
 
-    def __init__(self, *, widget_id: str | None = None, **kwargs: object) -> None:
-        super().__init__(id=widget_id, **kwargs)
+    def __init__(self, *, widget_id: str | None = None, classes: str | None = None) -> None:
+        super().__init__(id=widget_id, classes=classes)
 
     def set_detail(self, detail: SessionDetailView | None) -> None:
         if detail is None:
@@ -257,7 +278,7 @@ class SessionDetailPanel(Static):
             content.append(detail.resume_command, style=f"bold {GREEN}")
             content.append("\n")
             content.append("  Press ", style=FG4)
-            content.append("r", style=f"bold {AQUA}")
+            content.append("R", style=f"bold {AQUA}")
             content.append(" to resume in a new tmux window", style=FG4)
         else:
             content.append("  Session completed cleanly", style=FG4)
@@ -268,8 +289,8 @@ class SessionDetailPanel(Static):
 class SessionSummaryBar(Static):
     """Summary bar showing session counts."""
 
-    def __init__(self, *, widget_id: str | None = None, **kwargs: object) -> None:
-        super().__init__(id=widget_id, **kwargs)
+    def __init__(self, *, widget_id: str | None = None, classes: str | None = None) -> None:
+        super().__init__(id=widget_id, classes=classes)
 
     def set_counts(
         self,
@@ -289,8 +310,106 @@ class SessionSummaryBar(Static):
         text.append("completed", style=FG4)
         self.update(text)
 
+    def show_loading(
+        self,
+        *,
+        filter_text: str,
+        show_completed: bool,
+    ) -> None:
+        text = Text()
+        text.append(" loading sessions… ", style=f"bold {AQUA}")
+        text.append("discovering local session state", style=FG4)
+        if filter_text.strip():
+            text.append(" │ ", style=FG4)
+            text.append("filter ", style=FG4)
+            text.append(filter_text.strip(), style=YELLOW)
+        text.append(" │ ", style=FG4)
+        text.append("completed ", style=FG4)
+        text.append("shown" if show_completed else "hidden", style=FG)
+        self.update(text)
+
+
+class SessionActionBar(Static):
+    """Visible session actions + filter state."""
+
+    def __init__(self, *, widget_id: str | None = None, classes: str | None = None) -> None:
+        super().__init__(id=widget_id, classes=classes)
+
+    def show_loading(
+        self,
+        *,
+        filter_text: str,
+        show_completed: bool,
+    ) -> None:
+        text = Text()
+        text.append(" preparing actions… ", style=f"bold {AQUA}")
+        text.append("Replay opens the selected session once discovery finishes", style=FG4)
+        text.append("\n")
+        _append_action(text, "↵", "replay", enabled=False)
+        _append_action(text, "l", "live mirror", enabled=False)
+        _append_action(text, "R", "resume", enabled=False)
+        _append_action(text, "p", "focus pane", enabled=False)
+        _append_action(text, "y", "copy command", enabled=False)
+        text.append("  ")
+        text.append("x", style=f"bold {AQUA}")
+        text.append(f" {'show' if not show_completed else 'hide'} completed", style=FG)
+        if filter_text.strip():
+            text.append("  ")
+            text.append("filter ", style=FG4)
+            text.append(filter_text.strip(), style=YELLOW)
+        self.update(text)
+
+    def set_state(
+        self,
+        detail: SessionDetailView | None,
+        *,
+        has_live_pane: bool,
+        filter_text: str,
+        show_completed: bool,
+    ) -> None:
+        if detail is None:
+            text = Text()
+            text.append(" no session selected ", style=f"bold {FG}")
+            if filter_text.strip():
+                text.append("│ ", style=FG4)
+                text.append("filter ", style=FG4)
+                text.append(filter_text.strip(), style=YELLOW)
+            text.append("\n")
+            _append_action(text, "↵", "replay", enabled=False)
+            _append_action(text, "l", "live mirror", enabled=False)
+            _append_action(text, "R", "resume", enabled=False)
+            _append_action(text, "p", "focus pane", enabled=False)
+            _append_action(text, "y", "copy command", enabled=False)
+            self.update(text)
+            return
+        status_style = _STATUS_COLORS.get(detail.status, FG4)
+        text = Text()
+        _append_chip(text, "selected", detail.session_id[:12], value_style=f"bold {ORANGE}")
+        _append_chip(text, "status", detail.status, value_style=f"bold {status_style}")
+        _append_chip(text, "repo", detail.repository, value_style=AQUA)
+        _append_chip(text, "branch", detail.branch, value_style=YELLOW)
+        _append_chip(text, "checkpoints", str(detail.checkpoint_count), value_style=BLUE)
+        if detail.origin == "windows":
+            _append_chip(text, "host", "windows", value_style=BLUE)
+        if filter_text.strip():
+            _append_chip(text, "filter", filter_text.strip(), value_style=YELLOW)
+        _append_chip(
+            text,
+            "completed",
+            "shown" if show_completed else "hidden",
+            value_style=FG,
+        )
+        text.append("\n")
+        _append_action(text, "↵", "replay")
+        _append_action(text, "l", "live mirror", enabled=has_live_pane)
+        _append_action(text, "R", "resume", enabled=detail.is_resumable)
+        _append_action(text, "p", "focus pane", enabled=has_live_pane)
+        _append_action(text, "y", "copy command")
+        self.update(text)
+
 
 __all__ = [
+    "SessionActionBar",
     "SessionDetailPanel",
     "SessionListPanel",
     "SessionSelected",

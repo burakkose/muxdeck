@@ -13,6 +13,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from copilot_commander.adapters.copilot_activity_reader import AgentActivity, TranscriptLine
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.controllers.dashboard_controller import (
     DashboardController,
@@ -92,6 +93,20 @@ class InMemoryDashboardStore:
 
     def get_worktree(self, worktree_id: str, /) -> Worktree | None:
         return self.worktrees.get(worktree_id)
+
+
+class StubActivityReader:
+    def __init__(self, activity: AgentActivity | None) -> None:
+        self.activity = activity
+        self.calls: list[str] = []
+
+    def read(self, session_id: str) -> AgentActivity | None:
+        self.calls.append(session_id)
+        return self.activity
+
+    def read_transcript(self, session_id: str, *, limit: int = 40) -> tuple[TranscriptLine, ...]:
+        del session_id, limit
+        return ()
 
 
 class DashboardControllerTests(unittest.TestCase):
@@ -267,6 +282,53 @@ class DashboardControllerTests(unittest.TestCase):
 
         alert_ids = [alert.agent_id for alert in state.alerts]
         self.assertEqual(alert_ids, ["agent-live"])
+        self.assertEqual(state.health.error_agents, 0)
+        self.assertEqual(state.health.tone, "warning")
+
+    def test_build_state_uses_latest_session_copilot_id_for_activity(self) -> None:
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Planner",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Plan dashboard",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_seen_at=observed_at,
+        )
+        store.sessions["session-1"] = Session(
+            id="session-1",
+            agent_id="agent-1",
+            task_title="Plan dashboard",
+            copilot_session_id="copilot-123",
+            created_at=observed_at,
+        )
+        activity_reader = StubActivityReader(
+            AgentActivity(
+                intent="Inspecting dashboard",
+                tool_name="view",
+                tool_target="dashboard.py",
+                summary="Inspecting dashboard widgets",
+                waiting_for_user=False,
+                latest_at=observed_at,
+            )
+        )
+
+        controller = DashboardController(
+            store,
+            clock=lambda: observed_at,
+            activity_reader=activity_reader,
+        )
+        state = controller.build_state()
+
+        self.assertEqual(activity_reader.calls, ["copilot-123"])
+        self.assertEqual(state.agents[0].current_activity, "Inspecting dashboard widgets")
 
     def test_log_preview_dedupes_static_scrollback_across_snapshots(self) -> None:
         # Each tmux_capture LogChunk is a complete pane snapshot, not

@@ -10,6 +10,8 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label
 
+from copilot_commander.bindings import BindingSpec
+
 
 class ConfirmScreen(ModalScreen[bool]):
     """Modal confirmation dialog. Dismisses with True (confirm) or False (cancel)."""
@@ -59,7 +61,7 @@ class ConfirmScreen(ModalScreen[bool]):
     }
     """
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[list[BindingSpec]] = [
         ("escape", "cancel", "Cancel"),
         ("y", "confirm", "Yes"),
         ("n", "cancel", "No"),
@@ -68,8 +70,8 @@ class ConfirmScreen(ModalScreen[bool]):
         ("enter", "press_focused", "Select"),
     ]
 
-    def __init__(self, message: str, title: str = "Confirm", **kwargs: object) -> None:
-        super().__init__(**kwargs)
+    def __init__(self, message: str, title: str = "Confirm") -> None:
+        super().__init__()
         self._message = message
         self._title = title
 

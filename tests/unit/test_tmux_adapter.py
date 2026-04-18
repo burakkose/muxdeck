@@ -274,6 +274,121 @@ class TmuxAdapterTests(unittest.TestCase):
         self.assertEqual(metadata.window_name, "logs")
         self.assertEqual(metadata.pane_id, "%20")
 
+    def test_list_windows_groups_panes_by_window(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(
+                    ("tmux", "list-panes"),
+                    stdout=(
+                        "session_name=muxdeck\tsession_id=$1\twindow_id=@2\twindow_index=2\t"
+                        "window_name=editor\twindow_active=1\tpane_id=%9\tpane_index=0\t"
+                        "pane_active=1\tpane_pid=101\tpane_tty=/dev/pts/9\t"
+                        "pane_current_path=/repo\tpane_current_command=python\n"
+                        "session_name=muxdeck\tsession_id=$1\twindow_id=@3\twindow_index=3\t"
+                        "window_name=review\twindow_active=0\tpane_id=%10\tpane_index=0\t"
+                        "pane_active=1\tpane_pid=102\tpane_tty=/dev/pts/10\t"
+                        "pane_current_path=/repo\tpane_current_command=bash\n"
+                        "session_name=muxdeck\tsession_id=$1\twindow_id=@3\twindow_index=3\t"
+                        "window_name=review\twindow_active=0\tpane_id=%11\tpane_index=1\t"
+                        "pane_active=0\tpane_pid=103\tpane_tty=/dev/pts/11\t"
+                        "pane_current_path=/repo\tpane_current_command=bash"
+                    ),
+                )
+            ]
+        )
+
+        windows = TmuxAdapter(runner).list_windows()
+
+        self.assertEqual(len(windows), 2)
+        self.assertEqual(windows[0].window_id, "@2")
+        self.assertEqual(windows[0].pane_ids, ("%9",))
+        self.assertEqual(windows[1].window_name, "review")
+        self.assertEqual(windows[1].pane_count, 2)
+
+    def test_break_pane_builds_command_and_returns_metadata(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(
+                    ("tmux", "break-pane"),
+                    stdout=(
+                        "session_name=muxdeck\tsession_id=$1\twindow_id=@4\twindow_index=4\t"
+                        "window_name=solo\twindow_active=0\tpane_id=%9\tpane_index=0\t"
+                        "pane_active=1\tpane_pid=101\tpane_tty=/dev/pts/9\t"
+                        "pane_current_path=/repo\tpane_current_command=python\tpane_dead=0"
+                    ),
+                )
+            ]
+        )
+
+        metadata = TmuxAdapter(runner).break_pane(
+            "%9",
+            window_name="solo",
+            target_window="muxdeck:",
+            detached=True,
+        )
+
+        self.assertEqual(
+            runner.calls,
+            [
+                (
+                    (
+                        "tmux",
+                        "break-pane",
+                        "-P",
+                        "-F",
+                        DISPLAY_MESSAGE_FORMAT,
+                        "-s",
+                        "%9",
+                        "-d",
+                        "-n",
+                        "solo",
+                        "-t",
+                        "muxdeck:",
+                    ),
+                    10.0,
+                )
+            ],
+        )
+        self.assertEqual(metadata.window_name, "solo")
+
+    def test_join_pane_builds_command_then_reads_metadata(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(("tmux", "join-pane")),
+                _command_result(
+                    ("tmux", "display-message"),
+                    stdout=(
+                        "session_name=muxdeck\tsession_id=$1\twindow_id=@3\twindow_index=3\t"
+                        "window_name=review\twindow_active=1\tpane_id=%9\tpane_index=1\t"
+                        "pane_active=0\tpane_pid=101\tpane_tty=/dev/pts/9\t"
+                        "pane_current_path=/repo\tpane_current_command=python\tpane_dead=0"
+                    ),
+                ),
+            ]
+        )
+
+        metadata = TmuxAdapter(runner).join_pane("%9", "@3", detached=True, vertical=False)
+
+        self.assertEqual(
+            runner.calls,
+            [
+                (("tmux", "join-pane", "-s", "%9", "-t", "@3", "-d", "-h"), 10.0),
+                (
+                    (
+                        "tmux",
+                        "display-message",
+                        "-p",
+                        "-t",
+                        "%9",
+                        "-F",
+                        DISPLAY_MESSAGE_FORMAT,
+                    ),
+                    10.0,
+                ),
+            ],
+        )
+        self.assertEqual(metadata.window_id, "@3")
+
     def test_pane_exists_returns_false_for_missing_target(self) -> None:
         runner = FakeCommandRunner(
             results=[],
@@ -327,6 +442,28 @@ class TmuxAdapterTests(unittest.TestCase):
         self.assertEqual(
             runner.calls,
             [(("tmux", "select-window", "-t", "=muxdeck:@7"), 10.0)],
+        )
+
+    def test_rename_window_builds_command(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "rename-window", "-t", "@7", "agent-ui"))]
+        )
+
+        TmuxAdapter(runner).rename_window("@7", "agent-ui")
+
+        self.assertEqual(
+            runner.calls,
+            [(("tmux", "rename-window", "-t", "@7", "agent-ui"), 10.0)],
+        )
+
+    def test_kill_pane_builds_command(self) -> None:
+        runner = FakeCommandRunner(results=[_command_result(("tmux", "kill-pane", "-t", "%9"))])
+
+        TmuxAdapter(runner).kill_pane("%9")
+
+        self.assertEqual(
+            runner.calls,
+            [(("tmux", "kill-pane", "-t", "%9"), 10.0)],
         )
 
     def test_runner_command_error_is_wrapped(self) -> None:

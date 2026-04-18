@@ -9,7 +9,12 @@ from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label
+from textual.widgets import Button, Input, Label, Static
+
+from copilot_commander.bindings import BindingSpec
+from copilot_commander.controllers import WorktreeController, WorktreeStartAgentIntent
+from copilot_commander.exceptions import DomainValidationError, PersistenceError
+from copilot_commander.services.action_service import ActionModelHint
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +30,18 @@ class AttachWorktreeResult:
     """Submitted existing-worktree selection parameters."""
 
     path: str
+
+
+@dataclass(frozen=True, slots=True)
+class LaunchAgentResult:
+    """Submitted launch-agent parameters."""
+
+    confirmed: bool
+    selected_worktree_id: str
+    target_session_name: str
+    window_name: str
+    prompt: str
+    model: str | None
 
 
 class CreateWorktreeScreen(ModalScreen[CreateWorktreeResult | None]):
@@ -86,12 +103,12 @@ class CreateWorktreeScreen(ModalScreen[CreateWorktreeResult | None]):
     }
     """
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[list[BindingSpec]] = [
         ("escape", "cancel", "Cancel"),
     ]
 
-    def __init__(self, repo_root: str, **kwargs: object) -> None:
-        super().__init__(**kwargs)
+    def __init__(self, repo_root: str) -> None:
+        super().__init__()
         self._repo_root = repo_root
 
     def compose(self) -> ComposeResult:
@@ -189,7 +206,7 @@ class AttachWorktreeScreen(ModalScreen[AttachWorktreeResult | None]):
     }
     """
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[list[BindingSpec]] = [
         ("escape", "cancel", "Cancel"),
     ]
 
@@ -232,9 +249,262 @@ class AttachWorktreeScreen(ModalScreen[AttachWorktreeResult | None]):
         self.dismiss(None)
 
 
+class LaunchAgentScreen(ModalScreen[LaunchAgentResult]):
+    """Modal for selecting launch settings for a Copilot agent."""
+
+    DEFAULT_CSS = """
+    LaunchAgentScreen {
+        align: center middle;
+    }
+
+    #launch-agent-dialog {
+        width: 96;
+        height: auto;
+        max-height: 28;
+        background: #282828;
+        border: thick #504945;
+        border-title-color: #83a598;
+        padding: 1 2;
+    }
+
+    #launch-agent-summary,
+    #launch-agent-model-help,
+    #launch-agent-status {
+        height: auto;
+        margin-bottom: 1;
+        color: #a89984;
+    }
+
+    #launch-agent-buttons {
+        height: auto;
+        align: right middle;
+    }
+
+    #launch-agent-buttons Button {
+        margin-left: 1;
+        min-width: 12;
+    }
+
+    #btn-launch-agent {
+        background: #504945;
+        color: #b8bb26;
+        border: none;
+    }
+
+    #btn-launch-agent:hover {
+        background: #665c54;
+    }
+
+    #btn-cancel-launch-agent,
+    #btn-launch-create-worktree,
+    #btn-launch-attach-worktree {
+        background: #3c3836;
+        color: #928374;
+        border: none;
+    }
+
+    #btn-cancel-launch-agent:hover,
+    #btn-launch-create-worktree:hover,
+    #btn-launch-attach-worktree:hover {
+        background: #504945;
+    }
+    """
+
+    BINDINGS: ClassVar[list[BindingSpec]] = [
+        ("escape", "cancel", "Cancel"),
+        ("c", "create_worktree", "Create worktree"),
+        ("a", "attach_worktree", "Select existing"),
+    ]
+
+    def __init__(
+        self,
+        worktrees: WorktreeController,
+        *,
+        intent: WorktreeStartAgentIntent,
+        model_hint: ActionModelHint,
+    ) -> None:
+        super().__init__()
+        self._worktrees = worktrees
+        self._intent = intent
+        self._model_hint = model_hint
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="launch-agent-dialog") as dialog:
+            dialog.border_title = "Launch Agent"
+            yield Static(id="launch-agent-summary")
+            yield Static(id="launch-agent-model-help")
+            yield Input(
+                value=self._intent.suggested_window_name,
+                placeholder="Agent / window name…",
+                id="launch-agent-name",
+            )
+            yield Input(
+                value=self._intent.suggested_session_name,
+                placeholder="Tmux session…",
+                id="launch-agent-session",
+            )
+            yield Input(
+                value=self._intent.model or self._model_hint.configured_model or "",
+                placeholder="Model override (blank = Copilot default)",
+                id="launch-agent-model",
+            )
+            yield Input(
+                value=self._intent.prompt,
+                placeholder="Initial prompt…",
+                id="launch-agent-prompt",
+            )
+            yield Static(id="launch-agent-status")
+            with Horizontal(id="launch-agent-buttons"):
+                yield Button(
+                    "Cancel",
+                    id="btn-cancel-launch-agent",
+                    variant="default",
+                )
+                yield Button(
+                    "Select Existing",
+                    id="btn-launch-attach-worktree",
+                    variant="default",
+                )
+                yield Button(
+                    "Create Worktree",
+                    id="btn-launch-create-worktree",
+                    variant="default",
+                )
+                yield Button("Launch", id="btn-launch-agent", variant="success")
+
+    def on_mount(self) -> None:
+        self._refresh_summary()
+        self.query_one("#launch-agent-name", Input).focus()
+
+    def action_create_worktree(self) -> None:
+        self.app.push_screen(
+            CreateWorktreeScreen(repo_root=self._intent.repo_root),
+            callback=self._on_create_worktree_result,
+        )
+
+    def action_attach_worktree(self) -> None:
+        self.app.push_screen(
+            AttachWorktreeScreen(),
+            callback=self._on_attach_worktree_result,
+        )
+
+    def action_cancel(self) -> None:
+        self.dismiss(self._collect_result(confirmed=False))
+
+    @on(Button.Pressed, "#btn-launch-create-worktree")
+    def _on_create_button(self) -> None:
+        self.action_create_worktree()
+
+    @on(Button.Pressed, "#btn-launch-attach-worktree")
+    def _on_attach_button(self) -> None:
+        self.action_attach_worktree()
+
+    @on(Button.Pressed, "#btn-launch-agent")
+    def _on_launch_button(self) -> None:
+        self._submit()
+
+    @on(Button.Pressed, "#btn-cancel-launch-agent")
+    def _on_cancel_button(self) -> None:
+        self.action_cancel()
+
+    @on(Input.Submitted)
+    def _on_input_submitted(self) -> None:
+        self._submit()
+
+    def _submit(self) -> None:
+        name_input = self.query_one("#launch-agent-name", Input)
+        if not name_input.value.strip():
+            name_input.focus()
+            self._set_status("agent/window name is required")
+            return
+        self.dismiss(self._collect_result(confirmed=True))
+
+    def _on_create_worktree_result(self, result: CreateWorktreeResult | None) -> None:
+        if result is None:
+            self._set_status("create cancelled")
+            return
+        try:
+            action_view = self._worktrees.create_worktree(
+                result.repo_root,
+                task_title=result.task_title,
+            )
+        except (DomainValidationError, PersistenceError) as exc:
+            self._set_status(f"✗ create failed: {exc}")
+            return
+        if action_view.worktree is None:
+            self._set_status("✗ create failed: no worktree returned")
+            return
+        self._refresh_intent(action_view.worktree.summary.worktree_id)
+        self._set_status(f"✓ {action_view.message}")
+
+    def _on_attach_worktree_result(self, result: AttachWorktreeResult | None) -> None:
+        if result is None:
+            self._set_status("select existing cancelled")
+            return
+        try:
+            action_view = self._worktrees.attach_worktree(result.path)
+        except (DomainValidationError, PersistenceError) as exc:
+            self._set_status(f"✗ attach failed: {exc}")
+            return
+        if action_view.worktree is None:
+            self._set_status("✗ attach failed: no worktree returned")
+            return
+        self._refresh_intent(action_view.worktree.summary.worktree_id)
+        self._set_status(f"✓ {action_view.message}")
+
+    def _refresh_intent(self, worktree_id: str) -> None:
+        model = self._normalized_model()
+        prompt = self.query_one("#launch-agent-prompt", Input).value.strip() or None
+        session_name = self.query_one("#launch-agent-session", Input).value.strip() or None
+        window_name = self.query_one("#launch-agent-name", Input).value.strip() or None
+        self._intent = self._worktrees.start_agent_intent(
+            worktree_id,
+            prompt=prompt,
+            model=model,
+            target_session_name=session_name,
+            window_name=window_name,
+        )
+        self._refresh_summary()
+
+    def _refresh_summary(self) -> None:
+        self.query_one("#launch-agent-summary", Static).update(
+            "\n".join(
+                (
+                    f"Repo: {self._intent.repo_root}",
+                    f"Folder: {self._intent.worktree_path}",
+                    f"Branch: {self._intent.branch}",
+                    "Press c to create a worktree or a to select an existing one.",
+                )
+            )
+        )
+        self.query_one("#launch-agent-model-help", Static).update(self._model_hint.message)
+
+    def _set_status(self, message: str) -> None:
+        self.query_one("#launch-agent-status", Static).update(message)
+
+    def _normalized_model(self) -> str | None:
+        value = self.query_one("#launch-agent-model", Input).value.strip()
+        return value or None
+
+    def _collect_result(self, *, confirmed: bool) -> LaunchAgentResult:
+        session_name = self.query_one("#launch-agent-session", Input).value.strip()
+        window_name = self.query_one("#launch-agent-name", Input).value.strip()
+        prompt = self.query_one("#launch-agent-prompt", Input).value.strip()
+        return LaunchAgentResult(
+            confirmed=confirmed,
+            selected_worktree_id=self._intent.worktree_id,
+            target_session_name=session_name or self._intent.suggested_session_name,
+            window_name=window_name or self._intent.suggested_window_name,
+            prompt=prompt,
+            model=self._normalized_model(),
+        )
+
+
 __all__ = [
     "AttachWorktreeResult",
     "AttachWorktreeScreen",
     "CreateWorktreeResult",
     "CreateWorktreeScreen",
+    "LaunchAgentResult",
+    "LaunchAgentScreen",
 ]

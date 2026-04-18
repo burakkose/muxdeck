@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.timer import Timer
 
 from copilot_commander.bindings import WORKTREE_BINDINGS, WORKTREE_HINTS
 from copilot_commander.controllers import (
@@ -21,7 +22,10 @@ from copilot_commander.screens.worktree_input import (
     AttachWorktreeScreen,
     CreateWorktreeResult,
     CreateWorktreeScreen,
+    LaunchAgentResult,
+    LaunchAgentScreen,
 )
+from copilot_commander.services.action_service import ActionModelHint
 from copilot_commander.widgets.worktrees import (
     ConflictPanel,
     StartIntentPanel,
@@ -44,7 +48,7 @@ class WorktreesScreen(ShellScreen):
         self._selected_worktree_id: str | None = None
         self._detail: WorktreeDetailView | None = None
         self._start_intent: WorktreeStartAgentIntent | None = None
-        self._detail_timer: object | None = None
+        self._detail_timer: Timer | None = None
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="worktrees-root"):  # noqa: SIM117
@@ -77,8 +81,14 @@ class WorktreesScreen(ShellScreen):
         ):
             self._selected_worktree_id = self._worktrees[0].worktree_id if self._worktrees else None
         self._detail = None
+        self._start_intent = None
         if self._selected_worktree_id is not None:
+            model_hint = self._launch_model_hint()
             self._detail = self.runtime.worktrees.get_worktree_detail(self._selected_worktree_id)
+            self._start_intent = self.runtime.worktrees.start_agent_intent(
+                self._selected_worktree_id,
+                model=model_hint.configured_model,
+            )
             self.commander_app.remember_worktree_selection(self._selected_worktree_id)
         self.query_one(WorktreeListPanel).set_worktrees(
             self._worktrees,
@@ -107,18 +117,23 @@ class WorktreesScreen(ShellScreen):
         if message.worktree_id == self._selected_worktree_id:
             return
         self._selected_worktree_id = message.worktree_id
-        self._start_intent = None
         # Debounce: cancel pending detail load so rapid j/k doesn't
         # stack blocking calls while the user holds arrow keys.
         if self._detail_timer is not None:
-            self._detail_timer.stop()  # type: ignore[union-attr]
+            self._detail_timer.stop()
         self._detail_timer = self.set_timer(0.05, self._update_selected_detail)
 
     def _update_selected_detail(self) -> None:
         """Update only the detail/conflict/intent panels for the current selection."""
         self._detail = None
+        self._start_intent = None
         if self._selected_worktree_id is not None:
+            model_hint = self._launch_model_hint()
             self._detail = self.runtime.worktrees.get_worktree_detail(self._selected_worktree_id)
+            self._start_intent = self.runtime.worktrees.start_agent_intent(
+                self._selected_worktree_id,
+                model=model_hint.configured_model,
+            )
             self.commander_app.remember_worktree_selection(self._selected_worktree_id)
         self.query_one(WorktreeDetailPanel).set_detail(self._detail)
         self.query_one(ConflictPanel).set_conflicts(
@@ -132,40 +147,75 @@ class WorktreesScreen(ShellScreen):
     def action_cursor_up(self) -> None:
         self.query_one(WorktreeListPanel).move_cursor(-1)
 
-    def action_preview_start_agent(self) -> None:
+    def action_launch_agent(self) -> None:
         if self._selected_worktree_id is None:
             self.set_status("no worktree selected")
             return
-        self._start_intent = self.runtime.worktrees.start_agent_intent(
+        model_hint = self._launch_model_hint()
+        intent = self._start_intent or self.runtime.worktrees.start_agent_intent(
             self._selected_worktree_id,
+            model=model_hint.configured_model,
         )
-        self.query_one(StartIntentPanel).set_intent(self._start_intent)
-        self.set_status(
-            "start intent "
-            f"{self._start_intent.suggested_session_name}/"
-            f"{self._start_intent.suggested_window_name}"
+        self.app.push_screen(
+            LaunchAgentScreen(
+                self.runtime.worktrees,
+                intent=intent,
+                model_hint=model_hint,
+            ),
+            callback=self._on_launch_agent_result,
         )
 
     def action_execute_start(self) -> None:
-        """Execute the previewed start agent intent via tmux."""
-        if self._start_intent is None:
-            self.set_status("no start intent — press s first")
+        """Backward-compatible alias for the launch modal."""
+        self.action_launch_agent()
+
+    def action_preview_start_agent(self) -> None:
+        """Backward-compatible alias for older launch bindings."""
+        self.action_launch_agent()
+
+    def _on_launch_agent_result(self, result: LaunchAgentResult | None) -> None:
+        if result is None:
+            return
+        self._selected_worktree_id = result.selected_worktree_id
+        self.refresh_data()
+        if not result.confirmed:
+            self.set_status("launch cancelled")
             return
         if self.runtime.actions is None:
             self.set_status("✗ action service unavailable")
             return
-        intent = self._start_intent
-
-        result = self.runtime.actions.start_agent(
+        intent = self.runtime.worktrees.start_agent_intent(
+            result.selected_worktree_id,
+            prompt=result.prompt or None,
+            model=result.model,
+            target_session_name=result.target_session_name,
+            window_name=result.window_name,
+        )
+        action_result = self.runtime.actions.start_agent(
             cwd=Path(intent.worktree_path),
             model=intent.model,
             window_name=intent.suggested_window_name,
+            target_session=intent.suggested_session_name,
+            prompt=intent.prompt or None,
         )
-        if result.success:
-            self.set_status(f"✓ {result.message}")
-            self._start_intent = None
-        else:
-            self.set_status(f"✗ {result.message}")
+        prefix = "✓" if action_result.success else "✗"
+        self.set_status(f"{prefix} {action_result.message}")
+
+    def _launch_model_hint(self) -> ActionModelHint:
+        actions = self.runtime.actions
+        if actions is None:
+            return ActionModelHint()
+        loader = getattr(actions, "launch_model_hint", None)
+        if not callable(loader):
+            return ActionModelHint()
+        hint = loader()
+        configured_model = getattr(hint, "configured_model", None)
+        message = getattr(hint, "message", ActionModelHint().message)
+        if configured_model is not None and not isinstance(configured_model, str):
+            return ActionModelHint()
+        if not isinstance(message, str):
+            return ActionModelHint()
+        return ActionModelHint(configured_model=configured_model, message=message)
 
     def action_create_worktree(self) -> None:
         if self._detail is None:

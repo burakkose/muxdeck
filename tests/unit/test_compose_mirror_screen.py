@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from collections.abc import Iterable
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
 from textual.app import App, ComposeResult
+from textual.containers import Vertical
 from textual.widgets import TextArea
 
 from copilot_commander.adapters.pane_stream import PaneStreamAdapter
@@ -27,7 +28,9 @@ class _FakeTmuxStream:
     """
 
     captures: list[str] = field(default_factory=list)
+    capture_flags: list[tuple[str, bool, bool]] = field(default_factory=list)
     pipe_started: list[str] = field(default_factory=list)
+    pipe_paths: list[Path] = field(default_factory=list)
     pipe_stopped: list[str] = field(default_factory=list)
     sent: list[tuple[str, tuple[str, ...], bool]] = field(default_factory=list)
     seed_text: str = "seeded pane output\n"
@@ -42,8 +45,9 @@ class _FakeTmuxStream:
         join_wrapped_lines: bool = False,
         include_escape_sequences: bool = False,
     ) -> str:
-        del start_line, end_line, join_wrapped_lines, include_escape_sequences
+        del start_line, end_line
         self.captures.append(target_pane)
+        self.capture_flags.append((target_pane, join_wrapped_lines, include_escape_sequences))
         return self.seed_text
 
     def pipe_pane_to_file(
@@ -54,8 +58,9 @@ class _FakeTmuxStream:
         target_path: Path,
         append: bool = True,
     ) -> None:
-        del target_path, append
+        del append
         self.pipe_started.append(target_pane)
+        self.pipe_paths.append(target_path)
 
     def stop_pipe_pane(self, target_pane: str, /) -> None:
         self.pipe_stopped.append(target_pane)
@@ -63,12 +68,15 @@ class _FakeTmuxStream:
     def send_keys(
         self,
         target_pane: str,
-        keys: Iterable[str],
+        keys: Sequence[str],
         /,
         *,
         literal: bool = False,
-    ) -> None:
+        append_enter: bool = False,
+    ) -> object:
+        del append_enter
         self.sent.append((target_pane, tuple(keys), literal))
+        return None
 
     def pane_exists(self, pane_id: str, /) -> bool:
         del pane_id
@@ -258,6 +266,148 @@ class ComposeWithMirrorScreenTests(unittest.TestCase):
         assert initial_editor is True
         assert mirror_after_tab is True
         assert editor_after_two is True
+
+    def test_live_input_mode_forwards_keys_before_escape_closes_screen(self) -> None:
+        async def scenario(
+            tmp: Path,
+        ) -> tuple[list[tuple[str, tuple[str, ...], bool]], bool, list[str], bool]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%13",
+                    display_name="demo",
+                    ring_dir=tmp,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+
+                mirror = app.screen.query_one(LivePaneViewer)
+                await pilot.press("tab")
+                await pilot.pause()
+                await pilot.press("i")
+                await pilot.pause()
+                input_on = screen.mirror_input_active and mirror.has_class("-input-on")
+
+                await pilot.press("a")
+                await pilot.press("enter")
+                await pilot.pause()
+                await pilot.press("escape")
+                await pilot.pause()
+                still_open_after_first_escape = isinstance(app.screen, ComposeWithMirrorScreen)
+                input_off = not screen.mirror_input_active and not mirror.has_class("-input-on")
+
+                await pilot.press("escape")
+                await pilot.pause()
+                return (
+                    tmux.sent,
+                    still_open_after_first_escape,
+                    tmux.pipe_stopped,
+                    input_on and input_off,
+                )
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sent, still_open, stopped, input_toggled = asyncio.run(scenario(Path(tmp)))
+
+        assert input_toggled is True
+        assert still_open is True
+        assert sent == [
+            ("%13", ("a",), True),
+            ("%13", ("Enter",), False),
+        ]
+        assert stopped == ["%13"]
+
+    def test_resize_bindings_adjust_editor_height(self) -> None:
+        async def scenario(tmp: Path) -> tuple[int, float, int, float]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%15",
+                    display_name="demo",
+                    ring_dir=tmp,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+
+                editor_wrap = app.screen.query_one("#compose-editor-wrap", Vertical)
+                await pilot.press("alt+down")
+                await pilot.pause()
+                grown_height = screen.editor_height
+                grown_scalar = editor_wrap.styles.height
+                assert grown_scalar is not None
+                grown_style = grown_scalar.value
+                await pilot.press("alt+up")
+                await pilot.pause()
+                restored_scalar = editor_wrap.styles.height
+                assert restored_scalar is not None
+                return (
+                    grown_height,
+                    grown_style,
+                    screen.editor_height,
+                    restored_scalar.value,
+                )
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            grown_height, grown_style, restored_height, restored_style = asyncio.run(
+                scenario(Path(tmp))
+            )
+
+        assert grown_height == 12
+        assert grown_style == 12.0
+        assert restored_height == 10
+        assert restored_style == 10.0
+
+    def test_manual_refresh_reconciles_snapshot_tail_without_losing_history(self) -> None:
+        async def scenario(tmp: Path) -> tuple[tuple[str, ...], list[tuple[str, bool, bool]]]:
+            tmux = _FakeTmuxStream(seed_text="one\ntwo\nthree\n")
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%17",
+                    display_name="demo",
+                    ring_dir=tmp,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+
+                ring_path = tmux.pipe_paths[0]
+                with ring_path.open("a", encoding="utf-8") as fh:
+                    fh.write("four\nfive\n")
+                screen._drain_ring()
+                mirror = app.screen.query_one(LivePaneViewer)
+                tmux.seed_text = "three\nFOUR\nFIVE\n"
+
+                screen.refresh_data()
+                await pilot.pause()
+                return mirror.buffer_lines, tmux.capture_flags
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            buffer_lines, capture_flags = asyncio.run(scenario(Path(tmp)))
+
+        assert buffer_lines == ("one", "two", "three", "FOUR", "FIVE")
+        assert capture_flags[0] == ("%17", False, True)
 
 
 if __name__ == "__main__":  # pragma: no cover

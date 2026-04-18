@@ -217,6 +217,27 @@ class CopilotAdapterTests(unittest.TestCase):
         with self.assertRaises(CopilotCommandError):
             adapter.launch_in_pane(parameters)
 
+    def test_configured_model_reads_copilot_config(self) -> None:
+        adapter = CopilotAdapter(
+            FakeRunner(()),
+            config_path=Path(__file__).resolve().parents[1] / "fixtures" / "copilot_config.json",
+        )
+
+        assert adapter.configured_model() == "gpt-5.4"
+
+    def test_configured_model_returns_none_for_missing_file(self) -> None:
+        adapter = CopilotAdapter(
+            FakeRunner(()),
+            config_path=Path(__file__).resolve().parents[1] / "fixtures" / "missing_config.json",
+        )
+
+        assert adapter.configured_model() is None
+
+    def test_configured_model_returns_none_for_invalid_json(self) -> None:
+        adapter = CopilotAdapter(FakeRunner(()), config_path=Path(__file__))
+
+        assert adapter.configured_model() is None
+
 
 def _result(
     command: tuple[str, ...],

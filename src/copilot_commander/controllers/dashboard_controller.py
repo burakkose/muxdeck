@@ -416,6 +416,9 @@ class DashboardController:
 
         current_activity = _activity_from_task_title(agent.task_title)
         now = self._clock()
+        copilot_session_id = agent.copilot_session_id
+        if copilot_session_id is None and latest_session is not None:
+            copilot_session_id = latest_session.copilot_session_id
 
         # Events-based current activity is much more reliable than regex
         # parsing of the scrollback. When we have a real copilot session
@@ -425,9 +428,9 @@ class DashboardController:
         # old title-derived activity when the session hasn't persisted
         # any events yet.
         events_activity: AgentActivity | None = None
-        if self._activity_reader is not None and agent.copilot_session_id:
+        if self._activity_reader is not None and copilot_session_id:
             try:
-                events_activity = self._activity_reader.read(agent.copilot_session_id)
+                events_activity = self._activity_reader.read(copilot_session_id)
             except Exception:
                 # The reader is best-effort; never let a stray IO error
                 # crash a dashboard render.
@@ -838,9 +841,7 @@ class DashboardController:
             1 for agent in agents if agent.status is AgentStatus.WAITING_INPUT
         )
         blocked_agents = sum(1 for agent in agents if agent.status is AgentStatus.BLOCKED)
-        error_agents = sum(
-            1 for agent in agents if agent.status in {AgentStatus.ERROR, AgentStatus.DEAD}
-        )
+        error_agents = sum(1 for agent in agents if agent.status is AgentStatus.ERROR)
         tone: HealthTone = "healthy"
         if blocked_agents or error_agents:
             tone = "critical"

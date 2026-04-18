@@ -105,6 +105,7 @@ class ReplayTranscriptEntryView:
     marker_kind: str | None
     lines: tuple[str, ...]
     is_selected: bool
+    raw_lines: tuple[str, ...] = ()
     agent_id: str | None = None
     agent_label: str | None = None
     file_path: str | None = None
@@ -244,6 +245,9 @@ class ReplayController:
     def jump_to_marker(self, state: ReplayStateView, marker_ordinal: int) -> ReplayStateView:
         marker = state.jump_markers[marker_ordinal]
         return self._with_selection(state, marker.index)
+
+    def select_entry(self, state: ReplayStateView, ordinal: int) -> ReplayStateView:
+        return self._with_selection(state, ordinal)
 
     def initial_playback(self, state: ReplayStateView) -> PlaybackState | None:
         """Build the initial paused playback state from a view, or ``None``.
@@ -478,6 +482,7 @@ class ReplayController:
                     severity=entry.severity,
                     marker_kind=entry.marker_kind,
                     lines=entry.lines,
+                    raw_lines=entry.raw_lines,
                     is_selected=entry.ordinal == selected_index,
                     agent_id=entry.agent_id,
                     agent_label=entry.agent_label,
@@ -630,6 +635,7 @@ class ReplayController:
                     severity=entry.severity,
                     marker_kind=entry.marker_kind,
                     lines=entry.lines,
+                    raw_lines=entry.raw_lines,
                     is_selected=entry.ordinal == resolved_selection,
                     agent_id=entry.agent_id,
                     agent_label=entry.agent_label,
@@ -749,10 +755,12 @@ class ReplayController:
     ) -> ReplayTranscriptEntryView:
         marker_kind: str | None = None
         file_path: str | None = None
+        severity: str | None
         if entry.event is not None:
             label = entry.event.kind
             severity = entry.event.severity
             lines: tuple[str, ...] = (self._normalize_json(entry.event.payload_json),)
+            raw_lines = lines
         elif entry.log_chunk is not None:
             raw_lines = tuple(entry.log_chunk.content.splitlines())
             parsed_label, parsed_lines, marker_kind, file_path = self._build_parsed_log_view(entry)
@@ -765,6 +773,7 @@ class ReplayController:
             lines = parsed_lines if presentation == "parsed" else raw_lines
             if not lines and not raw_lines:
                 lines = ("(empty log chunk)",)
+                raw_lines = lines
         else:
             msg = "replay entry is missing both event and log chunk"
             raise ValueError(msg)
@@ -779,6 +788,7 @@ class ReplayController:
             severity=severity,
             marker_kind=marker_kind,
             lines=lines,
+            raw_lines=raw_lines,
             is_selected=entry.ordinal == selected_index,
             agent_id=entry.agent_id,
             agent_label=agent_label,

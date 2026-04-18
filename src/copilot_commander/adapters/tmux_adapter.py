@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -120,6 +121,19 @@ class TmuxPaneMetadata:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class TmuxWindowInfo:
+    session_name: str
+    window_id: str
+    window_index: int | None = None
+    window_name: str | None = None
+    pane_ids: tuple[str, ...] = ()
+
+    @property
+    def pane_count(self) -> int:
+        return len(self.pane_ids)
+
+
 class TmuxAdapter:
     def __init__(
         self,
@@ -151,6 +165,46 @@ class TmuxAdapter:
     def list_panes(self) -> TmuxListPanesParseResult:
         result = self._run_tmux("list-panes", "-a", "-F", LIST_PANES_FORMAT)
         return parse_tmux_list_panes_output(result.stdout)
+
+    def list_windows(self) -> tuple[TmuxWindowInfo, ...]:
+        parsed = self.list_panes()
+        panes_by_window: dict[tuple[str, str], list[TmuxPaneRecord]] = defaultdict(list)
+        for pane in parsed.panes:
+            if pane.session_name is None or pane.window_id is None:
+                continue
+            panes_by_window[(pane.session_name, pane.window_id)].append(pane)
+        windows: list[TmuxWindowInfo] = []
+        for (session_name, window_id), panes in panes_by_window.items():
+            first = panes[0]
+            ordered_panes = tuple(
+                pane.pane_id
+                for pane in sorted(
+                    panes,
+                    key=lambda candidate: (
+                        -1 if candidate.pane_index is None else candidate.pane_index,
+                        candidate.pane_id,
+                    ),
+                )
+            )
+            windows.append(
+                TmuxWindowInfo(
+                    session_name=session_name,
+                    window_id=window_id,
+                    window_index=first.window_index,
+                    window_name=first.window_name,
+                    pane_ids=ordered_panes,
+                )
+            )
+        return tuple(
+            sorted(
+                windows,
+                key=lambda window: (
+                    window.session_name,
+                    -1 if window.window_index is None else window.window_index,
+                    window.window_id,
+                ),
+            )
+        )
 
     def display_pane_metadata(self, target_pane: str, /) -> TmuxPaneMetadata:
         metadata = self.get_pane_metadata(target_pane)
@@ -312,6 +366,78 @@ class TmuxAdapter:
         if shell_command:
             args.extend(shell_command)
         return self._parse_pane_metadata(self._run_tmux(*args))
+
+    def break_pane(
+        self,
+        source_pane: str,
+        /,
+        *,
+        window_name: str | None = None,
+        target_window: str | None = None,
+        detached: bool = True,
+    ) -> TmuxPaneMetadata:
+        normalized_source = source_pane.strip()
+        if not normalized_source:
+            msg = "source_pane must not be empty"
+            raise ValueError(msg)
+        args = ["break-pane", "-P", "-F", DISPLAY_MESSAGE_FORMAT, "-s", normalized_source]
+        if detached:
+            args.append("-d")
+        if window_name is not None:
+            normalized_name = window_name.strip()
+            if not normalized_name:
+                msg = "window_name must not be empty"
+                raise ValueError(msg)
+            args.extend(("-n", normalized_name))
+        if target_window is not None:
+            normalized_target = target_window.strip()
+            if not normalized_target:
+                msg = "target_window must not be empty"
+                raise ValueError(msg)
+            args.extend(("-t", normalized_target))
+        return self._parse_pane_metadata(self._run_tmux(*args))
+
+    def join_pane(
+        self,
+        source_pane: str,
+        target_pane: str,
+        /,
+        *,
+        detached: bool = True,
+        vertical: bool = True,
+    ) -> TmuxPaneMetadata:
+        normalized_source = source_pane.strip()
+        normalized_target = target_pane.strip()
+        if not normalized_source:
+            msg = "source_pane must not be empty"
+            raise ValueError(msg)
+        if not normalized_target:
+            msg = "target_pane must not be empty"
+            raise ValueError(msg)
+        args = ["join-pane", "-s", normalized_source, "-t", normalized_target]
+        if detached:
+            args.append("-d")
+        args.append("-v" if vertical else "-h")
+        self._run_tmux(*args)
+        return self.display_pane_metadata(normalized_source)
+
+    def rename_window(self, target_window: str, new_name: str, /) -> CommandResult:
+        normalized_target = target_window.strip()
+        normalized_name = new_name.strip()
+        if not normalized_target:
+            msg = "target_window must not be empty"
+            raise ValueError(msg)
+        if not normalized_name:
+            msg = "new_name must not be empty"
+            raise ValueError(msg)
+        return self._run_tmux("rename-window", "-t", normalized_target, normalized_name)
+
+    def kill_pane(self, target_pane: str, /) -> CommandResult:
+        normalized_target = target_pane.strip()
+        if not normalized_target:
+            msg = "target_pane must not be empty"
+            raise ValueError(msg)
+        return self._run_tmux("kill-pane", "-t", normalized_target)
 
     def select_pane(self, target_pane: str, /) -> CommandResult:
         return self._run_tmux("select-pane", "-t", target_pane)

@@ -101,34 +101,35 @@ Screen {
 }
 
 #dashboard-agents {
-    width: 36%;
-    min-width: 30;
+    width: 38%;
+    min-width: 34;
     border-right: solid #504945;
 }
 
 #dashboard-sidebar {
-    width: 64%;
+    width: 62%;
     height: 1fr;
     layout: vertical;
 }
 
 #dashboard-detail {
     height: auto;
-    min-height: 8;
+    min-height: 6;
+    max-height: 10;
 }
 
 #dashboard-log {
     height: 1fr;
-    min-height: 6;
+    min-height: 10;
     border-top: solid #504945;
-    padding-top: 1;
+    padding-top: 0;
 }
 
 #dashboard-alerts {
     height: auto;
-    max-height: 8;
+    max-height: 6;
     border-top: solid #504945;
-    padding-top: 1;
+    padding-top: 0;
 }
 
 /* ── attention ───────────────────────────────────────────────────── */
@@ -297,6 +298,10 @@ Screen {
     height: 1;
 }
 
+#replay-actions {
+    height: 2;
+}
+
 #replay-main {
     height: 1fr;
 }
@@ -397,6 +402,10 @@ ListView > ListItem.--highlight {
     margin-bottom: 0;
 }
 
+#sessions-actions {
+    height: 2;
+}
+
 /* ── setup ───────────────────────────────────────────────────────── */
 
 #setup-main {
@@ -423,7 +432,7 @@ ListView > ListItem.--highlight {
 }
 
 #sessions-filter-input {
-    height: 3;
+    height: 1;
     margin-bottom: 0;
 }
 

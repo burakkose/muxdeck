@@ -14,14 +14,20 @@ if str(SRC_ROOT) not in sys.path:
 
 from textual.binding import Binding
 
-from copilot_commander.bindings import DASHBOARD_BINDINGS, WORKTREE_BINDINGS
+from copilot_commander.bindings import DASHBOARD_BINDINGS, WORKTREE_BINDINGS, BindingSpec
 
 
 class TestDashboardBindings(unittest.TestCase):
     """Verify that new bindings exist in the binding lists."""
 
-    def _binding_actions(self, bindings: list[Binding]) -> list[str]:
-        return [b.action for b in bindings]
+    def _binding_actions(self, bindings: list[BindingSpec]) -> list[str]:
+        actions: list[str] = []
+        for binding in bindings:
+            if isinstance(binding, Binding):
+                actions.append(binding.action)
+            else:
+                actions.append(binding[1])
+        return actions
 
     def test_send_message_binding_exists(self) -> None:
         actions = self._binding_actions(DASHBOARD_BINDINGS)
@@ -31,9 +37,25 @@ class TestDashboardBindings(unittest.TestCase):
         actions = self._binding_actions(DASHBOARD_BINDINGS)
         assert "view_logs" in actions
 
+    def test_rename_window_binding_exists(self) -> None:
+        actions = self._binding_actions(DASHBOARD_BINDINGS)
+        assert "rename_window" in actions
+
+    def test_move_to_window_binding_exists(self) -> None:
+        actions = self._binding_actions(DASHBOARD_BINDINGS)
+        assert "move_to_window" in actions
+
+    def test_kill_agent_binding_exists(self) -> None:
+        actions = self._binding_actions(DASHBOARD_BINDINGS)
+        assert "kill_agent" in actions
+
     def test_worktree_delete_binding_exists(self) -> None:
         actions = self._binding_actions(WORKTREE_BINDINGS)
         assert "delete_worktree" in actions
+
+    def test_worktree_launch_binding_exists(self) -> None:
+        actions = self._binding_actions(WORKTREE_BINDINGS)
+        assert "launch_agent" in actions
 
     def test_worktree_create_binding_exists(self) -> None:
         actions = self._binding_actions(WORKTREE_BINDINGS)
@@ -51,8 +73,16 @@ class TestDashboardBindings(unittest.TestCase):
 class TestDashboardBindingKeys(unittest.TestCase):
     """Verify key assignments for critical bindings."""
 
-    def _key_map(self, bindings: list[Binding]) -> dict[str, str]:
-        return {b.action: b.key for b in bindings}
+    def _key_map(self, bindings: list[BindingSpec]) -> dict[str, str]:
+        key_map: dict[str, str] = {}
+        for binding in bindings:
+            if isinstance(binding, Binding):
+                key_map[binding.action] = binding.key
+            elif len(binding) == 2:
+                key_map[binding[1]] = binding[0]
+            else:
+                key_map[binding[1]] = binding[0]
+        return key_map
 
     def test_send_message_key_is_m(self) -> None:
         km = self._key_map(DASHBOARD_BINDINGS)
@@ -61,6 +91,18 @@ class TestDashboardBindingKeys(unittest.TestCase):
     def test_view_logs_key_is_l(self) -> None:
         km = self._key_map(DASHBOARD_BINDINGS)
         assert km["view_logs"] == "l"
+
+    def test_rename_window_key_is_shift_r(self) -> None:
+        km = self._key_map(DASHBOARD_BINDINGS)
+        assert km["rename_window"] == "R"
+
+    def test_move_to_window_key_is_shift_w(self) -> None:
+        km = self._key_map(DASHBOARD_BINDINGS)
+        assert km["move_to_window"] == "W"
+
+    def test_kill_agent_key_is_shift_k(self) -> None:
+        km = self._key_map(DASHBOARD_BINDINGS)
+        assert km["kill_agent"] == "K"
 
     def test_worktree_delete_key_is_d(self) -> None:
         km = self._key_map(WORKTREE_BINDINGS)

@@ -5,12 +5,16 @@ from __future__ import annotations
 import dataclasses
 import inspect
 
+from copilot_commander.controllers import WorktreeStartAgentIntent
 from copilot_commander.screens.worktree_input import (
     AttachWorktreeResult,
     AttachWorktreeScreen,
     CreateWorktreeResult,
     CreateWorktreeScreen,
+    LaunchAgentResult,
+    LaunchAgentScreen,
 )
+from copilot_commander.services.action_service import ActionModelHint
 
 
 class TestCreateWorktreeResult:
@@ -50,6 +54,24 @@ class TestAttachWorktreeResult:
         assert hasattr(AttachWorktreeResult, "__slots__")
 
 
+class TestLaunchAgentResult:
+    def test_fields(self) -> None:
+        result = LaunchAgentResult(
+            confirmed=True,
+            selected_worktree_id="worktree-1",
+            target_session_name="muxdeck",
+            window_name="planner",
+            prompt="Continue work",
+            model="gpt-5.4",
+        )
+        assert result.confirmed is True
+        assert result.selected_worktree_id == "worktree-1"
+        assert result.model == "gpt-5.4"
+
+    def test_slots(self) -> None:
+        assert hasattr(LaunchAgentResult, "__slots__")
+
+
 class TestCreateWorktreeScreen:
     def test_screen_init(self) -> None:
         screen = CreateWorktreeScreen(repo_root="/repo")
@@ -63,4 +85,50 @@ class TestCreateWorktreeScreen:
 class TestAttachWorktreeScreen:
     def test_compose_is_generator(self) -> None:
         screen = AttachWorktreeScreen()
+        assert inspect.isgeneratorfunction(screen.compose)
+
+
+class _FakeWorktrees:
+    def create_worktree(self, *_: object, **__: object) -> object:  # pragma: no cover - UI stub
+        raise AssertionError("not used in this test")
+
+    def attach_worktree(self, *_: object, **__: object) -> object:  # pragma: no cover - UI stub
+        raise AssertionError("not used in this test")
+
+    def start_agent_intent(self, worktree_id: str, **_: object) -> WorktreeStartAgentIntent:
+        return WorktreeStartAgentIntent(
+            worktree_id=worktree_id,
+            repo_root="/repo",
+            worktree_path="/repo/worktrees/ui",
+            branch="task/ui",
+            suggested_session_name="muxdeck",
+            suggested_window_name="ui",
+            prompt="Continue work for task/ui",
+            model=None,
+        )
+
+
+class TestLaunchAgentScreen:
+    def test_compose_is_generator(self) -> None:
+        screen = LaunchAgentScreen(
+            _FakeWorktrees(),
+            intent=WorktreeStartAgentIntent(
+                worktree_id="worktree-1",
+                repo_root="/repo",
+                worktree_path="/repo/worktrees/ui",
+                branch="task/ui",
+                suggested_session_name="muxdeck",
+                suggested_window_name="ui",
+                prompt="Continue work for task/ui",
+                model=None,
+            ),
+            model_hint=ActionModelHint(
+                configured_model="gpt-5.4",
+                message=(
+                    "Configured model: gpt-5.4. "
+                    "Model availability depends on your Copilot account/provider. "
+                    "Enter a model manually or leave it blank to use Copilot's default."
+                ),
+            ),
+        )
         assert inspect.isgeneratorfunction(screen.compose)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shlex
 from dataclasses import dataclass
 from decimal import Decimal
@@ -176,6 +177,7 @@ class CopilotAdapter:
         copilot_binary: str = "copilot",
         tmux_binary: str = "tmux",
         timeout_sec: float = 10.0,
+        config_path: PathLike | None = None,
     ) -> None:
         if timeout_sec <= 0:
             msg = "timeout_sec must be greater than zero"
@@ -184,6 +186,10 @@ class CopilotAdapter:
         self._copilot_binary = copilot_binary
         self._tmux_binary = tmux_binary
         self._timeout_sec = timeout_sec
+        resolved_config_path = _normalize_path(config_path)
+        if resolved_config_path is None:
+            resolved_config_path = (Path.home() / ".copilot" / "config.json").resolve(strict=False)
+        self._config_path = resolved_config_path
 
     def likely_process_names(self) -> tuple[str, ...]:
         return tuple(
@@ -362,6 +368,22 @@ class CopilotAdapter:
         /,
     ) -> tuple[CopilotCommandDetection, ...]:
         return tuple(self.detect_command(candidate) for candidate in candidates)
+
+    def configured_model(self) -> str | None:
+        try:
+            raw_config = self._config_path.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        try:
+            payload: object = json.loads(raw_config)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        model = payload.get("model")
+        if not isinstance(model, str):
+            return None
+        return _normalize_optional_text(model)
 
     def interpret_output(self, output: str, /) -> CopilotSessionEvidence:
         parse_result = parse_copilot_output(output)
