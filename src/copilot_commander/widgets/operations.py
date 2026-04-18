@@ -42,7 +42,9 @@ def _status_text(agent: DashboardAgentListItemView) -> tuple[str, str]:
         return ("stuck", f"bold {YELLOW}")
     if agent.status is AgentStatus.WAITING_INPUT:
         return ("input", f"bold {ORANGE}")
-    if agent.status in {AgentStatus.BLOCKED, AgentStatus.ERROR, AgentStatus.DEAD}:
+    if agent.status is AgentStatus.DEAD:
+        return ("terminated", f"bold {YELLOW}")
+    if agent.status in {AgentStatus.BLOCKED, AgentStatus.ERROR}:
         return ("review", f"bold {SEVERITY_ERROR}")
     if agent.needs_attention:
         return ("review", f"bold {ORANGE}")

@@ -47,6 +47,7 @@ def _status_style(kind: OperatorStatusKind) -> str:
         OperatorStatusKind.BLOCKED: f"bold {RED}",
         OperatorStatusKind.REVIEW_READY: f"bold {ORANGE}",
         OperatorStatusKind.FAILED: f"bold {RED}",
+        OperatorStatusKind.TERMINATED: f"bold {YELLOW}",
         OperatorStatusKind.STALE: f"bold {YELLOW}",
         OperatorStatusKind.COMPLETED: FG4,
     }

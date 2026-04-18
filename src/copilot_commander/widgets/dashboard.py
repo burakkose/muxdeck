@@ -189,6 +189,7 @@ def _status_display(agent: DashboardAgentListItemView) -> tuple[str, str]:
         OperatorStatusKind.BLOCKED: f"bold {SEVERITY_ERROR}",
         OperatorStatusKind.REVIEW_READY: f"bold {ORANGE}",
         OperatorStatusKind.FAILED: f"bold {SEVERITY_ERROR}",
+        OperatorStatusKind.TERMINATED: f"bold {YELLOW}",
         OperatorStatusKind.STALE: f"bold {YELLOW}",
         OperatorStatusKind.COMPLETED: FG4,
     }
@@ -201,6 +202,7 @@ _STATUS_DOT_COLORS: dict[OperatorStatusKind, str] = {
     OperatorStatusKind.BLOCKED: SEVERITY_ERROR,
     OperatorStatusKind.REVIEW_READY: ORANGE,
     OperatorStatusKind.FAILED: SEVERITY_ERROR,
+    OperatorStatusKind.TERMINATED: YELLOW,
     OperatorStatusKind.STALE: YELLOW,
     OperatorStatusKind.COMPLETED: FG4,
 }

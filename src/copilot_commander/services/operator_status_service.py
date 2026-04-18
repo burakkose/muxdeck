@@ -15,6 +15,7 @@ class OperatorStatusKind(StrEnum):
     BLOCKED = "blocked"
     REVIEW_READY = "review_ready"
     FAILED = "failed"
+    TERMINATED = "terminated"
     STALE = "stale"
     COMPLETED = "completed"
 
@@ -61,7 +62,23 @@ def describe_operator_status(
             tone="success",
             needs_attention=False,
         )
-    if agent_status in {AgentStatus.ERROR, AgentStatus.DEAD}:
+    if agent_status is AgentStatus.DEAD:
+        # A dead/terminated agent is a historical record, not an
+        # error condition. Reserve red/error styling for actual
+        # failures (AgentStatus.ERROR); use a calmer warning tone
+        # for "copilot exited" / "pane gone" so the dashboard
+        # doesn't scream at the operator about something they
+        # already chose to terminate.
+        return OperatorStatus(
+            kind=OperatorStatusKind.TERMINATED,
+            label="terminated",
+            headline="terminated",
+            reason=reason or _failure_reason(agent_status),
+            tone="warning",
+            needs_attention=False,
+            is_critical=False,
+        )
+    if agent_status is AgentStatus.ERROR:
         return OperatorStatus(
             kind=OperatorStatusKind.FAILED,
             label="failed",

@@ -87,3 +87,37 @@ def test_describe_operator_status_distinguishes_operator_states() -> None:
     assert stale.kind == OperatorStatusKind.STALE
     assert completed.kind == OperatorStatusKind.COMPLETED
     assert completed.reason == "Ship it"
+
+
+def test_dead_agents_are_terminated_not_failed() -> None:
+    # DEAD agents are historical records, not active errors.
+    # Reserve the FAILED kind (and its red/error tone) for actual
+    # ERROR-status agents; render DEAD as a calmer warning so the
+    # dashboard does not scream about panes the operator already
+    # killed on purpose.
+    terminated = describe_operator_status(
+        agent_status=AgentStatus.DEAD,
+        needs_attention=True,
+        attention_reason="tmux pane no longer exists",
+        idle_seconds=0,
+        is_potentially_stuck=False,
+        task_title=None,
+        current_activity=None,
+    )
+    failed = describe_operator_status(
+        agent_status=AgentStatus.ERROR,
+        needs_attention=True,
+        attention_reason="tool failed with exit code 1",
+        idle_seconds=0,
+        is_potentially_stuck=False,
+        task_title=None,
+        current_activity=None,
+    )
+
+    assert terminated.kind == OperatorStatusKind.TERMINATED
+    assert terminated.tone == "warning"
+    assert terminated.is_critical is False
+    assert terminated.needs_attention is False
+    assert failed.kind == OperatorStatusKind.FAILED
+    assert failed.tone == "error"
+    assert failed.is_critical is True

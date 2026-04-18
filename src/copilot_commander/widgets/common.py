@@ -53,7 +53,7 @@ _STATUS_GLYPHS: Final[dict[AgentStatus, tuple[str, str]]] = {
     AgentStatus.WAITING_INPUT: ("▲", ORANGE),
     AgentStatus.BLOCKED: ("■", ORANGE),
     AgentStatus.ERROR: ("✗", RED),
-    AgentStatus.DEAD: ("✗", RED),
+    AgentStatus.DEAD: ("✗", YELLOW),
     AgentStatus.COMPLETED: ("✓", FG4),
     AgentStatus.DISCOVERED: ("◇", BLUE),
     AgentStatus.STARTING: ("◌", AQUA),
