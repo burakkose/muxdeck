@@ -8,6 +8,7 @@ from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.timer import Timer
 from textual.widgets import Input
+from textual.worker import Worker, WorkerState
 
 from muxdeck.adapters.pane_stream import PaneStreamAdapter
 from muxdeck.bindings import DASHBOARD_BINDINGS, DASHBOARD_HINTS
@@ -31,6 +32,7 @@ from muxdeck.screens.window_input import (
     RenameWindowScreen,
 )
 from muxdeck.services.attention_service import AttentionNotification
+from muxdeck.services.runtime_service import RuntimeSyncReport
 from muxdeck.widgets.dashboard import (
     AgentDetailPanel,
     AgentListPanel,
@@ -52,6 +54,8 @@ _SORT_ORDER: tuple[DashboardSortField, ...] = (
     "idle_seconds",
     "started_at",
 )
+
+_DASHBOARD_WORKER = "dashboard_load"
 
 _NOTIFY_SEVERITY: dict[str, Literal["information", "warning", "error"]] = {
     "info": "information",
@@ -119,8 +123,13 @@ class DashboardScreen(ShellScreen):
 
     def refresh_data(self) -> None:
         sync_report = self.muxdeck_app.last_sync_report
-        # Prefer pre-built state from worker thread (no main-thread queries).
+        # Prefer pre-built state from the app sync worker (off main thread).
         pre_built = self.muxdeck_app.last_dashboard_state
+        if pre_built is not None:
+            self.muxdeck_app.last_dashboard_state = None
+            self._apply_state(pre_built, sync_report)
+            return
+
         loading_widgets = (
             self.query_one(AgentListPanel),
             self.query_one(AgentDetailPanel),
@@ -128,26 +137,65 @@ class DashboardScreen(ShellScreen):
             self.query_one(AlertPanel),
         )
         first_load = self._state is None
-        if first_load and not self._loading and pre_built is None:
-            self._loading = True
+        if first_load:
+            # Show a loading overlay immediately. The app sync worker
+            # is about to fire too — whichever delivers first wins.
             self.set_status("loading dashboard…")
             self.begin_loading(*loading_widgets)
-        if pre_built is not None:
-            self._state = pre_built
-            self.muxdeck_app.last_dashboard_state = None
-        else:
-            # Build state directly from controller (ensures filters/sort are applied).
+
+        # On the very first dashboard render, skip the local screen
+        # worker if a synchronizer exists. ``app.on_mount`` always queues
+        # an immediate sync that calls ``synchronizer.refresh()`` and
+        # then builds dashboard state — that data is FRESH. The local
+        # worker would otherwise paint stale-from-store data first and
+        # the user would briefly see incorrect state before the sync
+        # delivers a moment later.
+        if (
+            first_load
+            and getattr(self.runtime, "synchronizer", None) is not None
+            and self.muxdeck_app.last_sync_report is None
+        ):
+            return
+
+        # Snapshot inputs so the worker doesn't read mutable UI state.
+        # ``sync_dashboard`` uses the thread-safe SQLite connection;
+        # the foreground ``runtime.dashboard`` is bound to the UI thread
+        # and would raise from a worker.
+        dashboard = getattr(self.runtime, "sync_dashboard", None) or self.runtime.dashboard
+        filters = self._filters
+        sort = self._sort
+        selected_id = self._selected_agent_id
+        preview_lines = self._preview_line_limit()
+
+        def _build() -> DashboardState | None:
             try:
-                self._state = self.runtime.dashboard.build_state(
-                    filters=self._filters,
-                    sort=self._sort,
-                    selected_agent_id=self._selected_agent_id,
-                    preview_line_limit=self._preview_line_limit(),
+                return dashboard.build_state(
+                    filters=filters,
+                    sort=sort,
+                    selected_agent_id=selected_id,
+                    preview_line_limit=preview_lines,
                 )
             except Exception:
-                if first_load:
-                    self.set_status("loading dashboard…")
-                return
+                # Logged via on_worker_state_changed (state == ERROR
+                # path is bypassed because we returned cleanly). Return
+                # None so the worker terminates SUCCESS-with-no-result;
+                # the apply path drops it.
+                return None
+
+        self.run_worker(_build, thread=True, exclusive=True, name=_DASHBOARD_WORKER)
+
+    def _apply_state(
+        self,
+        state: DashboardState,
+        sync_report: RuntimeSyncReport | None,
+    ) -> None:
+        loading_widgets = (
+            self.query_one(AgentListPanel),
+            self.query_one(AgentDetailPanel),
+            self.query_one(LogPreviewPanel),
+            self.query_one(AlertPanel),
+        )
+        self._state = state
         self._loading = False
         self.end_loading(*loading_widgets)
         # Preserve the live selection across async refreshes.
@@ -306,7 +354,7 @@ class DashboardScreen(ShellScreen):
         # default ``runtime.dashboard`` is bound to a connection that
         # lives on the main thread and will raise
         # ``sqlite3.ProgrammingError`` when touched from here.
-        dashboard = self.runtime.sync_dashboard or self.runtime.dashboard
+        dashboard = getattr(self.runtime, "sync_dashboard", None) or self.runtime.dashboard
         tree = dashboard.load_subagents(agent_id)
         # Hop back to the main thread to mutate the widget.
         self.app.call_from_thread(self._apply_subagents, agent_id, tree)
@@ -651,6 +699,26 @@ class DashboardScreen(ShellScreen):
         if agent is None:
             return "agent"
         return agent.repo_name or agent.name
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        super().on_worker_state_changed(event)
+        if event.worker.name != _DASHBOARD_WORKER:
+            return
+        if event.state == WorkerState.ERROR:
+            # On first-load failure keep the loading overlay so the user
+            # sees the dashboard is still trying — a subsequent refresh
+            # (periodic sync or manual ``r``) will retry. On a refresh
+            # failure where we already have a state, surface the error
+            # in the footer but keep the previous data on screen.
+            if self._state is not None:
+                self.set_status("dashboard refresh failed")
+            return
+        if event.state != WorkerState.SUCCESS:
+            return
+        result = event.worker.result
+        if not isinstance(result, DashboardState):
+            return
+        self._apply_state(result, self.muxdeck_app.last_sync_report)
 
     def _update_selected_detail(self) -> None:
         """Lightweight: rebuild only the detail panels for the newly selected agent."""
