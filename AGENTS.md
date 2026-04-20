@@ -26,6 +26,8 @@ Build `copilot-commander` as a high-quality Python 3.14+ Textual TUI with strong
 ## Branch, worktree, and task conventions
 
 - Prefer **one task per branch**.
+- Every active agent must work from its **own dedicated git worktree**. Do not let multiple agents share the same checkout or branch workspace at the same time.
+- Create each agent worktree from the intended integration branch, which should be either `main` or the relevant long-lived feature branch for that effort.
 - Branch names should be descriptive, for example:
   - `copilot/agentic-copilot-setup`
   - `feat/session-browser`
@@ -34,6 +36,7 @@ Build `copilot-commander` as a high-quality Python 3.14+ Textual TUI with strong
 - Keep worktrees clean: no mixed-purpose changes, no lingering generated files, no untracked scratch artifacts.
 - Before starting, confirm the task scope and avoid bleeding into adjacent todos.
 - After creating or switching to a worktree, install the repository hooks with `python -m pre_commit install --hook-type pre-commit --hook-type pre-push`.
+- After an agent finishes and validates its scoped change, merge that worktree branch back into the originating `main` or feature branch through the normal review/integration flow.
 
 ## Implementation expectations
 
@@ -80,6 +83,7 @@ python -m pip install --upgrade pip
 - Re-read your diff before finishing.
 - Do not commit unrelated formatting churn.
 - Do not overwrite user work or discard changes you did not make.
+- Do not develop directly on shared integration branches from an agent session; isolate the work in the agent worktree first, then merge back after review.
 - If you create a commit, keep it **single-purpose** and tied to one scoped task.
 - Use a clear imperative commit message that names the subsystem and change, for example:
   - `Add tmux pane parser`

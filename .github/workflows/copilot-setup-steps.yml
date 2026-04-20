@@ -5,9 +5,17 @@ on:
   push:
     paths:
       - .github/workflows/copilot-setup-steps.yml
+      - .github/copilot-instructions.md
+      - AGENTS.md
+      - pyproject.toml
+      - requirements*.txt
   pull_request:
     paths:
       - .github/workflows/copilot-setup-steps.yml
+      - .github/copilot-instructions.md
+      - AGENTS.md
+      - pyproject.toml
+      - requirements*.txt
 
 jobs:
   copilot-setup-steps:

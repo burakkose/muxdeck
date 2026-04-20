@@ -4,11 +4,9 @@ on:
   workflow_dispatch:
   pull_request:
   push:
-    branches:
-      - main
 
 concurrency:
-  group: quality-${{ github.workflow }}-${{ github.ref }}
+  group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -18,6 +16,8 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -59,3 +59,11 @@ jobs:
         env:
           PYTHONPATH: src
         run: python -m pytest tests/ -q --tb=short
+
+      - name: Upload coverage artifact
+        if: ${{ always() && hashFiles('coverage.xml') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: error

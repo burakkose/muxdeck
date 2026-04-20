@@ -44,6 +44,9 @@ This repository is being developed toward **Python 3.14+** and a **Textual-based
 
 ## Git, tmux, sqlite, and shell patterns
 
+- Every agent must work from its own dedicated git worktree. Do not share a worktree between active agents.
+- Start the agent worktree from the branch that will receive the result: `main` or the relevant feature branch.
+- When the agent finishes and validates its change, merge the worktree branch back into that `main` or feature branch through the normal review flow.
 - Use `git` through small adapter functions or service objects, not scattered shell snippets.
 - Use `git --no-pager` in commands and keep subprocess invocations explicit.
 - Prefer `subprocess.run(..., check=False, text=True, capture_output=True)` wrapped by typed helpers.
@@ -92,5 +95,6 @@ If a tool is not configured yet, use the closest supported validation and state 
 - Keep commits and diffs easy to review.
 - If making commits, keep them single-purpose and use clear imperative messages that name the subsystem and intent.
 - Update nearby docs/instructions when behavior or workflow changes.
+- Do not do agent development directly on shared integration branches; keep agent work isolated in its worktree until it is ready to merge back.
 - Preserve repository ownership boundaries; do not edit unrelated files.
 - When blocked, say exactly what is blocked, why, and what evidence was gathered.
