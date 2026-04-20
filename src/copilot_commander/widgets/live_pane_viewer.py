@@ -18,6 +18,7 @@ from rich.ansi import AnsiDecoder
 from rich.text import Text
 from textual.widgets import RichLog
 
+from copilot_commander import theme
 from copilot_commander.adapters.pane_stream import RingLineBuffer
 
 # Cap on how many lines the viewer retains. 2 000 lines is ~80 full
@@ -40,32 +41,32 @@ class LivePaneViewer(RichLog):
     without running the Textual event loop.
     """
 
-    DEFAULT_CSS = """
-    LivePaneViewer {
+    DEFAULT_CSS = f"""
+    LivePaneViewer {{
         height: 1fr;
         width: 1fr;
-        background: #1d2021;
-        border: solid #504945;
-        border-title-color: #bdae93;
+        background: {theme.BG_HARD};
+        border: solid {theme.BORDER};
+        border-title-color: {theme.PANEL_TITLE};
         border-title-style: bold;
         padding: 0 1;
-        scrollbar-color: #504945 #1d2021;
-        scrollbar-color-hover: #665c54 #1d2021;
-        scrollbar-color-active: #83a598 #1d2021;
-    }
+        scrollbar-color: {theme.BG3} {theme.BG_HARD};
+        scrollbar-color-hover: {theme.BG4} {theme.BG_HARD};
+        scrollbar-color-active: {theme.BORDER_FOCUS} {theme.BG_HARD};
+    }}
 
-    LivePaneViewer:focus {
-        border: solid #83a598;
-    }
+    LivePaneViewer:focus {{
+        border: solid {theme.BORDER_FOCUS};
+    }}
 
-    LivePaneViewer.-input-on {
-        border: double #fabd2f;
-        border-title-color: #fabd2f;
-    }
+    LivePaneViewer.-input-on {{
+        border: double {theme.YELLOW};
+        border-title-color: {theme.YELLOW};
+    }}
 
-    LivePaneViewer.-input-on:focus {
-        border: double #fabd2f;
-    }
+    LivePaneViewer.-input-on:focus {{
+        border: double {theme.YELLOW};
+    }}
     """
 
     def __init__(
@@ -98,6 +99,35 @@ class LivePaneViewer(RichLog):
     @property
     def has_content(self) -> bool:
         return self._has_content
+
+    @property
+    def wrap_enabled(self) -> bool:
+        return bool(self.wrap)
+
+    @property
+    def follow_enabled(self) -> bool:
+        return bool(self.auto_scroll)
+
+    @property
+    def follow_state(self) -> str:
+        if not self.follow_enabled:
+            return "off"
+        if self.is_vertical_scroll_end:
+            return "on"
+        return "paused"
+
+    def set_wrap_mode(self, enabled: bool) -> None:
+        if self.wrap == enabled:
+            return
+        self.wrap = enabled
+        self._rerender_from_buffer()
+
+    def set_follow_mode(self, enabled: bool) -> None:
+        if self.auto_scroll == enabled:
+            return
+        self.auto_scroll = enabled
+        if enabled and self.is_mounted:
+            self.scroll_end(animate=False, immediate=True, force=True, x_axis=False)
 
     def append(self, payload: str | Text) -> None:
         """Append a chunk of pane output.

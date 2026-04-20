@@ -22,7 +22,12 @@ from copilot_commander.theme import (
     SEVERITY_ERROR,
     YELLOW,
 )
-from copilot_commander.widgets.common import format_short_timestamp, status_glyph
+from copilot_commander.ui_preferences import UiDensity, resolve_ui_preferences
+from copilot_commander.widgets.common import (
+    format_short_timestamp,
+    item_separator,
+    status_glyph,
+)
 
 
 def _append_section_title(text: Text, title: str) -> None:
@@ -108,6 +113,8 @@ class OperationsAgentListPanel(Static, can_focus=True):
         self.focus()
 
     def _build_table(self) -> Table:
+        preferences = resolve_ui_preferences(self)
+        comfortable = preferences.density is UiDensity.COMFORTABLE
         table = Table(
             expand=True,
             box=None,
@@ -130,11 +137,25 @@ class OperationsAgentListPanel(Static, can_focus=True):
             mark = "[x]" if agent.agent_id in selected_lookup else "[ ]"
             status_text, status_style = _status_text(agent)
             row_style = f"on {SELECTED_ROW_BG}" if is_cursor else ""
+            name_text = Text(agent.name, style=f"bold {FG}" if is_cursor else FG1)
+            if comfortable:
+                detail_parts = tuple(
+                    value
+                    for value in (agent.branch or "-", agent.task_title or "-")
+                    if value and value != "-"
+                )
+                if detail_parts:
+                    name_text.append("\n  ", style=FG4)
+                    name_text.append(item_separator(preferences).join(detail_parts[:2]), style=FG4)
+            state_text = Text(status_text, style=status_style)
+            if comfortable:
+                state_text.append("\n", style=FG4)
+                state_text.append(f"idle {_format_idle(agent.idle_seconds)}", style=FG4)
             table.add_row(
                 Text(mark, style=f"bold {FG1}" if agent.agent_id in selected_lookup else FG4),
-                status_glyph(agent.status, selected=is_cursor),
-                Text(agent.name, style=f"bold {FG}" if is_cursor else FG1),
-                Text(status_text, style=status_style),
+                status_glyph(agent.status, selected=is_cursor, preferences=preferences),
+                name_text,
+                state_text,
                 Text(_format_idle(agent.idle_seconds), style=FG2),
                 Text(agent.branch or "-", style=FG2),
                 style=row_style,

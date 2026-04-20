@@ -11,6 +11,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
+from copilot_commander import theme
 from copilot_commander.bindings import BindingSpec
 from copilot_commander.services.action_service import WindowChoice
 
@@ -26,63 +27,63 @@ class MoveWindowResult:
     new_window_name: str | None
 
 
-_DIALOG_CSS = """
-#window-input-dialog {
+_DIALOG_CSS = f"""
+#window-input-dialog {{
     width: 88;
     height: auto;
     max-height: 24;
-    background: #282828;
-    border: thick #504945;
-    border-title-color: #83a598;
+    background: {theme.BG1};
+    border: thick {theme.BORDER};
+    border-title-color: {theme.BORDER_FOCUS};
     padding: 1 2;
-}
+}}
 
 #window-input-header,
 #window-input-help,
-#window-input-status {
+#window-input-status {{
     height: auto;
     margin-bottom: 1;
-    color: #a89984;
-}
+    color: {theme.FG2};
+}}
 
-#window-choice-list {
+#window-choice-list {{
     height: auto;
     max-height: 9;
     margin-bottom: 1;
     padding: 0 1;
-    background: #1d2021;
-    border: solid #504945;
-}
+    background: {theme.BG_HARD};
+    border: solid {theme.BORDER};
+}}
 
-#window-input-buttons {
+#window-input-buttons {{
     height: auto;
     align: right middle;
-}
+}}
 
-#window-input-buttons Button {
+#window-input-buttons Button {{
     margin-left: 1;
     min-width: 12;
-}
+}}
 
-#btn-window-confirm {
-    background: #504945;
-    color: #b8bb26;
+#btn-window-confirm {{
+    background: {theme.BADGE_BG};
+    color: {theme.BADGE_FG};
     border: none;
-}
+}}
 
-#btn-window-confirm:hover {
-    background: #665c54;
-}
+#btn-window-confirm:hover {{
+    background: {theme.YELLOW};
+}}
 
-#btn-window-cancel {
-    background: #3c3836;
-    color: #928374;
+#btn-window-cancel {{
+    background: {theme.BG3};
+    color: {theme.FG3};
     border: none;
-}
+}}
 
-#btn-window-cancel:hover {
-    background: #504945;
-}
+#btn-window-cancel:hover {{
+    background: {theme.BG4};
+}}
 """
 
 
@@ -286,24 +287,24 @@ class MoveWindowScreen(ModalScreen[MoveWindowResult | None]):
             return text
         start, end = self._visible_choice_range()
         if start > 0:
-            text.append("  …\n", style="#665c54")
+            text.append("  …\n", style=theme.FG4)
         for index in range(start, end):
             choice = self._choices[index]
             is_selected = index == self._selected_index
             prefix = "▸ " if is_selected else "  "
-            prefix_style = "bold #83a598" if is_selected else "#665c54"
-            title_style = "bold #ebdbb2" if is_selected else "#d5c4a1"
-            meta_style = "#a89984" if is_selected else "#928374"
+            prefix_style = f"bold {theme.BORDER_FOCUS}" if is_selected else theme.FG4
+            title_style = f"bold {theme.FG}" if is_selected else theme.FG1
+            meta_style = theme.FG2 if is_selected else theme.FG4
             text.append(prefix, style=prefix_style)
             text.append(choice.window_name or choice.window_id, style=title_style)
             text.append(f"  {choice.session_name}:{choice.window_id}", style=meta_style)
             if choice.window_name == self._current_window_name:
-                text.append("  current", style="#fabd2f")
+                text.append("  current", style=theme.YELLOW)
             pane_label = "pane" if choice.pane_count == 1 else "panes"
             text.append(f"  ·  {choice.pane_count} {pane_label}", style=meta_style)
             text.append("\n")
         if end < len(self._choices):
-            text.append("  …\n", style="#665c54")
+            text.append("  …\n", style=theme.FG4)
         return text
 
     def _visible_choice_range(self) -> tuple[int, int]:

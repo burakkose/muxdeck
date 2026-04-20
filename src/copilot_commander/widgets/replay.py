@@ -29,6 +29,8 @@ from copilot_commander.theme import (
     SEVERITY_ERROR,
     YELLOW,
 )
+from copilot_commander.ui_preferences import UiDensity, UiPreferences, resolve_ui_preferences
+from copilot_commander.widgets.common import item_separator, pipe_separator, ui_symbol
 
 _AGENT_BADGE_PALETTE: tuple[str, ...] = (BLUE, GREEN, ORANGE, AQUA, YELLOW, PURPLE)
 
@@ -58,9 +60,16 @@ def _marker_style(kind: str) -> str:
     return f"bold {YELLOW}"
 
 
-def _append_chip(text: Text, label: str, value: str, *, value_style: str) -> None:
+def _append_chip(
+    text: Text,
+    label: str,
+    value: str,
+    *,
+    value_style: str,
+    preferences: UiPreferences,
+) -> None:
     if text.plain:
-        text.append(" │ ", style=FG4)
+        text.append(pipe_separator(preferences), style=FG4)
     text.append(f"{label} ", style=FG4)
     text.append(value, style=value_style)
 
@@ -81,12 +90,42 @@ class ReplayFilterBar(Vertical):
             ),
             id="replay-filter-input",
         )
+        yield Static(classes="filter-summary", id="replay-filter-summary")
 
     def set_query(self, value: str) -> None:
         self.query_one(Input).value = value
 
     def focus_input(self) -> None:
         self.query_one(Input).focus()
+
+    def set_state(
+        self,
+        *,
+        filter_text: str,
+        visible_entries: int,
+        total_entries: int,
+        presentation: str,
+        follow_latest: bool,
+    ) -> None:
+        preferences = resolve_ui_preferences(self)
+        separator = pipe_separator(preferences)
+        summary = Text()
+        summary.append(f"{visible_entries}", style=f"bold {FG1}")
+        summary.append(f"/{total_entries} entries", style=FG4)
+        summary.append(separator, style=FG4)
+        summary.append("view ", style=FG4)
+        summary.append(presentation, style=AQUA)
+        summary.append(separator, style=FG4)
+        summary.append("follow ", style=FG4)
+        summary.append("on" if follow_latest else "off", style=GREEN if follow_latest else FG4)
+        if filter_text.strip():
+            summary.append(separator, style=FG4)
+            summary.append("query ", style=FG4)
+            summary.append(filter_text.strip(), style=YELLOW)
+        else:
+            summary.append(separator, style=FG4)
+            summary.append("kind:error agent:planner marker:file_edit", style=FG4)
+        self.query_one("#replay-filter-summary", Static).update(summary)
 
 
 class ReplayBoundListView(ListView):
@@ -207,6 +246,8 @@ class ReplayMarkerListPanel(Vertical):
         *,
         selected_index: int | None,
     ) -> None:
+        preferences = resolve_ui_preferences(self)
+        comfortable = preferences.density is UiDensity.COMFORTABLE
         list_view = self.query_one(ListView)
         list_view.clear()
         self._marker_ordinals = []
@@ -216,6 +257,9 @@ class ReplayMarkerListPanel(Vertical):
             line.append(f"{marker.timestamp[11:19]} ", style=FG4)
             line.append(f"{marker.kind:<8.8} ", style=_marker_style(marker.kind))
             line.append(marker.label, style=FG1)
+            if comfortable:
+                line.append("\n  ", style=FG4)
+                line.append(f"entry #{marker.index}", style=FG4)
             list_view.append(ListItem(Static(line)))
             self._marker_ordinals.append(index)
             if selected_index is not None and marker.index <= selected_index:
@@ -263,6 +307,8 @@ class ReplayTranscriptPanel(Vertical):
         yield ReplayBoundListView(id="replay-transcript-list")
 
     def set_transcript(self, transcript: Sequence[ReplayTranscriptEntryView]) -> None:
+        preferences = resolve_ui_preferences(self)
+        comfortable = preferences.density is UiDensity.COMFORTABLE
         self._rebuilding = True
         try:
             list_view = self.query_one(ListView)
@@ -272,8 +318,17 @@ class ReplayTranscriptPanel(Vertical):
             for index, entry in enumerate(transcript):
                 line = Text()
                 caret_style = f"bold {BLUE}" if entry.is_selected else FG4
-                line.append("▸ " if entry.is_selected else "  ", style=caret_style)
-                glyph = entry.annotation_glyph or " "
+                line.append(
+                    f"{ui_symbol('collapsed', preferences=preferences)} "
+                    if entry.is_selected
+                    else "  ",
+                    style=caret_style,
+                )
+                glyph = (
+                    ui_symbol("annotation", preferences=preferences)
+                    if entry.annotation_glyph
+                    else " "
+                )
                 glyph_style = f"bold {BLUE}" if entry.annotation_glyph else FG4
                 line.append(f"{glyph} ", style=glyph_style)
                 line.append(f"{entry.timestamp[11:19]} ", style=FG4)
@@ -287,6 +342,15 @@ class ReplayTranscriptPanel(Vertical):
                 line.append(f"{entry.label:<24.24} ", style=FG1)
                 preview = entry.lines[0] if entry.lines else ""
                 line.append(preview, style=FG4)
+                if comfortable:
+                    detail_parts: list[str] = []
+                    if entry.agent_label is not None:
+                        detail_parts.append(entry.agent_label)
+                    if entry.file_path is not None:
+                        detail_parts.append(entry.file_path)
+                    if detail_parts:
+                        line.append("\n  ", style=FG4)
+                        line.append(item_separator(preferences).join(detail_parts[:2]), style=FG4)
                 list_view.append(ListItem(Static(line)))
                 self._ordinals.append(entry.ordinal)
                 if entry.is_selected:
@@ -333,8 +397,14 @@ class ReplayProgressBar(Static):
         playback: PlaybackStateView | None,
         markers: Sequence[ReplayJumpMarkerView] = (),
     ) -> None:
+        preferences = resolve_ui_preferences(self)
         if playback is None:
-            self.update(Text("⏸ no playback", style=FG4))
+            self.update(
+                Text(
+                    f"{ui_symbol('progress-pause', preferences=preferences)} no playback",
+                    style=FG4,
+                )
+            )
             return
         width = self.BAR_WIDTH
         position = max(0, min(width - 1, round(playback.progress * (width - 1))))
@@ -342,12 +412,21 @@ class ReplayProgressBar(Static):
         bar = Text()
         for col in range(width):
             if col == position:
-                bar.append("●", style=f"bold {BLUE}")
+                bar.append(
+                    ui_symbol("progress-position", preferences=preferences), style=f"bold {BLUE}"
+                )
             elif col in marker_columns:
-                bar.append("│", style=_marker_style(marker_columns[col]))
+                bar.append(
+                    ui_symbol("progress-marker", preferences=preferences),
+                    style=_marker_style(marker_columns[col]),
+                )
             else:
-                bar.append("─", style=FG4)
-        glyph = "▶" if playback.mode == "playing" else "⏸"
+                bar.append(ui_symbol("progress-fill", preferences=preferences), style=FG4)
+        glyph = (
+            ui_symbol("progress-play", preferences=preferences)
+            if playback.mode == "playing"
+            else ui_symbol("progress-pause", preferences=preferences)
+        )
         glyph_style = f"bold {GREEN}" if playback.mode == "playing" else FG4
         line = Text()
         line.append(playback.clock[11:19], style=FG4)
@@ -392,22 +471,24 @@ class ReplaySummaryPanel(Static):
         follow_latest: bool,
         filter_text: str,
     ) -> None:
+        preferences = resolve_ui_preferences(self)
         line = Text()
         line.append(" loading replay… ", style=f"bold {AQUA}")
         line.append(session_label, style=FG1)
-        line.append(" │ ", style=FG4)
+        line.append(pipe_separator(preferences), style=FG4)
         line.append("view ", style=FG4)
         line.append(presentation, style=AQUA)
-        line.append(" │ ", style=FG4)
+        line.append(pipe_separator(preferences), style=FG4)
         line.append("follow ", style=FG4)
         line.append("on" if follow_latest else "off", style=GREEN if follow_latest else FG4)
         if filter_text.strip():
-            line.append(" │ ", style=FG4)
+            line.append(pipe_separator(preferences), style=FG4)
             line.append("filter ", style=FG4)
             line.append(filter_text.strip(), style=YELLOW)
         self.update(line)
 
     def set_state(self, state: ReplayStateView | None) -> None:
+        preferences = resolve_ui_preferences(self)
         if state is None:
             self.update(Text("No replayable sessions", style=FG4))
             return
@@ -434,15 +515,15 @@ class ReplaySummaryPanel(Static):
         )
         for label, value, style in items:
             if line.plain:
-                line.append(" │ ", style=FG4)
+                line.append(pipe_separator(preferences), style=FG4)
             line.append(f"{label} ", style=FG4)
             line.append(str(value), style=style)
         if state.filter_text.strip():
-            line.append(" │ ", style=FG4)
+            line.append(pipe_separator(preferences), style=FG4)
             line.append("filter ", style=FG4)
             line.append(state.filter_text.strip(), style=YELLOW)
         if len(state.agent_ids) > 1:
-            line.append(" │ ", style=FG4)
+            line.append(pipe_separator(preferences), style=FG4)
             line.append(f"agents {len(state.agent_ids)} ", style=FG4)
             line.append("(" + ", ".join(state.agent_ids) + ")", style=PURPLE)
         self.update(line)
@@ -458,11 +539,12 @@ class ReplayActionBar(Static):
         export_format: str,
         filter_text: str,
     ) -> None:
+        preferences = resolve_ui_preferences(self)
         text = Text()
         text.append(" preparing replay actions… ", style=f"bold {AQUA}")
         text.append(session_label, style=FG1)
         if filter_text.strip():
-            text.append(" │ ", style=FG4)
+            text.append(pipe_separator(preferences), style=FG4)
             text.append("filter ", style=FG4)
             text.append(filter_text.strip(), style=YELLOW)
         text.append("\n")
@@ -481,6 +563,7 @@ class ReplayActionBar(Static):
         *,
         export_format: str,
     ) -> None:
+        preferences = resolve_ui_preferences(self)
         if state is None:
             text = Text()
             text.append(" no replay loaded ", style=f"bold {FG}")
@@ -497,14 +580,50 @@ class ReplayActionBar(Static):
         marker_counts = self._marker_counts(state)
         text = Text()
         scope = f"{len(state.session_ids)} merged" if len(state.session_ids) > 1 else "single"
-        _append_chip(text, "scope", scope, value_style=FG1)
-        _append_chip(text, "activity", str(marker_counts["activity"]), value_style=GREEN)
-        _append_chip(text, "problems", str(marker_counts["problems"]), value_style=ORANGE)
-        _append_chip(text, "files", str(marker_counts["file_edit"]), value_style=BLUE)
-        _append_chip(text, "notes", str(marker_counts["annotation"]), value_style=PURPLE)
-        _append_chip(text, "export", export_format, value_style=AQUA)
+        _append_chip(text, "scope", scope, value_style=FG1, preferences=preferences)
+        _append_chip(
+            text,
+            "activity",
+            str(marker_counts["activity"]),
+            value_style=GREEN,
+            preferences=preferences,
+        )
+        _append_chip(
+            text,
+            "problems",
+            str(marker_counts["problems"]),
+            value_style=ORANGE,
+            preferences=preferences,
+        )
+        _append_chip(
+            text,
+            "files",
+            str(marker_counts["file_edit"]),
+            value_style=BLUE,
+            preferences=preferences,
+        )
+        _append_chip(
+            text,
+            "notes",
+            str(marker_counts["annotation"]),
+            value_style=PURPLE,
+            preferences=preferences,
+        )
+        _append_chip(
+            text,
+            "export",
+            export_format,
+            value_style=AQUA,
+            preferences=preferences,
+        )
         if state.filter_text.strip():
-            _append_chip(text, "filter", state.filter_text.strip(), value_style=YELLOW)
+            _append_chip(
+                text,
+                "filter",
+                state.filter_text.strip(),
+                value_style=YELLOW,
+                preferences=preferences,
+            )
         text.append("\n")
         _append_action(text, "/", "filter")
         _append_action(text, "m", "markers")

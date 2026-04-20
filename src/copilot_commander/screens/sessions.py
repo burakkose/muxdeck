@@ -82,7 +82,7 @@ class SessionsScreen(ShellScreen):
             with Horizontal(id="sessions-main"):
                 yield SessionListPanel(
                     widget_id="sessions-list",
-                    classes="panel",
+                    classes="panel focusable",
                 )
                 yield SessionDetailPanel(
                     widget_id="sessions-detail",
@@ -261,7 +261,13 @@ class SessionsScreen(ShellScreen):
             state.unclosed_count,
             state.completed_count,
         )
-        self.set_status(f"{state.total_count} sessions · {state.active_count} active")
+        parts = [f"{state.total_count} sessions", f"{state.active_count} active"]
+        query = self._filter_text.strip()
+        if query:
+            parts.append(f"filter:{query}")
+        if not self._show_completed:
+            parts.append("hide-done")
+        self.set_status(" · ".join(parts))
 
     def on_session_selected(self, event: SessionSelected) -> None:
         if event.session_id == self._selected_session_id:

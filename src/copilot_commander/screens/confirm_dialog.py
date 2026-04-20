@@ -10,55 +10,56 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Label
 
+from copilot_commander import theme
 from copilot_commander.bindings import BindingSpec
 
 
 class ConfirmScreen(ModalScreen[bool]):
     """Modal confirmation dialog. Dismisses with True (confirm) or False (cancel)."""
 
-    DEFAULT_CSS = """
-    ConfirmScreen {
+    DEFAULT_CSS = f"""
+    ConfirmScreen {{
         align: center middle;
-    }
-    #confirm-dialog {
+    }}
+    #confirm-dialog {{
         width: 50;
         height: auto;
         max-height: 10;
-        background: #282828;
-        border: thick #fb4934;
-        border-title-color: #fb4934;
+        background: {theme.BG1};
+        border: thick {theme.RED};
+        border-title-color: {theme.RED};
         padding: 1 2;
-    }
-    #confirm-message {
+    }}
+    #confirm-message {{
         height: auto;
         margin-bottom: 1;
-        color: #ebdbb2;
-    }
-    #confirm-buttons {
+        color: {theme.FG};
+    }}
+    #confirm-buttons {{
         height: auto;
         align: right middle;
-    }
-    #confirm-buttons Button {
+    }}
+    #confirm-buttons Button {{
         margin-left: 1;
         min-width: 10;
-    }
-    #btn-yes {
-        background: #3c2020;
-        color: #fb4934;
+    }}
+    #btn-yes {{
+        background: {theme.TONE_CRITICAL_BG};
+        color: {theme.RED};
         border: none;
-    }
-    #btn-yes:hover {
-        background: #fb4934;
-        color: #282828;
-    }
-    #btn-no {
-        background: #3c3836;
-        color: #928374;
+    }}
+    #btn-yes:hover {{
+        background: {theme.RED};
+        color: {theme.BG1};
+    }}
+    #btn-no {{
+        background: {theme.BG3};
+        color: {theme.FG3};
         border: none;
-    }
-    #btn-no:hover {
-        background: #504945;
-    }
+    }}
+    #btn-no:hover {{
+        background: {theme.BG4};
+    }}
     """
 
     BINDINGS: ClassVar[list[BindingSpec]] = [

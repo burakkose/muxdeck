@@ -1,8 +1,12 @@
-/* ── Gruvbox Dark — copilot-commander ─────────────────────────────── */
+/* ── Ayu Mirage — copilot-commander ───────────────────────────────── */
 
 Screen {
-    background: #282828;
-    color: #ebdbb2;
+    background: #1F2430;
+    color: #CCCAC2;
+}
+
+.ux-contrast-high Screen {
+    background: #181C26;
 }
 
 /* ── shell chrome ────────────────────────────────────────────────── */
@@ -10,63 +14,73 @@ Screen {
 #shell-tab-bar {
     dock: top;
     height: 1;
-    background: #1d2021;
-    color: #ebdbb2;
+    background: #181C26;
+    color: #C7C7C7;
 }
 
 #shell-frame {
     height: 1fr;
     layout: vertical;
-    background: #282828;
+    background: #1F2430;
     padding: 0 1;
 }
 
 #shell-footer {
     dock: bottom;
     height: 1;
-    background: #1d2021;
+    background: #181C26;
 }
 
 /* ── shared frame: borderless content area ────────────────────────── */
 
 .frame {
     border: none;
-    background: #282828;
+    background: #1F2430;
 }
 
 /* ── panel sections inside frames (borderless, thin separators) ─── */
 
 .section {
     border: none;
-    background: #282828;
+    background: #1F2430;
     padding: 0 1;
 }
 
 .section-top {
     border: none;
-    border-top: solid #504945;
-    background: #282828;
+    border-top: solid #171B24;
+    background: #1F2430;
     padding: 0 1;
 }
 
 .divider-right {
     border: none;
-    border-right: solid #504945;
+    border-right: solid #171B24;
     padding: 0 1;
 }
 
 /* legacy .panel for screens not yet fully migrated */
 .panel {
     border: none;
-    background: #282828;
+    background: #1F2430;
     padding: 0 1;
 }
 
 .muted {
-    background: #3c3836;
-    color: #bdae93;
+    background: #242936;
+    color: #8A9199;
     height: 1;
     padding: 0 1;
+}
+
+.focusable {
+    border-left: solid transparent;
+    padding-left: 1;
+}
+
+.focusable:focus {
+    background: #242936;
+    border-left: solid #73D0FF;
 }
 
 /* ── screen roots ────────────────────────────────────────────────── */
@@ -87,12 +101,12 @@ Screen {
 
 #dashboard-status-bar {
     height: 2;
-    background: #282828;
+    background: #1F2430;
     padding: 0 1;
 }
 
 #dashboard-filter-row {
-    height: 1;
+    height: 2;
     padding: 0 1;
 }
 
@@ -103,7 +117,7 @@ Screen {
 #dashboard-agents {
     width: 38%;
     min-width: 34;
-    border-right: solid #504945;
+    border-right: solid #171B24;
 }
 
 #dashboard-sidebar {
@@ -121,14 +135,14 @@ Screen {
 #dashboard-log {
     height: 1fr;
     min-height: 10;
-    border-top: solid #504945;
+    border-top: solid #171B24;
     padding-top: 0;
 }
 
 #dashboard-alerts {
     height: auto;
     max-height: 6;
-    border-top: solid #504945;
+    border-top: solid #171B24;
     padding-top: 0;
 }
 
@@ -186,7 +200,7 @@ Screen {
 
 #operations-bottom {
     height: 1fr;
-    border-top: solid #504945;
+    border-top: solid #171B24;
 }
 
 #operations-selection {
@@ -222,39 +236,67 @@ Screen {
 
 #fleet-summary {
     height: 1;
+    padding: 0 1;
 }
 
 #fleet-filter-input {
     border: none;
     height: 1;
-    padding: 0 0;
+    background: #181C26;
+    color: #CCCAC2;
+    padding: 0 1;
+    margin: 0 1;
 }
 
 #fleet-main {
     height: 1fr;
 }
 
-#fleet-groups {
-    width: 52%;
+#fleet-stories {
+    width: 37%;
+    min-width: 32;
 }
 
 #fleet-side {
-    width: 48%;
+    width: 63%;
     height: 1fr;
     layout: vertical;
 }
 
-#fleet-resources {
+#fleet-command {
     height: auto;
-    min-height: 8;
+    min-height: 14;
+    max-height: 18;
+}
+
+#fleet-middle {
+    height: auto;
+    min-height: 11;
+    max-height: 15;
+    border-top: solid #171B24;
+}
+
+#fleet-sessions {
+    width: 62%;
+}
+
+#fleet-inbox {
+    width: 38%;
+    min-width: 26;
+}
+
+#fleet-bottom {
+    height: 1fr;
+    border-top: solid #171B24;
 }
 
 #fleet-history {
-    height: auto;
-    min-height: 10;
+    width: 58%;
+    height: 1fr;
 }
 
 #fleet-search {
+    width: 42%;
     height: 1fr;
 }
 
@@ -283,19 +325,23 @@ Screen {
 #worktrees-conflicts {
     height: auto;
     max-height: 6;
-    border-top: solid #504945;
+    border-top: solid #171B24;
 }
 
 #worktrees-intent {
     height: auto;
     max-height: 10;
-    border-top: solid #504945;
+    border-top: solid #171B24;
 }
 
 /* ── replay ──────────────────────────────────────────────────────── */
 
 #replay-summary {
     height: 1;
+}
+
+#replay-filter-row {
+    height: 2;
 }
 
 #replay-actions {
@@ -322,22 +368,35 @@ Screen {
 /* ── inputs ──────────────────────────────────────────────────────── */
 
 Input {
-    background: transparent;
-    color: #a89984;
+    background: #181C26;
+    color: #8A9199;
     border: none;
     height: 1;
-    padding: 0 0;
+    border-bottom: solid transparent;
+    padding: 0 1;
 }
 
 Input:focus {
-    border: none;
-    color: #ebdbb2;
+    background: #242936;
+    border-bottom: solid #73D0FF;
+    color: #CCCAC2;
+}
+
+.ux-contrast-high Input {
+    background: #181C26;
+    color: #C7C7C7;
+}
+
+.ux-contrast-high Input:focus {
+    background: #2F3744;
+    border-bottom: solid #FFCD66;
+    color: #CCCAC2;
 }
 
 #dashboard-filter-input {
     border: none;
     height: 1;
-    padding: 0 0;
+    padding: 0 1;
 }
 
 #dashboard-filter-input:focus {
@@ -345,19 +404,25 @@ Input:focus {
     height: 1;
 }
 
-/* ── scrollbars (subtle Gruvbox) ──────────────────────────────────── */
+.filter-summary {
+    height: 1;
+    color: #5C6773;
+    padding: 0 1;
+}
+
+/* ── scrollbars (subtle Ayu) ──────────────────────────────────────── */
 
 Static {
-    scrollbar-background: #282828;
-    scrollbar-color: #3c3836;
-    scrollbar-color-hover: #504945;
+    scrollbar-background: #1F2430;
+    scrollbar-color: #2F3744;
+    scrollbar-color-hover: #48515F;
     scrollbar-size: 1 1;
 }
 
 ListView {
-    scrollbar-background: #282828;
-    scrollbar-color: #3c3836;
-    scrollbar-color-hover: #504945;
+    scrollbar-background: #1F2430;
+    scrollbar-color: #2F3744;
+    scrollbar-color-hover: #48515F;
     scrollbar-size: 1 1;
 }
 
@@ -365,16 +430,26 @@ ListView {
 
 #help-root {
     height: 1fr;
+    layout: vertical;
+    background: #1F2430;
+}
+
+#help-filter-input {
+    margin: 0 1;
+}
+
+#help-scroll {
+    height: 1fr;
     border: none;
     padding: 1 2;
-    background: #282828;
-    scrollbar-background: #282828;
-    scrollbar-color: #3c3836;
-    scrollbar-color-hover: #504945;
+    background: #1F2430;
+    scrollbar-background: #1F2430;
+    scrollbar-color: #2F3744;
+    scrollbar-color-hover: #48515F;
     scrollbar-size: 1 1;
 }
 
-#help-root:focus-within {
+#help-scroll:focus-within {
     border: none;
 }
 
@@ -383,6 +458,7 @@ ListView {
 ListView {
     background: transparent;
     height: 1fr;
+    border-left: solid transparent;
 }
 
 ListItem {
@@ -392,7 +468,12 @@ ListItem {
 }
 
 ListView > ListItem.--highlight {
-    background: #3c3836;
+    background: #2F3744;
+}
+
+ListView:focus {
+    background: #242936;
+    border-left: solid #73D0FF;
 }
 
 /* ── sessions ────────────────────────────────────────────────────── */
@@ -446,4 +527,94 @@ ListView > ListItem.--highlight {
 
 #sessions-detail {
     width: 1fr;
+}
+
+.ux-density-comfortable #dashboard-agents {
+    width: 44%;
+    min-width: 40;
+}
+
+.ux-density-comfortable #dashboard-sidebar {
+    width: 56%;
+}
+
+.ux-density-comfortable #fleet-groups,
+.ux-density-comfortable #fleet-stories {
+    width: 42%;
+    min-width: 36;
+}
+
+.ux-density-comfortable #fleet-side {
+    width: 58%;
+}
+
+.ux-density-comfortable #operations-agents {
+    width: 42%;
+}
+
+.ux-density-comfortable #operations-sidebar {
+    width: 58%;
+}
+
+.ux-density-comfortable #replay-markers {
+    width: 30%;
+}
+
+.ux-density-comfortable #replay-transcript {
+    width: 70%;
+}
+
+.ux-density-comfortable #sessions-list {
+    width: 2.2fr;
+}
+
+.ux-density-comfortable ListItem {
+    height: auto;
+    padding: 0 0 1 0;
+}
+
+.ux-contrast-high #shell-tab-bar,
+.ux-contrast-high #shell-footer,
+.ux-contrast-high .frame,
+.ux-contrast-high .section,
+.ux-contrast-high .panel,
+.ux-contrast-high .muted,
+.ux-contrast-high #help-scroll {
+    background: #181C26;
+}
+
+.ux-contrast-high .divider-right {
+    border-right: solid #48515F;
+}
+
+.ux-contrast-high .section-top,
+.ux-contrast-high #dashboard-log,
+.ux-contrast-high #dashboard-alerts,
+.ux-contrast-high #fleet-middle,
+.ux-contrast-high #fleet-bottom,
+.ux-contrast-high #operations-bottom,
+.ux-contrast-high #worktrees-conflicts,
+.ux-contrast-high #worktrees-intent {
+    border-top: solid #48515F;
+}
+
+.ux-contrast-high .focusable:focus,
+.ux-contrast-high ListView:focus {
+    background: #2F3744;
+    border-left: solid #FFCD66;
+}
+
+.ux-decor-reduced .divider-right {
+    border-right: solid #242936;
+}
+
+.ux-decor-reduced .section-top,
+.ux-decor-reduced #dashboard-log,
+.ux-decor-reduced #dashboard-alerts,
+.ux-decor-reduced #fleet-middle,
+.ux-decor-reduced #fleet-bottom,
+.ux-decor-reduced #operations-bottom,
+.ux-decor-reduced #worktrees-conflicts,
+.ux-decor-reduced #worktrees-intent {
+    border-top: solid #242936;
 }

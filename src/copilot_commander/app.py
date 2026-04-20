@@ -3,12 +3,13 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast
 
-from textual.app import App
+from textual.app import App, ScreenStackError, SystemCommand
 from textual.driver import Driver
+from textual.screen import Screen
 from textual.worker import Worker, WorkerState
 
 from copilot_commander.adapters import (
@@ -78,6 +79,13 @@ from copilot_commander.services.attention_service import AttentionNotification
 from copilot_commander.services.monitoring_service import MonitoringLocalSessionStore
 from copilot_commander.services.runtime_service import RuntimeSubAgentReaderPort
 from copilot_commander.services.subtask_registry import SubTaskRegistry
+from copilot_commander.ui_preferences import (
+    UiContrast,
+    UiDecorations,
+    UiDensity,
+    UiGlyphs,
+    UiPreferences,
+)
 from copilot_commander.widgets.common import TabBar
 
 _log = logging.getLogger(__name__)
@@ -86,6 +94,14 @@ _SYNC_GROUP = "sync"
 _PERF_LOG_INTERVAL = 10  # log perf summary every N sync cycles
 _sync_cycle_count = 0
 _FALSEY_ENV_VALUES = frozenset({"", "0", "false", "no", "off"})
+_UI_CLASS_PREFIXES = (
+    "ux-density-",
+    "ux-glyphs-",
+    "ux-contrast-",
+    "ux-decor-",
+    "ux-wrap-",
+    "ux-nowrap-",
+)
 
 
 _URGENCY_BY_SEVERITY: dict[str, str] = {
@@ -126,6 +142,7 @@ class CommanderRuntime:
     sync_store: SQLiteStore | None = None
     sessions_ctrl: SessionsController | None = None
     sync_dashboard: DashboardController | None = None
+    sync_fleet: FleetController | None = None
     setup: SetupDoctorService | None = None
     attention: AttentionController | None = None
     operations: OperationsController | None = None
@@ -167,6 +184,7 @@ class CommanderApp(App[None]):
     BINDINGS = GLOBAL_BINDINGS
     TITLE = "Copilot Commander"
     SUB_TITLE = "Operator Console"
+    COMMAND_PALETTE_DISPLAY = "ctrl+p"
 
     def __init__(self, runtime: CommanderRuntime) -> None:
         super().__init__(driver_class=_get_tmux_safe_driver())
@@ -180,6 +198,7 @@ class CommanderApp(App[None]):
         self._refresh_pending: bool = False
         self._manual_refresh: bool = False
         self.tab_badges: dict[str, int] = {}
+        self.ui_preferences = UiPreferences()
 
     def set_tab_badge(self, name: str, count: int) -> None:
         """Update the badge count for a tab and refresh any mounted TabBar."""
@@ -201,6 +220,7 @@ class CommanderApp(App[None]):
         attention = getattr(self.runtime, "attention", None)
         operations = getattr(self.runtime, "operations", None)
         fleet = getattr(self.runtime, "fleet", None)
+        sync_fleet = getattr(self.runtime, "sync_fleet", None)
         self.add_mode("dashboard", lambda: DashboardScreen(self.runtime))
         self.add_mode("worktrees", lambda: WorktreesScreen(self.runtime))
         self.add_mode("replay", lambda: ReplayScreen(self.runtime))
@@ -214,48 +234,215 @@ class CommanderApp(App[None]):
                 lambda: OperationsScreen(self.runtime, operations),
             )
         if fleet is not None:
-            self.add_mode("fleet", lambda: FleetScreen(self.runtime, controller=fleet))
+            self.add_mode(
+                "fleet",
+                lambda: FleetScreen(
+                    self.runtime,
+                    controller=fleet,
+                    worker_controller=sync_fleet,
+                ),
+            )
         self.add_mode("help", lambda: HelpScreen(self.runtime))
-        self.switch_mode("dashboard")
+        self._activate_mode("dashboard")
+        self._apply_ui_preferences(refresh_screen=False)
         interval_sec = max(2, self.runtime.config.general.discovery_interval_sec)
         self.call_after_refresh(self._refresh_current_screen)
         self.set_interval(interval_sec, self._refresh_current_screen)
 
     def action_show_dashboard(self) -> None:
-        self.switch_mode("dashboard")
+        self._activate_mode("dashboard")
 
     def action_show_worktrees(self) -> None:
-        self.switch_mode("worktrees")
+        self._activate_mode("worktrees")
 
     def action_show_replay(self) -> None:
-        self.switch_mode("replay")
+        self._activate_mode("replay")
 
     def action_show_sessions(self) -> None:
-        self.switch_mode("sessions")
+        self._activate_mode("sessions")
 
     def action_show_setup(self) -> None:
-        self.switch_mode("setup")
+        self._activate_mode("setup")
 
     def action_show_attention(self) -> None:
         if getattr(self.runtime, "attention", None) is None:
             return
-        self.switch_mode("attention")
+        self._activate_mode("attention")
 
     def action_show_operations(self) -> None:
         if getattr(self.runtime, "operations", None) is None:
             return
-        self.switch_mode("operations")
+        self._activate_mode("operations")
 
     def action_show_fleet(self) -> None:
         if getattr(self.runtime, "fleet", None) is None:
             return
-        self.switch_mode("fleet")
+        self._activate_mode("fleet")
 
     def action_show_help(self) -> None:
-        self.switch_mode("help")
+        self._activate_mode("help")
 
     def action_refresh_screen(self) -> None:
         self._refresh_current_screen(manual=True)
+
+    def action_toggle_density(self) -> None:
+        next_density = (
+            UiDensity.COMFORTABLE
+            if self.ui_preferences.density is UiDensity.COMPACT
+            else UiDensity.COMPACT
+        )
+        self._set_ui_preferences(
+            replace(self.ui_preferences, density=next_density),
+            message=(
+                "comfortable density on"
+                if next_density is UiDensity.COMFORTABLE
+                else "comfortable density off"
+            ),
+        )
+
+    def action_toggle_glyphs(self) -> None:
+        next_glyphs = (
+            UiGlyphs.ASCII if self.ui_preferences.glyphs is UiGlyphs.RICH else UiGlyphs.RICH
+        )
+        self._set_ui_preferences(
+            replace(self.ui_preferences, glyphs=next_glyphs),
+            message=("simple glyphs on" if next_glyphs is UiGlyphs.ASCII else "simple glyphs off"),
+        )
+
+    def action_toggle_contrast(self) -> None:
+        next_contrast = (
+            UiContrast.HIGH
+            if self.ui_preferences.contrast is UiContrast.STANDARD
+            else UiContrast.STANDARD
+        )
+        self._set_ui_preferences(
+            replace(self.ui_preferences, contrast=next_contrast),
+            message=(
+                "high contrast on" if next_contrast is UiContrast.HIGH else "high contrast off"
+            ),
+        )
+
+    def action_toggle_decorations(self) -> None:
+        next_decorations = (
+            UiDecorations.REDUCED
+            if self.ui_preferences.decorations is UiDecorations.FULL
+            else UiDecorations.FULL
+        )
+        self._set_ui_preferences(
+            replace(self.ui_preferences, decorations=next_decorations),
+            message=(
+                "reduced decoration on"
+                if next_decorations is UiDecorations.REDUCED
+                else "reduced decoration off"
+            ),
+        )
+
+    def action_toggle_log_wrap(self) -> None:
+        wrap_logs = not self.ui_preferences.wrap_logs
+        self._set_ui_preferences(
+            replace(self.ui_preferences, wrap_logs=wrap_logs),
+            message=("log wrap on" if wrap_logs else "log wrap off"),
+        )
+
+    def action_reset_ui_preferences(self) -> None:
+        if self.ui_preferences.is_default:
+            self._set_screen_status("ui modes already at defaults")
+            return
+        self._set_ui_preferences(UiPreferences(), message="ui modes reset")
+
+    def get_system_commands(self, screen: Screen[object]) -> list[SystemCommand]:
+        commands = list(super().get_system_commands(screen))
+        commands.extend(
+            (
+                SystemCommand(
+                    "Open dashboard", "Switch to the dashboard", self.action_show_dashboard
+                ),
+                SystemCommand(
+                    "Open worktrees", "Switch to the worktree browser", self.action_show_worktrees
+                ),
+                SystemCommand("Open replay", "Switch to replay mode", self.action_show_replay),
+                SystemCommand(
+                    "Open sessions", "Switch to the sessions browser", self.action_show_sessions
+                ),
+                SystemCommand("Open setup", "Switch to setup diagnostics", self.action_show_setup),
+                SystemCommand(
+                    "Open help", "Show the searchable help reference", self.action_show_help
+                ),
+                SystemCommand(
+                    "Toggle comfortable density",
+                    (
+                        "Show more context in lists"
+                        if self.ui_preferences.density is UiDensity.COMPACT
+                        else "Return to the compact list density"
+                    ),
+                    self.action_toggle_density,
+                ),
+                SystemCommand(
+                    "Toggle simple glyphs",
+                    (
+                        "Use ASCII-safe symbols"
+                        if self.ui_preferences.glyphs is UiGlyphs.RICH
+                        else "Restore the richer symbol set"
+                    ),
+                    self.action_toggle_glyphs,
+                ),
+                SystemCommand(
+                    "Toggle high contrast",
+                    (
+                        "Strengthen focus and contrast"
+                        if self.ui_preferences.contrast is UiContrast.STANDARD
+                        else "Return to the standard contrast mode"
+                    ),
+                    self.action_toggle_contrast,
+                ),
+                SystemCommand(
+                    "Toggle reduced decoration",
+                    (
+                        "Simplify borders and separators"
+                        if self.ui_preferences.decorations is UiDecorations.FULL
+                        else "Restore the fuller visual decoration"
+                    ),
+                    self.action_toggle_decorations,
+                ),
+                SystemCommand(
+                    "Toggle log wrap",
+                    (
+                        "Wrap long live log lines"
+                        if not self.ui_preferences.wrap_logs
+                        else "Keep live logs unwrapped"
+                    ),
+                    self.action_toggle_log_wrap,
+                ),
+            )
+        )
+        if getattr(self.runtime, "attention", None) is not None:
+            commands.append(
+                SystemCommand(
+                    "Open attention", "Switch to the attention inbox", self.action_show_attention
+                )
+            )
+        if getattr(self.runtime, "operations", None) is not None:
+            commands.append(
+                SystemCommand(
+                    "Open operations",
+                    "Switch to the bulk operations screen",
+                    self.action_show_operations,
+                )
+            )
+        if getattr(self.runtime, "fleet", None) is not None:
+            commands.append(
+                SystemCommand("Open fleet", "Switch to the fleet overview", self.action_show_fleet)
+            )
+        if not self.ui_preferences.is_default:
+            commands.append(
+                SystemCommand(
+                    "Reset UI modes",
+                    "Restore the default density, glyph, contrast, and wrapping",
+                    self.action_reset_ui_preferences,
+                )
+            )
+        commands.extend(self._screen_commands(screen))
+        return commands
 
     def remember_agent_selection(self, agent_id: str) -> None:
         self.selected_agent_id = agent_id
@@ -424,6 +611,83 @@ class CommanderApp(App[None]):
         if callable(refresher):
             refresher()
 
+    def _activate_mode(self, mode_name: str) -> None:
+        self.switch_mode(mode_name)
+        self._apply_ui_preferences(refresh_screen=False)
+
+    def _current_screen(self) -> Screen[object] | None:
+        try:
+            return self.screen
+        except ScreenStackError:
+            return None
+
+    def _screen_commands(self, screen: Screen[object]) -> list[SystemCommand]:
+        command_specs = (
+            ("Focus filter", "Jump to the current screen filter input", "focus_filter"),
+            ("Toggle attention filter", "Show only items that need review", "toggle_attention"),
+            ("Toggle completed items", "Show or hide completed items", "toggle_completed"),
+            ("Focus replay markers", "Move focus to replay markers", "focus_markers"),
+            ("Focus replay transcript", "Move focus to the replay transcript", "focus_transcript"),
+            (
+                "Toggle replay presentation",
+                "Switch between parsed and raw replay views",
+                "toggle_presentation",
+            ),
+            (
+                "Toggle replay follow latest",
+                "Follow or release the newest replay entry",
+                "toggle_follow_latest",
+            ),
+            ("Toggle live log follow", "Pause or resume live log following", "toggle_follow"),
+            ("Close current screen", "Dismiss the current modal screen", "close"),
+        )
+        commands: list[SystemCommand] = []
+        for title, help_text, action_name in command_specs:
+            callback = getattr(screen, f"action_{action_name}", None)
+            if callable(callback):
+                commands.append(SystemCommand(title, help_text, callback))
+        return commands
+
+    def _set_ui_preferences(self, preferences: UiPreferences, *, message: str) -> None:
+        if preferences == self.ui_preferences:
+            self._set_screen_status(message)
+            return
+        self.ui_preferences = preferences
+        self._apply_ui_preferences(refresh_screen=True)
+        self._set_screen_status(message)
+
+    def _apply_ui_preferences(self, *, refresh_screen: bool) -> None:
+        for class_name in tuple(self.classes):
+            if class_name.startswith(_UI_CLASS_PREFIXES):
+                self.remove_class(class_name)
+        for class_name in self.ui_preferences.css_classes():
+            self.add_class(class_name)
+        mode_badges = self.ui_preferences.mode_badges()
+        if mode_badges:
+            self.sub_title = f"Operator Console · {' · '.join(mode_badges)}"
+        else:
+            self.sub_title = "Operator Console"
+        screen = self._current_screen()
+        if screen is None:
+            return
+        handled = False
+        applier = getattr(screen, "apply_ui_preferences", None)
+        if callable(applier):
+            handled = bool(applier())
+        if refresh_screen and not handled:
+            refresher = getattr(screen, "refresh_data", None)
+            if callable(refresher):
+                refresher()
+        screen.refresh(repaint=True, layout=True)
+
+    def _set_screen_status(self, message: str) -> None:
+        screen = self._current_screen()
+        if screen is None:
+            return
+        setter = getattr(screen, "set_status", None)
+        if callable(setter):
+            setter(message)
+
 
 def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     resolved_config = AppConfig.default() if config is None else config
@@ -523,6 +787,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         actions=action_service,
     )
     fleet = FleetController(store, local_sessions=copilot_session_store)
+    sync_fleet = FleetController(sync_store, local_sessions=copilot_session_store)
     sync_dashboard = DashboardController(
         sync_store,
         subtask_registry=subtask_registry,
@@ -553,6 +818,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         sync_store=sync_store,
         sessions_ctrl=sessions_ctrl,
         sync_dashboard=sync_dashboard,
+        sync_fleet=sync_fleet,
         setup=SetupDoctorService(
             tmux_adapter,
             configured_socket_path=resolved_config.tmux.socket_path,

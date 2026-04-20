@@ -11,44 +11,46 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label
 
+from copilot_commander import theme
 from copilot_commander.bindings import BindingSpec
 
 
 class ReplayNoteInputScreen(ModalScreen[str | None]):
     """Modal that asks the operator for a note body for the selected entry."""
 
-    DEFAULT_CSS = """
-    ReplayNoteInputScreen {
+    DEFAULT_CSS = f"""
+    ReplayNoteInputScreen {{
         align: center middle;
-    }
+    }}
 
-    #note-dialog {
+    #note-dialog {{
         width: 70;
         height: auto;
-        background: #282828;
-        border: thick #504945;
+        background: {theme.BG1};
+        border: thick {theme.BORDER};
+        border-title-color: {theme.BORDER_FOCUS};
         padding: 1 2;
-    }
+    }}
 
-    #note-header {
+    #note-header {{
         height: auto;
         margin-bottom: 1;
-        color: #a89984;
-    }
+        color: {theme.FG2};
+    }}
 
-    #note-input {
+    #note-input {{
         margin-bottom: 1;
-    }
+    }}
 
-    #note-buttons {
+    #note-buttons {{
         height: auto;
         align: right middle;
-    }
+    }}
 
-    #note-buttons Button {
+    #note-buttons Button {{
         margin-left: 1;
         min-width: 10;
-    }
+    }}
     """
 
     BINDINGS: ClassVar[list[BindingSpec]] = [

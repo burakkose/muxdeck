@@ -11,7 +11,8 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label
 
-from copilot_commander import theme  # noqa: F401 - used in DEFAULT_CSS docs
+from copilot_commander import theme
+from copilot_commander.bindings import BindingSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,63 +29,63 @@ class SendMessageScreen(ModalScreen[MessageResult | None]):
     Dismissed with a ``MessageResult`` on send, or ``None`` on cancel.
     """
 
-    DEFAULT_CSS = """
-    SendMessageScreen {
+    DEFAULT_CSS = f"""
+    SendMessageScreen {{
         align: center middle;
-    }
+    }}
 
-    #message-dialog {
+    #message-dialog {{
         width: 70;
         height: auto;
         max-height: 16;
-        background: #282828;
-        border: thick #504945;
-        border-title-color: #83a598;
+        background: {theme.BG1};
+        border: thick {theme.BORDER};
+        border-title-color: {theme.BORDER_FOCUS};
         padding: 1 2;
-    }
+    }}
 
-    #message-header {
+    #message-header {{
         height: auto;
         margin-bottom: 1;
-        color: #a89984;
-    }
+        color: {theme.FG2};
+    }}
 
-    #message-input {
+    #message-input {{
         margin-bottom: 1;
-    }
+    }}
 
-    #message-buttons {
+    #message-buttons {{
         height: auto;
         align: right middle;
-    }
+    }}
 
-    #message-buttons Button {
+    #message-buttons Button {{
         margin-left: 1;
         min-width: 12;
-    }
+    }}
 
-    #btn-send {
-        background: #504945;
-        color: #b8bb26;
+    #btn-send {{
+        background: {theme.BADGE_BG};
+        color: {theme.BADGE_FG};
         border: none;
-    }
+    }}
 
-    #btn-send:hover {
-        background: #665c54;
-    }
+    #btn-send:hover {{
+        background: {theme.YELLOW};
+    }}
 
-    #btn-cancel {
-        background: #3c3836;
-        color: #928374;
+    #btn-cancel {{
+        background: {theme.BG3};
+        color: {theme.FG3};
         border: none;
-    }
+    }}
 
-    #btn-cancel:hover {
-        background: #504945;
-    }
+    #btn-cancel:hover {{
+        background: {theme.BG4};
+    }}
     """
 
-    BINDINGS: ClassVar[list[tuple[str, str, str]]] = [
+    BINDINGS: ClassVar[list[BindingSpec]] = [
         ("escape", "cancel", "Cancel"),
     ]
 
@@ -92,9 +93,12 @@ class SendMessageScreen(ModalScreen[MessageResult | None]):
         self,
         agent_name: str,
         pane_id: str,
-        **kwargs: object,
+        *,
+        name: str | None = None,
+        widget_id: str | None = None,
+        classes: str | None = None,
     ) -> None:
-        super().__init__(**kwargs)
+        super().__init__(name=name, id=widget_id, classes=classes)
         self._agent_name = agent_name
         self._pane_id = pane_id
 

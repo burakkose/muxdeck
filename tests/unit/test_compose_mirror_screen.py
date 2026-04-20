@@ -17,6 +17,7 @@ from textual.widgets import TextArea
 from copilot_commander.adapters.pane_stream import PaneStreamAdapter
 from copilot_commander.app import CommanderRuntime
 from copilot_commander.screens.compose_mirror import ComposeWithMirrorScreen
+from copilot_commander.ui_preferences import UiPreferences
 from copilot_commander.widgets.live_pane_viewer import LivePaneViewer
 
 
@@ -117,6 +118,23 @@ def _fake_runtime(actions: _FakeActionService, stream: PaneStreamAdapter) -> Com
 class _Harness(App[None]):
     def compose(self) -> ComposeResult:
         return iter(())
+
+
+class _CommanderHarness(_Harness):
+    def __init__(self) -> None:
+        super().__init__()
+        self.ui_preferences = UiPreferences()
+
+    def action_toggle_log_wrap(self) -> None:
+        self.ui_preferences = UiPreferences(
+            density=self.ui_preferences.density,
+            glyphs=self.ui_preferences.glyphs,
+            contrast=self.ui_preferences.contrast,
+            decorations=self.ui_preferences.decorations,
+            wrap_logs=not self.ui_preferences.wrap_logs,
+        )
+        if isinstance(self.screen, ComposeWithMirrorScreen):
+            self.screen.apply_ui_preferences()
 
 
 class ComposeWithMirrorScreenTests(unittest.TestCase):
@@ -456,11 +474,87 @@ class ComposeWithMirrorScreenTests(unittest.TestCase):
         hints = tuple((hint.key, hint.label) for hint in screen.footer_hints())
 
         assert hints == (
+            ("w", "wrap"),
+            ("f", "follow"),
             ("i", "interact"),
             ("r", "resync"),
             ("esc", "back"),
             ("q", "quit"),
         )
+
+    def test_follow_binding_toggles_live_follow_mode(self) -> None:
+        async def scenario(tmp: Path) -> tuple[bool, bool, str]:
+            tmux = _FakeTmuxStream(seed_text="hello pane\n")
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%27",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+
+                mirror = app.screen.query_one(LivePaneViewer)
+                await pilot.press("f")
+                await pilot.pause()
+                follow_after_first_toggle = mirror.follow_enabled
+                await pilot.press("f")
+                await pilot.pause()
+                return follow_after_first_toggle, mirror.follow_enabled, screen._status
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first_toggle, second_toggle, status = asyncio.run(scenario(Path(tmp)))
+
+        assert first_toggle is False
+        assert second_toggle is True
+        assert status == "live follow on"
+
+    def test_wrap_binding_tracks_app_log_wrap_preference(self) -> None:
+        async def scenario(tmp: Path) -> tuple[bool, bool, bool, bool]:
+            tmux = _FakeTmuxStream(seed_text="hello pane\n")
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _CommanderHarness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%29",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+
+                mirror = app.screen.query_one(LivePaneViewer)
+                await pilot.press("w")
+                await pilot.pause()
+                first_wrap = mirror.wrap_enabled
+                first_pref = app.ui_preferences.wrap_logs
+                await pilot.press("w")
+                await pilot.pause()
+                return first_wrap, first_pref, mirror.wrap_enabled, app.ui_preferences.wrap_logs
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first_wrap, first_pref, second_wrap, second_pref = asyncio.run(scenario(Path(tmp)))
+
+        assert first_wrap is True
+        assert first_pref is True
+        assert second_wrap is False
+        assert second_pref is False
 
     def test_manual_refresh_reconciles_snapshot_tail_without_losing_history(self) -> None:
         async def scenario(tmp: Path) -> tuple[tuple[str, ...], list[tuple[str, bool, bool]]]:

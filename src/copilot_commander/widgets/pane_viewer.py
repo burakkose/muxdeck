@@ -16,24 +16,31 @@ class PaneOutputPanel(Static):
     dashboard sidebar and show a live tail of the selected agent's pane.
     """
 
-    DEFAULT_CSS = """
-    PaneOutputPanel {
+    DEFAULT_CSS = f"""
+    PaneOutputPanel {{
         height: 1fr;
         overflow-y: auto;
         padding: 0 1;
-        background: #1d2021;
-        border: solid #504945;
-        border-title-color: #bdae93;
+        background: {theme.BG_HARD};
+        border: solid {theme.BORDER};
+        border-title-color: {theme.PANEL_TITLE};
         border-title-style: bold;
-    }
+    }}
 
-    PaneOutputPanel:focus-within {
-        border: solid #83a598;
-    }
+    PaneOutputPanel:focus-within {{
+        border: solid {theme.BORDER_FOCUS};
+    }}
     """
 
-    def __init__(self, **kwargs: object) -> None:
-        super().__init__(**kwargs)
+    def __init__(
+        self,
+        *,
+        name: str | None = None,
+        widget_id: str | None = None,
+        classes: str | None = None,
+        disabled: bool = False,
+    ) -> None:
+        super().__init__(name=name, id=widget_id, classes=classes, disabled=disabled)
         self.border_title = "Agent Output"
         self._has_content: bool = False
 

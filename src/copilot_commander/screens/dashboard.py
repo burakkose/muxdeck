@@ -91,7 +91,9 @@ class DashboardScreen(ShellScreen):
             yield StatusBar(id="dashboard-status-bar")
             yield FilterBar(id="dashboard-filter-row")
             with Horizontal(id="dashboard-main", classes="frame"):
-                yield AgentListPanel(widget_id="dashboard-agents", classes="divider-right")
+                yield AgentListPanel(
+                    widget_id="dashboard-agents", classes="divider-right focusable"
+                )
                 with Vertical(id="dashboard-sidebar"):
                     yield AgentDetailPanel(
                         id="dashboard-detail",
@@ -163,6 +165,14 @@ class DashboardScreen(ShellScreen):
         self.query_one(StatusBar).set_state(self._state.health, self._state.metrics, selected_item)
         filter_bar = self.query_one(FilterBar)
         filter_bar.set_query(self._filters.text_query)
+        filter_bar.set_state(
+            filter_text=self._filters.text_query,
+            visible_agents=len(self._state.agents),
+            total_agents=self._state.health.total_agents,
+            attention_only=self._filters.attention_only,
+            include_completed=self._filters.include_completed,
+            sort_label=self._sort.field,
+        )
         self.query_one(AgentListPanel).set_agents(
             self._state.agents,
             selected_agent_id=effective_selected,
@@ -195,6 +205,9 @@ class DashboardScreen(ShellScreen):
             parts.append("attn-only")
         if not self._filters.include_completed:
             parts.append("hide-done")
+        query = (self._filters.text_query or "").strip()
+        if query:
+            parts.append(f"filter:{query}")
         parts.append(f"sort:{self._sort.field}")
         self.set_status(" · ".join(parts))
 

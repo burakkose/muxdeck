@@ -51,10 +51,19 @@ from copilot_commander.theme import (
     TONE_WARNING_FG,
     YELLOW,
 )
+from copilot_commander.ui_preferences import (
+    UiDensity,
+    UiGlyphs,
+    UiPreferences,
+    resolve_ui_preferences,
+)
 from copilot_commander.widgets.common import (
     format_short_timestamp,
     format_timestamp,
+    item_separator,
+    pipe_separator,
     status_glyph_parts,
+    ui_symbol,
 )
 
 # ── ANSI / control-byte stripper ────────────────────────────────────
@@ -168,11 +177,12 @@ def _event_color(event: str) -> str:
     return FG
 
 
-def _section_header(text: Text, title: str) -> None:
+def _section_header(text: Text, title: str, *, preferences: UiPreferences) -> None:
     """Render a clean section header with box-drawing decoration."""
-    text.append(" ── ", style=FG4)
+    text.append(ui_symbol("section-lead", preferences=preferences), style=FG4)
     text.append(title.upper(), style=f"bold {FG3}")
-    text.append(" ──────────────────────────────────────\n", style=FG4)
+    text.append(ui_symbol("section-fill", preferences=preferences), style=FG4)
+    text.append("\n", style=FG4)
 
 
 _SHORT_STATUS: dict[AgentStatus, str] = {
@@ -247,7 +257,7 @@ def _list_status_text(agent: DashboardAgentListItemView) -> str:
     return _LIST_STATUS_LABELS[operator_status.kind]
 
 
-def _activity_summary(agent: DashboardAgentListItemView) -> str:
+def _activity_summary(agent: DashboardAgentListItemView, *, limit: int = 52) -> str:
     operator_status = _resolved_operator_status(agent)
     if operator_status.kind in {
         OperatorStatusKind.WAITING_INPUT,
@@ -261,7 +271,7 @@ def _activity_summary(agent: DashboardAgentListItemView) -> str:
         summary = agent.current_activity or operator_status.reason
     else:
         summary = agent.current_activity or agent.task_title or operator_status.reason
-    return _truncate(summary, 52)
+    return _truncate(summary, limit)
 
 
 def _focus_summary(agent: DashboardAgentListItemView) -> tuple[str, str]:
@@ -409,6 +419,14 @@ class StatusBar(Static):
         metrics: Sequence[DashboardMetricView],
         selected: DashboardAgentListItemView | None = None,
     ) -> None:
+        preferences = resolve_ui_preferences(self)
+        separator = pipe_separator(preferences)
+        emphasis = ui_symbol("badge", preferences=preferences)
+        status_dot = "o" if preferences.glyphs is UiGlyphs.ASCII else "●"
+        waiting_glyph = "!" if preferences.glyphs is UiGlyphs.ASCII else "▲"
+        blocked_glyph = "#" if preferences.glyphs is UiGlyphs.ASCII else "■"
+        error_glyph = "x" if preferences.glyphs is UiGlyphs.ASCII else "✗"
+        active_marker = status_dot if preferences.glyphs is UiGlyphs.ASCII else emphasis
         metric_lookup = {metric.key: metric.value for metric in metrics}
         tone_label, tone_color = _HEALTH_TONE_STYLES[health.tone]
         line = Text()
@@ -418,10 +436,8 @@ class StatusBar(Static):
         # Primary section: always show active count right after the
         # tone so the eye lands on "how many are working" first.
         line.append("   ")
-        line.append("● ", style=f"bold {GREEN}")
+        line.append(f"{active_marker} ", style=f"bold {GREEN}")
         line.append(f"{health.active_agents} active", style=f"bold {GREEN}")
-
-        sep_text = " │ "
 
         review_agents = max(
             health.attention_agents
@@ -431,56 +447,94 @@ class StatusBar(Static):
             0,
         )
         if review_agents:
-            line.append(sep_text, style=FG4)
-            line.append("● ", style=f"bold {ORANGE}")
+            line.append(separator, style=FG4)
+            line.append(f"{active_marker} ", style=f"bold {ORANGE}")
             line.append(f"{review_agents} review", style=f"bold {ORANGE}")
 
         if health.waiting_input_agents:
-            line.append(sep_text, style=FG4)
-            line.append("▲ ", style=f"bold {ORANGE}")
+            line.append(separator, style=FG4)
+            line.append(f"{waiting_glyph} ", style=f"bold {ORANGE}")
             line.append(f"{health.waiting_input_agents} waiting", style=f"bold {ORANGE}")
         if health.blocked_agents:
-            line.append(sep_text, style=FG4)
-            line.append("■ ", style=f"bold {SEVERITY_ERROR}")
+            line.append(separator, style=FG4)
+            line.append(f"{blocked_glyph} ", style=f"bold {SEVERITY_ERROR}")
             line.append(f"{health.blocked_agents} blocked", style=f"bold {SEVERITY_ERROR}")
         if health.error_agents:
-            line.append(sep_text, style=FG4)
-            line.append("✗ ", style=f"bold {SEVERITY_ERROR}")
+            line.append(separator, style=FG4)
+            line.append(f"{error_glyph} ", style=f"bold {SEVERITY_ERROR}")
             line.append(f"{health.error_agents} failed", style=f"bold {SEVERITY_ERROR}")
 
         # Trailing: total agents (quiet) and tokens (aqua accent).
-        line.append(sep_text, style=FG4)
+        line.append(separator, style=FG4)
         line.append(f"{health.total_agents} agents", style=FG4)
 
         if "tokens" in metric_lookup:
-            line.append(sep_text, style=FG4)
+            line.append(separator, style=FG4)
             line.append("tokens ", style=FG4)
             line.append(f"{metric_lookup['tokens']:,}", style=f"bold {AQUA}")
         if selected is not None:
             focus, focus_style = _focus_summary(selected)
             usage_badges = _usage_badges(selected)
             if focus or usage_badges:
-                line.append(sep_text, style=FG4)
+                line.append(separator, style=FG4)
                 line.append("focus ", style=FG4)
                 line.append(selected.name, style=f"bold {FG}")
                 if focus:
                     line.append(" → ", style=FG4)
                     line.append(focus, style=focus_style)
                 if usage_badges:
-                    line.append("  ·  ", style=FG4)
-                    _append_badges(line, usage_badges)
+                    line.append(item_separator(preferences), style=FG4)
+                    _append_badges(
+                        line,
+                        usage_badges,
+                        separator=item_separator(preferences),
+                    )
         self.update(line)
 
 
 class FilterBar(Vertical):
     def compose(self) -> ComposeResult:
         yield Input(placeholder="/ filter", id="dashboard-filter-input")
+        yield Static(classes="filter-summary", id="dashboard-filter-summary")
 
     def set_query(self, value: str | None) -> None:
         self.query_one(Input).value = value or ""
 
     def focus_input(self) -> None:
         self.query_one(Input).focus()
+
+    def set_state(
+        self,
+        *,
+        filter_text: str | None,
+        visible_agents: int,
+        total_agents: int,
+        attention_only: bool,
+        include_completed: bool,
+        sort_label: str,
+    ) -> None:
+        preferences = resolve_ui_preferences(self)
+        separator = pipe_separator(preferences)
+        summary = Text()
+        summary.append(f"{visible_agents}", style=f"bold {FG1}")
+        summary.append(f"/{total_agents} visible", style=FG4)
+        summary.append(separator, style=FG4)
+        summary.append("sort ", style=FG4)
+        summary.append(sort_label, style=AQUA)
+        if attention_only:
+            summary.append(separator, style=FG4)
+            summary.append("attention", style=f"bold {ORANGE}")
+        if not include_completed:
+            summary.append(separator, style=FG4)
+            summary.append("hide-done", style=FG4)
+        if filter_text and filter_text.strip():
+            summary.append(separator, style=FG4)
+            summary.append("query ", style=FG4)
+            summary.append(filter_text.strip(), style=YELLOW)
+        else:
+            summary.append(separator, style=FG4)
+            summary.append("search name, branch, task, or status", style=FG4)
+        self.query_one("#dashboard-filter-summary", Static).update(summary)
 
 
 @dataclass(frozen=True, slots=True)
@@ -790,6 +844,9 @@ class AgentListPanel(Static, can_focus=True):
         self.update(self._build_table())
 
     def _build_table(self) -> Table:
+        preferences = resolve_ui_preferences(self)
+        comfortable = preferences.density is UiDensity.COMFORTABLE
+        status_dot = "o" if preferences.glyphs is UiGlyphs.ASCII else "●"
         # Keep rows in sync with ``_agents`` defensively — some legacy
         # tests poke ``_agents`` directly without going through
         # :meth:`set_agents`, and we don't want to silently render an
@@ -810,10 +867,19 @@ class AgentListPanel(Static, can_focus=True):
         table.add_column("", width=2, no_wrap=True)
         table.add_column("agent", min_width=12, no_wrap=True, ratio=2)
         table.add_column("doing", min_width=16, no_wrap=True, ratio=3, overflow="ellipsis")
-        table.add_column("status", min_width=11, no_wrap=True, ratio=1, overflow="ellipsis")
+        table.add_column(
+            "status",
+            min_width=18 if comfortable else 11,
+            no_wrap=True,
+            ratio=1,
+            overflow="ellipsis",
+        )
         for index, row in enumerate(self._rows):
             is_selected = index == self._selected_index
-            indicator = Text("▎ ", style=f"bold {BLUE}") if is_selected else Text("  ")
+            selected_glyph = ui_symbol("selected", preferences=preferences)
+            indicator = (
+                Text(f"{selected_glyph} ", style=f"bold {BLUE}") if is_selected else Text("  ")
+            )
             if isinstance(row, _AgentRow):
                 agent = row.agent
                 row_style = _row_style(agent, selected=is_selected)
@@ -823,13 +889,36 @@ class AgentListPanel(Static, can_focus=True):
                     base_name,
                     expanded=agent.agent_id in self._expanded,
                     running_count=running_count,
+                    preferences=preferences,
                 )
                 dot_color = _status_dot_style(agent)
                 name_text = Text(display_name, style=f"bold {FG}" if is_selected else f"bold {FG2}")
                 if agent.subtask_count > 0:
-                    name_text.append(f" ⚡{agent.subtask_count}", style=f"bold {YELLOW}")
+                    subtask_glyph = ui_symbol("background-task", preferences=preferences)
+                    name_text.append(
+                        f" {subtask_glyph}{agent.subtask_count}",
+                        style=f"bold {YELLOW}",
+                    )
                 usage_badges = _usage_badges(agent)
-                if usage_badges:
+                if comfortable:
+                    meta_parts = tuple(
+                        value
+                        for value in (agent.branch, agent.worktree_name, agent.repo_name)
+                        if value
+                    )
+                    if meta_parts:
+                        name_text.append("\n  ", style=FG4)
+                        name_text.append(
+                            item_separator(preferences).join(meta_parts[:3]), style=FG4
+                        )
+                    if usage_badges:
+                        name_text.append("\n  ", style=FG4)
+                        _append_badges(
+                            name_text,
+                            usage_badges,
+                            separator=item_separator(preferences),
+                        )
+                elif usage_badges:
                     name_text.append("  ", style=FG4)
                     _append_badges(name_text, usage_badges, separator=" ")
                 is_attention_like = agent.needs_attention or agent.status in {
@@ -837,7 +926,7 @@ class AgentListPanel(Static, can_focus=True):
                     AgentStatus.STARTING,
                 }
                 activity = Text(
-                    _activity_summary(agent),
+                    _activity_summary(agent, limit=74 if comfortable else 52),
                     style=(
                         _status_display(agent)[1]
                         if is_attention_like
@@ -845,19 +934,49 @@ class AgentListPanel(Static, can_focus=True):
                     ),
                     overflow="ellipsis",
                 )
+                if comfortable:
+                    detail_parts = (
+                        f"seen {format_short_timestamp(agent.last_seen_at)}",
+                        f"idle {_format_idle(agent.idle_seconds)}",
+                    )
+                    activity.append("\n", style=FG4)
+                    activity.append(item_separator(preferences).join(detail_parts), style=FG4)
                 status_style = _status_display(agent)[1]
+                status_text = Text(
+                    _list_status_text(agent),
+                    style=status_style,
+                    overflow="ellipsis",
+                )
+                if comfortable and agent.last_event_kind is not None:
+                    status_text.append("\n", style=FG4)
+                    status_text.append(
+                        _truncate(_humanize_event_kind(agent.last_event_kind), 18),
+                        style=FG4,
+                    )
                 table.add_row(
                     indicator,
-                    Text("●", style=f"bold {dot_color}"),
+                    Text(status_dot, style=f"bold {dot_color}"),
                     name_text,
                     activity,
-                    Text(_list_status_text(agent), style=status_style, overflow="ellipsis"),
+                    status_text,
                     style=row_style,
                 )
             elif isinstance(row, _SubAgentHeaderRow):
-                table.add_row(*_render_subagent_header_row(row, is_selected=is_selected))
+                table.add_row(
+                    *_render_subagent_header_row(
+                        row,
+                        is_selected=is_selected,
+                        preferences=preferences,
+                    )
+                )
             else:
-                table.add_row(*_render_subagent_row(row.subagent, is_selected=is_selected))
+                table.add_row(
+                    *_render_subagent_row(
+                        row.subagent,
+                        is_selected=is_selected,
+                        preferences=preferences,
+                    )
+                )
         return table
 
     def _running_subagent_count(self, agent_id: str) -> int | None:
@@ -869,17 +988,28 @@ class AgentListPanel(Static, can_focus=True):
         return 0 if tree is None else len(tree.running)
 
 
-def _agent_display(base_name: str, *, expanded: bool, running_count: int | None) -> str:
-    glyph = "▾ " if expanded else "▸ "
+def _agent_display(
+    base_name: str,
+    *,
+    expanded: bool,
+    running_count: int | None,
+    preferences: UiPreferences,
+) -> str:
+    glyph_name = "expanded" if expanded else "collapsed"
+    glyph = f"{ui_symbol(glyph_name, preferences=preferences)} "
     if running_count is not None and running_count > 0:
-        return f"{glyph}{base_name}  ·{running_count}"
+        return f"{glyph}{base_name}{item_separator(preferences)}{running_count}"
     return f"{glyph}{base_name}"
 
 
 def _render_subagent_header_row(
-    row: _SubAgentHeaderRow, *, is_selected: bool
+    row: _SubAgentHeaderRow,
+    *,
+    is_selected: bool,
+    preferences: UiPreferences,
 ) -> tuple[Text, Text, Text, Text, Text]:
-    indicator = Text("▎ ", style=f"bold {BLUE}") if is_selected else Text("  ")
+    selected_glyph = ui_symbol("selected", preferences=preferences)
+    indicator = Text(f"{selected_glyph} ", style=f"bold {BLUE}") if is_selected else Text("  ")
     if row.loading:
         label = Text("    loading active sub-agents…", style=FG4)
         return (indicator, Text(""), label, Text(""), Text(""))
@@ -894,11 +1024,15 @@ def _render_subagent_header_row(
 
 
 def _render_subagent_row(
-    subagent: DashboardSubAgentView, *, is_selected: bool
+    subagent: DashboardSubAgentView,
+    *,
+    is_selected: bool,
+    preferences: UiPreferences,
 ) -> tuple[Text, Text, Text, Text, Text]:
     # Only active sub-agents are rendered — completed ones are
     # filtered out upstream in :meth:`AgentListPanel._rebuild_rows`.
-    glyph = "↳"
+    comfortable = preferences.density is UiDensity.COMFORTABLE
+    glyph = ui_symbol("subagent", preferences=preferences)
     glyph_color = AQUA
     duration = _format_subagent_duration(subagent)
     label = Text()
@@ -908,12 +1042,22 @@ def _render_subagent_row(
     call_suffix = _shorten_tool_call_id(subagent.tool_call_id)
     if call_suffix:
         label.append(f"  {call_suffix}", style=FG4)
-    indicator = Text("▎ ", style=f"bold {BLUE}") if is_selected else Text("  ")
+    if comfortable:
+        detail = subagent.description or subagent.agent_type or subagent.mode
+        if detail:
+            label.append("\n      ", style=FG4)
+            label.append(_truncate(detail, 52), style=FG4)
+    selected_glyph = ui_symbol("selected", preferences=preferences)
+    indicator = Text(f"{selected_glyph} ", style=f"bold {BLUE}") if is_selected else Text("  ")
+    duration_text = Text(duration, style=FG4)
+    if comfortable and subagent.mode:
+        duration_text.append("\n", style=FG4)
+        duration_text.append(subagent.mode, style=FG4)
     return (
         indicator,
-        Text("●", style=f"bold {GREEN}"),
+        Text("o" if preferences.glyphs is UiGlyphs.ASCII else "●", style=f"bold {GREEN}"),
         label,
-        Text(duration, style=FG4),
+        duration_text,
         Text("", style=FG4),
     )
 
@@ -949,8 +1093,9 @@ class AgentDetailPanel(Static):
     """Selected-agent focus section — grouped fields, compact header."""
 
     def set_agent(self, agent: DashboardSelectedAgentView | None) -> None:
+        preferences = resolve_ui_preferences(self)
         result = Text()
-        _section_header(result, "agent detail")
+        _section_header(result, "agent detail", preferences=preferences)
         if agent is None:
             result.append("  no agent selected\n", style=FG4)
             self.update(result)
@@ -963,15 +1108,15 @@ class AgentDetailPanel(Static):
         )
 
         # ── header: name + status on one line ──
-        glyph_char, glyph_color = status_glyph_parts(item.status)
+        glyph_char, glyph_color = status_glyph_parts(item.status, preferences=preferences)
         result.append(f"  {glyph_char} ", style=f"bold {glyph_color}")
         result.append(item.name, style=f"bold {FG}")
         result.append("  ")
         result.append(operator_status.headline, style=bold_status_style)
         usage_badges = _usage_badges(item)
         if usage_badges:
-            result.append("  ·  ", style=FG4)
-            _append_badges(result, usage_badges)
+            result.append(item_separator(preferences), style=FG4)
+            _append_badges(result, usage_badges, separator=item_separator(preferences))
         # The task_title is the high-level work ("Investigating cache
         # bug"). Only render it on the header when it genuinely differs
         # from the tool-level activity we show below — otherwise we
@@ -984,7 +1129,10 @@ class AgentDetailPanel(Static):
         activity = item.current_activity or operator_status.reason
         if activity:
             result.append("  ")
-            result.append("» ", style=f"bold {AQUA}")
+            result.append(
+                f"{ui_symbol('detail-arrow', preferences=preferences)} ",
+                style=f"bold {AQUA}",
+            )
             result.append(activity, style=FG1)
             result.append("\n")
 
@@ -1008,6 +1156,7 @@ class AgentDetailPanel(Static):
                 ("repo", item.repo_name, FG2),
                 ("worktree", item.worktree_name, FG2),
             ),
+            preferences=preferences,
         )
 
         session_display = _format_session(agent)
@@ -1023,6 +1172,7 @@ class AgentDetailPanel(Static):
                 ("copilot", copilot_id, FG4),
                 ("event", _humanize_event_kind(agent.latest_event_kind), FG2),
             ),
+            preferences=preferences,
         )
         _append_inline_fields(
             result,
@@ -1030,6 +1180,7 @@ class AgentDetailPanel(Static):
                 ("window", item.window_name, FG2),
                 ("pane", item.pane_id, BLUE),
             ),
+            preferences=preferences,
         )
 
         token_total = _resolved_token_total(item)
@@ -1042,6 +1193,7 @@ class AgentDetailPanel(Static):
                 ("idle", _format_idle(item.idle_seconds), FG2),
                 ("pulse", pulse, AQUA),
             ),
+            preferences=preferences,
         )
 
         if (
@@ -1083,12 +1235,17 @@ class AgentDetailPanel(Static):
             result.append("  recent ", style=FG4)
             for index, event in enumerate(visible_events):
                 if index:
-                    result.append("  ·  ", style=FG4)
+                    result.append(item_separator(preferences), style=FG4)
                 result.append(event, style=_event_color(event))
             result.append("\n")
 
         # ── subtasks section ──
-        _render_subtask_section(result, item.subtask_count, agent.sub_tasks)
+        _render_subtask_section(
+            result,
+            item.subtask_count,
+            agent.sub_tasks,
+            preferences=preferences,
+        )
         _render_action_shortcuts(
             result,
             (
@@ -1096,6 +1253,7 @@ class AgentDetailPanel(Static):
                 (("K", "kill pane"), ("R", "rename"), ("W", "move"), ("w", "worktree")),
                 (("l", "logs"), ("S", "stop visible")),
             ),
+            preferences=preferences,
         )
 
         self.update(result)
@@ -1111,8 +1269,9 @@ class AgentDetailPanel(Static):
         ones we have no metrics for yet) keeps the prompt+result
         rendering so we don't regress on the common case.
         """
+        preferences = resolve_ui_preferences(self)
         result = Text()
-        _section_header(result, "sub-agent detail")
+        _section_header(result, "sub-agent detail", preferences=preferences)
         if subagent is None:
             result.append("  no sub-agent selected\n", style=FG4)
             self.update(result)
@@ -1120,7 +1279,10 @@ class AgentDetailPanel(Static):
 
         is_running = subagent.is_running
         is_failure = subagent.success is False or subagent.error_message is not None
-        glyph = "▶" if is_running else ("✗" if is_failure else "✓")
+        if preferences.glyphs is UiGlyphs.ASCII:
+            glyph = ">" if is_running else ("x" if is_failure else "v")
+        else:
+            glyph = "▶" if is_running else ("✗" if is_failure else "✓")
         glyph_color = AQUA if is_running else (SEVERITY_ERROR if is_failure else GREEN)
         status_label = "running" if is_running else ("failed" if is_failure else "completed")
         status_style = glyph_color
@@ -1137,7 +1299,10 @@ class AgentDetailPanel(Static):
 
         if subagent.description:
             result.append("  ")
-            result.append("» ", style=f"bold {AQUA}")
+            result.append(
+                f"{ui_symbol('detail-arrow', preferences=preferences)} ",
+                style=f"bold {AQUA}",
+            )
             result.append(subagent.description, style=FG1)
             result.append("\n")
 
@@ -1158,7 +1323,7 @@ class AgentDetailPanel(Static):
                 result.append(f"  {line}\n", style=FG2)
 
         if has_structured:
-            _render_subagent_interactions(result, subagent)
+            _render_subagent_interactions(result, subagent, preferences=preferences)
         elif subagent.result_content:
             result.append("\n")
             # For background agents the parent's "result" is only a
@@ -1183,6 +1348,7 @@ class AgentDetailPanel(Static):
                 (("p", "parent console"), ("i", "stop parent"), ("K", "kill parent pane")),
                 (("w", "parent worktree"), ("l", "logs")),
             ),
+            preferences=preferences,
         )
 
         self.update(result)
@@ -1219,7 +1385,12 @@ def _render_subagent_metrics(text: Text, subagent: DashboardSubAgentView) -> Non
         text.append(f"{_truncate(subagent.error_message, 400)}\n", style=SEVERITY_ERROR)
 
 
-def _render_subagent_interactions(text: Text, subagent: DashboardSubAgentView) -> None:
+def _render_subagent_interactions(
+    text: Text,
+    subagent: DashboardSubAgentView,
+    *,
+    preferences: UiPreferences,
+) -> None:
     interactions = subagent.read_interactions
     text.append("\n")
     text.append(f"  interactions ({len(interactions)})\n", style=f"bold {FG4}")
@@ -1231,7 +1402,7 @@ def _render_subagent_interactions(text: Text, subagent: DashboardSubAgentView) -
     visible = interactions[-10:]
     for interaction in visible:
         ts = interaction.timestamp.astimezone(UTC).strftime("%H:%M:%S")
-        text.append("  ▸ ", style=AQUA)
+        text.append(f"  {ui_symbol('collapsed', preferences=preferences)} ", style=AQUA)
         text.append(ts, style=FG4)
         text.append("  read_agent(", style=FG2)
         text.append(interaction.arguments_summary, style=FG1)
@@ -1266,6 +1437,8 @@ def _field_row(text: Text, label: str, value: str | None, style: str) -> None:
 def _append_inline_fields(
     text: Text,
     fields: Sequence[tuple[str, str | None, str]],
+    *,
+    preferences: UiPreferences,
 ) -> None:
     visible = tuple(
         (label, value, style) for label, value, style in fields if value and value != "-"
@@ -1275,7 +1448,7 @@ def _append_inline_fields(
     text.append("  ")
     for index, (label, value, style) in enumerate(visible):
         if index:
-            text.append(" │ ", style=FG4)
+            text.append(pipe_separator(preferences), style=FG4)
         text.append(label, style=FG4)
         text.append(" ", style=FG4)
         text.append(value, style=style)
@@ -1295,13 +1468,17 @@ def _render_subtask_section(
     text: Text,
     count: int,
     tasks: tuple[DashboardSubTaskView, ...],
+    *,
+    preferences: UiPreferences,
 ) -> None:
     """Render subtasks section in the detail panel."""
     if count <= 0:
         return
     text.append("\n")
-    _section_header(text, "subtasks")
-    text.append("  ⚡ ", style=f"bold {YELLOW}")
+    _section_header(text, "subtasks", preferences=preferences)
+    text.append(
+        f"  {ui_symbol('background-task', preferences=preferences)} ", style=f"bold {YELLOW}"
+    )
     text.append(f"{count} background task{'s' if count != 1 else ''}\n", style=FG1)
 
     if not tasks:
@@ -1315,7 +1492,10 @@ def _render_subtask_section(
 
     for i, task in enumerate(tasks):
         is_last = i == len(tasks) - 1
-        connector = "└─" if is_last else "├─"
+        connector = ui_symbol(
+            "connector-last" if is_last else "connector-mid",
+            preferences=preferences,
+        )
         text.append(f"  {connector} ", style=FG4)
         text.append(task.agent_type_label, style=f"bold {AQUA}")
         if task.model:
@@ -1331,23 +1511,26 @@ def _render_subtask_section(
 
     unknown = count - known
     if unknown > 0:
-        text.append(f"  └─ {unknown} task{'s' if unknown != 1 else ''} ", style=FG4)
+        connector = ui_symbol("connector-last", preferences=preferences)
+        text.append(f"  {connector} {unknown} task{'s' if unknown != 1 else ''} ", style=FG4)
         text.append("(details unknown)\n", style=f"italic {FG4}")
 
 
 def _render_action_shortcuts(
     text: Text,
     rows: Sequence[Sequence[tuple[str, str]]],
+    *,
+    preferences: UiPreferences,
 ) -> None:
     text.append("\n")
-    _section_header(text, "actions")
+    _section_header(text, "actions", preferences=preferences)
     for row in rows:
         if not row:
             continue
         text.append("  ", style=FG4)
         for index, (key, label) in enumerate(row):
             if index:
-                text.append("  ·  ", style=FG4)
+                text.append(item_separator(preferences), style=FG4)
             text.append(key, style=f"bold {BLUE}")
             text.append(f" {label}", style=FG2)
         text.append("\n")
@@ -1367,8 +1550,9 @@ class FleetHealthPanel(Static):
         health: DashboardHealthSummary,
         selected: DashboardSelectedAgentView | None,
     ) -> None:
+        preferences = resolve_ui_preferences(self)
         result = Text()
-        _section_header(result, "fleet")
+        _section_header(result, "fleet", preferences=preferences)
         tone_label, tone_color = _HEALTH_TONE_STYLES[health.tone]
         result.append("  health   ", style=FG4)
         result.append(f"{tone_label}\n", style=f"bold {tone_color}")
@@ -1394,8 +1578,9 @@ class ActivityPanel(Static):
     """Selected-agent activity — used by operations screen."""
 
     def set_agent(self, agent: DashboardSelectedAgentView | None) -> None:
+        preferences = resolve_ui_preferences(self)
         result = Text()
-        _section_header(result, "activity")
+        _section_header(result, "activity", preferences=preferences)
         if agent is None:
             result.append("  no activity available", style=FG4)
             self.update(result)
@@ -1429,8 +1614,9 @@ class LogPreviewPanel(Static):
     """Recent pane output — ANSI-stripped, timestamp-grouped, syntax-highlighted."""
 
     def set_logs(self, agent: DashboardSelectedAgentView | None) -> None:
+        preferences = resolve_ui_preferences(self)
         result = Text()
-        _section_header(result, "output")
+        _section_header(result, "output", preferences=preferences)
         if agent is None:
             result.append("  no recent output\n", style=FG4)
             self.update(result)
@@ -1493,8 +1679,9 @@ class AlertPanel(Static):
     """Active attention items — compact severity badges."""
 
     def set_alerts(self, alerts: Sequence[DashboardAlertView]) -> None:
+        preferences = resolve_ui_preferences(self)
         joined = Text()
-        _section_header(joined, "alerts")
+        _section_header(joined, "alerts", preferences=preferences)
         if not alerts:
             joined.append("  no active alerts\n", style=FG4)
             self.update(joined)

@@ -12,6 +12,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label
 
+from copilot_commander import theme
 from copilot_commander.bindings import BindingSpec
 
 _DELTA_RE: Final = re.compile(r"^([+-])(\d+)([smh])$")
@@ -64,40 +65,40 @@ def parse_time_input(
 class JumpToTimeScreen(ModalScreen[datetime | None]):
     """Prompt the operator for a target playback time."""
 
-    DEFAULT_CSS = """
-    JumpToTimeScreen {
+    DEFAULT_CSS = f"""
+    JumpToTimeScreen {{
         align: center middle;
-    }
+    }}
 
-    #jump-dialog {
+    #jump-dialog {{
         width: 70;
         height: auto;
         max-height: 14;
-        background: #282828;
-        border: thick #504945;
-        border-title-color: #83a598;
+        background: {theme.BG1};
+        border: thick {theme.BORDER};
+        border-title-color: {theme.BORDER_FOCUS};
         padding: 1 2;
-    }
+    }}
 
-    #jump-header {
+    #jump-header {{
         height: auto;
         margin-bottom: 1;
-        color: #a89984;
-    }
+        color: {theme.FG2};
+    }}
 
-    #jump-input {
+    #jump-input {{
         margin-bottom: 1;
-    }
+    }}
 
-    #jump-buttons {
+    #jump-buttons {{
         height: auto;
         align: right middle;
-    }
+    }}
 
-    #jump-buttons Button {
+    #jump-buttons Button {{
         margin-left: 1;
         min-width: 10;
-    }
+    }}
     """
 
     BINDINGS: ClassVar[list[BindingSpec]] = [

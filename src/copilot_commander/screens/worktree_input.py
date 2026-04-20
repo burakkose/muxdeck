@@ -11,6 +11,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
+from copilot_commander import theme
 from copilot_commander.bindings import BindingSpec
 from copilot_commander.controllers import WorktreeController, WorktreeStartAgentIntent
 from copilot_commander.exceptions import DomainValidationError, PersistenceError
@@ -47,60 +48,60 @@ class LaunchAgentResult:
 class CreateWorktreeScreen(ModalScreen[CreateWorktreeResult | None]):
     """Modal for collecting the minimum inputs needed to create a worktree."""
 
-    DEFAULT_CSS = """
-    CreateWorktreeScreen {
+    DEFAULT_CSS = f"""
+    CreateWorktreeScreen {{
         align: center middle;
-    }
+    }}
 
-    #create-worktree-dialog {
+    #create-worktree-dialog {{
         width: 76;
         height: auto;
         max-height: 16;
-        background: #282828;
-        border: thick #504945;
-        border-title-color: #83a598;
+        background: {theme.BG1};
+        border: thick {theme.BORDER};
+        border-title-color: {theme.BORDER_FOCUS};
         padding: 1 2;
-    }
+    }}
 
-    #create-worktree-header {
+    #create-worktree-header {{
         height: auto;
         margin-bottom: 1;
-        color: #a89984;
-    }
+        color: {theme.FG2};
+    }}
 
-    #create-worktree-title {
+    #create-worktree-title {{
         margin-bottom: 1;
-    }
+    }}
 
-    #create-worktree-buttons {
+    #create-worktree-buttons {{
         height: auto;
         align: right middle;
-    }
+    }}
 
-    #create-worktree-buttons Button {
+    #create-worktree-buttons Button {{
         margin-left: 1;
         min-width: 12;
-    }
+    }}
 
-    #btn-create-worktree {
-        background: #504945;
-        color: #b8bb26;
+    #btn-create-worktree {{
+        background: {theme.BADGE_BG};
+        color: {theme.BADGE_FG};
         border: none;
-    }
+    }}
 
-    #btn-create-worktree:hover {
-        background: #665c54;
-    }
+    #btn-create-worktree:hover {{
+        background: {theme.YELLOW};
+    }}
 
-    #btn-cancel-create-worktree {
-        background: #3c3836;
-        color: #928374;
+    #btn-cancel-create-worktree {{
+        background: {theme.BG3};
+        color: {theme.FG3};
         border: none;
-    }
+    }}
 
-    #btn-cancel-create-worktree:hover {
-        background: #504945;
-    }
+    #btn-cancel-create-worktree:hover {{
+        background: {theme.BG4};
+    }}
     """
 
     BINDINGS: ClassVar[list[BindingSpec]] = [
@@ -150,60 +151,60 @@ class CreateWorktreeScreen(ModalScreen[CreateWorktreeResult | None]):
 class AttachWorktreeScreen(ModalScreen[AttachWorktreeResult | None]):
     """Modal for selecting an existing worktree path to attach."""
 
-    DEFAULT_CSS = """
-    AttachWorktreeScreen {
+    DEFAULT_CSS = f"""
+    AttachWorktreeScreen {{
         align: center middle;
-    }
+    }}
 
-    #attach-worktree-dialog {
+    #attach-worktree-dialog {{
         width: 76;
         height: auto;
         max-height: 16;
-        background: #282828;
-        border: thick #504945;
-        border-title-color: #83a598;
+        background: {theme.BG1};
+        border: thick {theme.BORDER};
+        border-title-color: {theme.BORDER_FOCUS};
         padding: 1 2;
-    }
+    }}
 
-    #attach-worktree-header {
+    #attach-worktree-header {{
         height: auto;
         margin-bottom: 1;
-        color: #a89984;
-    }
+        color: {theme.FG2};
+    }}
 
-    #attach-worktree-path {
+    #attach-worktree-path {{
         margin-bottom: 1;
-    }
+    }}
 
-    #attach-worktree-buttons {
+    #attach-worktree-buttons {{
         height: auto;
         align: right middle;
-    }
+    }}
 
-    #attach-worktree-buttons Button {
+    #attach-worktree-buttons Button {{
         margin-left: 1;
         min-width: 12;
-    }
+    }}
 
-    #btn-attach-worktree {
-        background: #504945;
-        color: #b8bb26;
+    #btn-attach-worktree {{
+        background: {theme.BADGE_BG};
+        color: {theme.BADGE_FG};
         border: none;
-    }
+    }}
 
-    #btn-attach-worktree:hover {
-        background: #665c54;
-    }
+    #btn-attach-worktree:hover {{
+        background: {theme.YELLOW};
+    }}
 
-    #btn-cancel-attach-worktree {
-        background: #3c3836;
-        color: #928374;
+    #btn-cancel-attach-worktree {{
+        background: {theme.BG3};
+        color: {theme.FG3};
         border: none;
-    }
+    }}
 
-    #btn-cancel-attach-worktree:hover {
-        background: #504945;
-    }
+    #btn-cancel-attach-worktree:hover {{
+        background: {theme.BG4};
+    }}
     """
 
     BINDINGS: ClassVar[list[BindingSpec]] = [
@@ -252,62 +253,62 @@ class AttachWorktreeScreen(ModalScreen[AttachWorktreeResult | None]):
 class LaunchAgentScreen(ModalScreen[LaunchAgentResult]):
     """Modal for selecting launch settings for a Copilot agent."""
 
-    DEFAULT_CSS = """
-    LaunchAgentScreen {
+    DEFAULT_CSS = f"""
+    LaunchAgentScreen {{
         align: center middle;
-    }
+    }}
 
-    #launch-agent-dialog {
+    #launch-agent-dialog {{
         width: 96;
         height: auto;
         max-height: 28;
-        background: #282828;
-        border: thick #504945;
-        border-title-color: #83a598;
+        background: {theme.BG1};
+        border: thick {theme.BORDER};
+        border-title-color: {theme.BORDER_FOCUS};
         padding: 1 2;
-    }
+    }}
 
     #launch-agent-summary,
     #launch-agent-model-help,
-    #launch-agent-status {
+    #launch-agent-status {{
         height: auto;
         margin-bottom: 1;
-        color: #a89984;
-    }
+        color: {theme.FG2};
+    }}
 
-    #launch-agent-buttons {
+    #launch-agent-buttons {{
         height: auto;
         align: right middle;
-    }
+    }}
 
-    #launch-agent-buttons Button {
+    #launch-agent-buttons Button {{
         margin-left: 1;
         min-width: 12;
-    }
+    }}
 
-    #btn-launch-agent {
-        background: #504945;
-        color: #b8bb26;
+    #btn-launch-agent {{
+        background: {theme.BADGE_BG};
+        color: {theme.BADGE_FG};
         border: none;
-    }
+    }}
 
-    #btn-launch-agent:hover {
-        background: #665c54;
-    }
+    #btn-launch-agent:hover {{
+        background: {theme.YELLOW};
+    }}
 
     #btn-cancel-launch-agent,
     #btn-launch-create-worktree,
-    #btn-launch-attach-worktree {
-        background: #3c3836;
-        color: #928374;
+    #btn-launch-attach-worktree {{
+        background: {theme.BG3};
+        color: {theme.FG3};
         border: none;
-    }
+    }}
 
     #btn-cancel-launch-agent:hover,
     #btn-launch-create-worktree:hover,
-    #btn-launch-attach-worktree:hover {
-        background: #504945;
-    }
+    #btn-launch-attach-worktree:hover {{
+        background: {theme.BG4};
+    }}
     """
 
     BINDINGS: ClassVar[list[BindingSpec]] = [

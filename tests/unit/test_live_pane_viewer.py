@@ -95,3 +95,24 @@ class TestLineCap:
 
         assert viewer.matches_snapshot_tail("two\nthree\nfour\n") is True
         assert viewer.matches_snapshot_tail("three\nfour\nfive\n") is False
+
+
+class TestPresentationControls:
+    def test_set_wrap_mode_updates_flag_and_rerenders(self) -> None:
+        viewer = LivePaneViewer()
+
+        with patch.object(viewer, "_rerender_from_buffer") as rerender:
+            viewer.set_wrap_mode(True)
+            viewer.set_wrap_mode(True)
+
+        assert viewer.wrap_enabled is True
+        rerender.assert_called_once()
+
+    def test_set_follow_mode_updates_auto_scroll_flag(self) -> None:
+        viewer = LivePaneViewer()
+
+        viewer.set_follow_mode(False)
+        assert viewer.follow_enabled is False
+
+        viewer.set_follow_mode(True)
+        assert viewer.follow_enabled is True

@@ -59,6 +59,7 @@ GLOBAL_HINTS = (
     KeyHint("6", "attention"),
     KeyHint("7", "operations"),
     KeyHint("8", "fleet"),
+    KeyHint("ctrl+p", "commands"),
     KeyHint("?", "help"),
     KeyHint("r", "refresh"),
     KeyHint("q", "quit"),
@@ -246,10 +247,14 @@ SETUP_HINTS = (
 )
 
 HELP_BINDINGS: Final[list[BindingSpec]] = [
-    Binding("escape", "show_dashboard", "Dashboard", show=False)
+    Binding("slash", "focus_filter", "Search help", show=False),
+    Binding("escape", "escape_filter", "Back", show=False, priority=True),
 ]
 
-HELP_HINTS = (KeyHint("esc", "dashboard"),)
+HELP_HINTS = (
+    KeyHint("/", "search"),
+    KeyHint("esc", "back"),
+)
 
 ALL_HINT_GROUPS = {
     "attention": ATTENTION_HINTS,

@@ -101,7 +101,7 @@ class OperationsScreen(ShellScreen):
         with Vertical(id="operations-root"), Horizontal(id="operations-main", classes="frame"):
             yield OperationsAgentListPanel(
                 widget_id="operations-agents",
-                classes="divider-right",
+                classes="divider-right focusable",
             )
             with Vertical(id="operations-sidebar"):
                 with Horizontal(id="operations-top"):

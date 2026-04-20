@@ -10,6 +10,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label
 
+from copilot_commander import theme
 from copilot_commander.bindings import BindingSpec
 
 
@@ -20,40 +21,40 @@ class MultiSessionPickerScreen(ModalScreen[tuple[str, ...] | None]):
     submits, or ``None`` on cancel.
     """
 
-    DEFAULT_CSS = """
-    MultiSessionPickerScreen {
+    DEFAULT_CSS = f"""
+    MultiSessionPickerScreen {{
         align: center middle;
-    }
+    }}
 
-    #multi-dialog {
+    #multi-dialog {{
         width: 80;
         height: auto;
         max-height: 16;
-        background: #282828;
-        border: thick #504945;
-        border-title-color: #83a598;
+        background: {theme.BG1};
+        border: thick {theme.BORDER};
+        border-title-color: {theme.BORDER_FOCUS};
         padding: 1 2;
-    }
+    }}
 
-    #multi-header {
+    #multi-header {{
         height: auto;
         margin-bottom: 1;
-        color: #a89984;
-    }
+        color: {theme.FG2};
+    }}
 
-    #multi-input {
+    #multi-input {{
         margin-bottom: 1;
-    }
+    }}
 
-    #multi-buttons {
+    #multi-buttons {{
         height: auto;
         align: right middle;
-    }
+    }}
 
-    #multi-buttons Button {
+    #multi-buttons Button {{
         margin-left: 1;
         min-width: 12;
-    }
+    }}
     """
 
     BINDINGS: ClassVar[list[BindingSpec]] = [

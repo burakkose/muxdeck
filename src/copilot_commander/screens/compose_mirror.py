@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from textual import events
 from textual.app import ComposeResult
@@ -32,6 +32,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.widgets import Label, TextArea
 
+from copilot_commander import theme
 from copilot_commander.adapters.pane_stream import (
     PaneRingReader,
     PaneStreamAdapter,
@@ -44,7 +45,7 @@ from copilot_commander.screens.base import ShellScreen
 from copilot_commander.widgets.live_pane_viewer import LivePaneViewer
 
 if TYPE_CHECKING:
-    from copilot_commander.app import CommanderRuntime
+    from copilot_commander.app import CommanderApp, CommanderRuntime
 
 
 # Ring-file polling stays fast for fresh line-oriented output; the
@@ -63,6 +64,8 @@ COMPOSE_MIRROR_BINDINGS: list[BindingSpec] = [
     Binding("ctrl+s", "send", "Send", show=False),
     Binding("ctrl+enter", "send", "Send", show=False),
     Binding("ctrl+j", "send", "Send", show=False),
+    Binding("w", "toggle_wrap", "Wrap logs", show=False),
+    Binding("f", "toggle_follow", "Follow output", show=False),
     Binding("alt+up", "shrink_editor", "More mirror", show=False),
     Binding("alt+down", "grow_editor", "More editor", show=False),
 ]
@@ -70,6 +73,8 @@ COMPOSE_MIRROR_BINDINGS: list[BindingSpec] = [
 COMPOSE_MIRROR_HINTS: tuple[KeyHint, ...] = (
     KeyHint("ctrl+s", "send"),
     KeyHint("tab", "focus"),
+    KeyHint("w", "wrap"),
+    KeyHint("f", "follow"),
     KeyHint("i", "interact"),
     KeyHint("alt+up/down", "resize"),
     KeyHint("r", "resync"),
@@ -77,6 +82,8 @@ COMPOSE_MIRROR_HINTS: tuple[KeyHint, ...] = (
 )
 
 LIVE_MIRROR_HINTS: tuple[KeyHint, ...] = (
+    KeyHint("w", "wrap"),
+    KeyHint("f", "follow"),
     KeyHint("i", "interact"),
     KeyHint("r", "resync"),
     KeyHint("esc", "back"),
@@ -90,44 +97,45 @@ class ComposeWithMirrorScreen(ShellScreen):
     BINDINGS = COMPOSE_MIRROR_BINDINGS
     FOOTER_HINTS = COMPOSE_MIRROR_HINTS
 
-    DEFAULT_CSS = """
-    ComposeWithMirrorScreen #compose-container {
+    DEFAULT_CSS = f"""
+    ComposeWithMirrorScreen #compose-container {{
         height: 1fr;
         width: 1fr;
-    }
+    }}
 
-    ComposeWithMirrorScreen #compose-mirror-wrap {
+    ComposeWithMirrorScreen #compose-mirror-wrap {{
         height: 1fr;
         width: 1fr;
-    }
+    }}
 
-    ComposeWithMirrorScreen LivePaneViewer {
+    ComposeWithMirrorScreen LivePaneViewer {{
         height: 1fr;
         width: 1fr;
-    }
+    }}
 
-    ComposeWithMirrorScreen #compose-editor-wrap {
+    ComposeWithMirrorScreen #compose-editor-wrap {{
         height: 10;
         width: 1fr;
         margin-top: 1;
-    }
+    }}
 
-    ComposeWithMirrorScreen #compose-editor-label {
+    ComposeWithMirrorScreen #compose-editor-label {{
         height: 1;
         width: 1fr;
-        color: #a89984;
-    }
+        color: {theme.FG2};
+    }}
 
-    ComposeWithMirrorScreen #compose-editor {
+    ComposeWithMirrorScreen #compose-editor {{
         height: 1fr;
         width: 1fr;
-        background: #1d2021;
-        border: solid #504945;
-    }
+        background: {theme.BG_HARD};
+        color: {theme.FG};
+        border: solid {theme.BORDER};
+    }}
 
-    ComposeWithMirrorScreen #compose-editor:focus {
-        border: solid #b8bb26;
-    }
+    ComposeWithMirrorScreen #compose-editor:focus {{
+        border: solid {theme.BORDER_FOCUS};
+    }}
     """
 
     def __init__(
@@ -167,9 +175,21 @@ class ComposeWithMirrorScreen(ShellScreen):
     def mirror_input_active(self) -> bool:
         return self._mirror_input_active
 
+    @property
+    def commander_app(self) -> CommanderApp:
+        return cast("CommanderApp", self.app)
+
     def footer_hints(self) -> tuple[KeyHint, ...]:
         hints = COMPOSE_MIRROR_HINTS if self._show_editor else LIVE_MIRROR_HINTS
         return (*hints, KeyHint("q", "quit"))
+
+    def apply_ui_preferences(self) -> bool:
+        if not self.is_mounted:
+            return True
+        viewer = self.query_one(LivePaneViewer)
+        viewer.set_wrap_mode(self.commander_app.ui_preferences.wrap_logs)
+        self._refresh_guidance(update_status=False)
+        return True
 
     # ── composition & mount ──────────────────────────────────────────
 
@@ -196,6 +216,7 @@ class ComposeWithMirrorScreen(ShellScreen):
         viewer.border_subtitle = "loading tmux snapshot…"
         self.set_status("loading pane snapshot… live mirror will follow tmux output")
         self._apply_editor_height()
+        self.apply_ui_preferences()
         if self._adapter is None:
             self._capture_error = "✗ pane streaming unavailable"
             self.end_loading(viewer)
@@ -214,6 +235,7 @@ class ComposeWithMirrorScreen(ShellScreen):
         self._teardown_pipe()
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        super().on_descendant_focus(event)
         del event
         mirror = self.query_one(LivePaneViewer)
         if self._mirror_input_active and not mirror.has_focus:
@@ -262,6 +284,7 @@ class ComposeWithMirrorScreen(ShellScreen):
             return
         viewer = self.query_one(LivePaneViewer)
         viewer.append(chunk)
+        self._refresh_guidance(update_status=False)
         if not self._loading_cleared:
             self.end_loading(viewer)
             self._loading_cleared = True
@@ -411,6 +434,15 @@ class ComposeWithMirrorScreen(ShellScreen):
             return
         self._set_editor_height(self._editor_height - _EDITOR_HEIGHT_STEP)
 
+    def action_toggle_wrap(self) -> None:
+        self.commander_app.action_toggle_log_wrap()
+
+    def action_toggle_follow(self) -> None:
+        viewer = self.query_one(LivePaneViewer)
+        viewer.set_follow_mode(not viewer.follow_enabled)
+        self._refresh_guidance(update_status=False)
+        self.set_status(f"live follow {viewer.follow_state}")
+
     def action_close(self) -> None:
         self._teardown_pipe()
         self.app.pop_screen()
@@ -473,40 +505,47 @@ class ComposeWithMirrorScreen(ShellScreen):
         )
 
     def _viewer_subtitle(self, viewer: LivePaneViewer) -> str:
+        wrap_state = "wrap on" if viewer.wrap_enabled else "wrap off"
+        follow_state = f"follow {viewer.follow_state}"
         if self._mirror_input_active and viewer.has_focus:
-            return "live input · esc stops"
+            return f"live input · {follow_state} · {wrap_state} · esc stops"
         if self._capture_error is not None:
             return "capture failed"
         if self._sync_warning is not None:
-            return "snapshot sync warning · r retry"
+            return f"snapshot sync warning · {follow_state} · {wrap_state} · r retry"
         if self._stream_warning is not None:
-            return "snapshot sync only · r resync"
+            return f"snapshot sync only · {follow_state} · {wrap_state} · r resync"
         if not viewer.has_content:
-            return "waiting for pane output · live mirror armed"
+            return f"waiting for pane output · {follow_state} · {wrap_state}"
         if not self._show_editor:
-            return "live mirror · i interact · r resync"
-        return "live mirror + snapshot sync · r resync"
+            return f"live mirror · {follow_state} · {wrap_state} · i interact · r resync"
+        return f"live mirror + snapshot sync · {follow_state} · {wrap_state} · r resync"
 
     def _status_message(self, viewer: LivePaneViewer) -> str:
+        wrap_state = "wrap on" if viewer.wrap_enabled else "wrap off"
+        follow_state = f"follow {viewer.follow_state}"
         if self._capture_error is not None:
             return self._capture_error
         if self._mirror_input_active and viewer.has_focus:
             guidance = (
-                f"live input → {self._display_name} ({self._pane_id}) · keys go to tmux · esc stops"
+                f"live input → {self._display_name} ({self._pane_id}) · "
+                f"{follow_state} · {wrap_state} · keys go to tmux · esc stops"
             )
         elif not self._show_editor:
             guidance = (
-                f"live pane → {self._display_name} ({self._pane_id}) · scroll freely · i interact"
+                f"live pane → {self._display_name} ({self._pane_id}) · "
+                f"{follow_state} · {wrap_state} · scroll freely · i interact"
             )
         elif viewer.has_focus:
             guidance = (
                 f"mirror → {self._display_name} ({self._pane_id}) · "
-                "scroll freely · i interact · tab editor"
+                f"{follow_state} · {wrap_state} · scroll freely · i interact · tab editor"
             )
         else:
             guidance = (
                 f"compose → {self._display_name} ({self._pane_id}) · "
-                "ctrl+s send · tab focus · alt+up/down resize · i interact"
+                f"{follow_state} · {wrap_state} · ctrl+s send · tab focus · "
+                "alt+up/down resize · i interact"
             )
         warning = self._sync_warning or self._stream_warning
         if warning is not None:

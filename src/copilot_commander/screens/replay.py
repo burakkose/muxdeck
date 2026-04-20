@@ -634,6 +634,7 @@ class ReplayScreen(ShellScreen):
     def _refresh_panels(self) -> None:
         summary = self.query_one(ReplaySummaryPanel)
         actions = self.query_one(ReplayActionBar)
+        filter_bar = self.query_one(ReplayFilterBar)
         markers = self.query_one(ReplayMarkerListPanel)
         transcript = self.query_one(ReplayTranscriptPanel)
         detail = self.query_one(ReplayDetailPanel)
@@ -643,6 +644,13 @@ class ReplayScreen(ShellScreen):
         summary.set_state(self._state)
         actions.set_state(self._state, export_format=self._export_format)
         if self._state is None:
+            filter_bar.set_state(
+                filter_text=self._filter_text,
+                visible_entries=0,
+                total_entries=0,
+                presentation=self._presentation,
+                follow_latest=self._follow_latest,
+            )
             markers.set_markers((), selected_index=None)
             transcript.set_transcript(())
             detail.set_entry(None)
@@ -650,6 +658,13 @@ class ReplayScreen(ShellScreen):
             diff_panel.set_entry_diff(None, None)
             insights.set_state(None)
             return
+        filter_bar.set_state(
+            filter_text=self._state.filter_text,
+            visible_entries=len(self._state.transcript),
+            total_entries=self._state.total_entries,
+            presentation=self._state.presentation,
+            follow_latest=self._follow_latest,
+        )
         markers.set_markers(self._state.jump_markers, selected_index=self._state.selected_index)
         transcript.set_transcript(self._state.transcript)
         entry = self._selected_entry()
