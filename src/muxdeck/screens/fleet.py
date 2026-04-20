@@ -74,6 +74,10 @@ class FleetScreen(ShellScreen):
         self._selected_story_key: str | None = None
         self._loading: bool = False
         self._refresh_pending: bool = False
+        # Suppress the redundant ``on_show`` that fires immediately
+        # after ``on_mount`` on first activation; otherwise a cold tab
+        # open kicks off two back-to-back background refreshes.
+        self._skip_next_show_refresh: bool = True
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="fleet-root"):
@@ -110,6 +114,9 @@ class FleetScreen(ShellScreen):
         self.call_after_refresh(self.query_one(FleetStoryLanesPanel).focus_list)
 
     def on_show(self) -> None:
+        if self._skip_next_show_refresh:
+            self._skip_next_show_refresh = False
+            return
         self.refresh_data()
 
     def refresh_data(self) -> None:

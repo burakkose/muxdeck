@@ -96,6 +96,9 @@ class OperationsScreen(ShellScreen):
         self._selected_agent_ids: tuple[str, ...] = ()
         self._cursor_agent_id: str | None = None
         self._preview: OperationsActionPreview | None = None
+        # Avoid the duplicate ``on_show`` refresh that would otherwise
+        # immediately follow ``on_mount`` on first activation.
+        self._skip_next_show_refresh: bool = True
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="operations-root"), Horizontal(id="operations-main", classes="frame"):
@@ -127,6 +130,9 @@ class OperationsScreen(ShellScreen):
         self.call_after_refresh(self.query_one(OperationsAgentListPanel).focus_list)
 
     def on_show(self) -> None:
+        if self._skip_next_show_refresh:
+            self._skip_next_show_refresh = False
+            return
         self.refresh_data()
 
     def refresh_data(self) -> None:

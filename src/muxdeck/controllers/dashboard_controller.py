@@ -336,7 +336,34 @@ class DashboardController:
         agent: Agent,
         *,
         latest_session: Session | None = None,
+        prefer_live: bool = True,
     ) -> str | None:
+        """Resolve the Copilot session id for ``agent``.
+
+        ``prefer_live`` controls source priority:
+
+        * ``True`` (default, used by :meth:`load_subagents`): consult
+          the live ``/proc``-based resolver first so a freshly attached
+          session id corrects a stale persisted one. Correctness wins
+          over speed for user-initiated actions.
+        * ``False`` (used by :meth:`build_state` and per-row activity
+          rendering): trust the persisted ``copilot_session_id`` first
+          and only fall back to the resolver when storage has nothing.
+          The render path runs many times per sync cycle and the
+          monitoring service has already populated storage with the
+          live value during the most recent sync.
+        """
+        if not prefer_live:
+            if agent.copilot_session_id:
+                return agent.copilot_session_id
+            latest = latest_session or self._store.get_latest_session_for_agent(agent.id)
+            if latest is not None and latest.copilot_session_id:
+                return latest.copilot_session_id
+            if self._session_resolver is not None:
+                resolution = self._session_resolver.resolve(agent.pid)
+                if resolution.session_id is not None:
+                    return resolution.session_id
+            return None
         if self._session_resolver is not None:
             resolution = self._session_resolver.resolve(agent.pid)
             if resolution.session_id is not None:
@@ -431,7 +458,14 @@ class DashboardController:
             attention_reason = runaway
 
         current_activity = _activity_from_task_title(agent.task_title)
-        copilot_session_id = self._resolve_copilot_session_id(agent, latest_session=latest_session)
+        # Render path: prefer the persisted copilot_session_id (refreshed by
+        # the sync worker every cycle) over a fresh /proc walk per row.
+        # Without this guard, a 16-agent fleet pays N x ~1s of resolver
+        # enumeration on every refresh on hosts where extra session-state
+        # roots live on slow filesystems (e.g. /mnt/c on WSL).
+        copilot_session_id = self._resolve_copilot_session_id(
+            agent, latest_session=latest_session, prefer_live=False
+        )
 
         # Events-based current activity is much more reliable than regex
         # parsing of the scrollback. When we have a real copilot session
@@ -642,7 +676,9 @@ class DashboardController:
         # ``events.jsonl``, which is clean and attributable. Fall back
         # to tmux only when no transcript is available yet.
         copilot_session_id = (
-            self._resolve_copilot_session_id(agent, latest_session=latest_session)
+            self._resolve_copilot_session_id(
+                agent, latest_session=latest_session, prefer_live=False
+            )
             if agent is not None
             else latest_session.copilot_session_id
             if latest_session is not None

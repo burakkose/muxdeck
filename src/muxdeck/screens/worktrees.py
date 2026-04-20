@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.timer import Timer
+from textual.worker import Worker, WorkerState
 
 from muxdeck.bindings import WORKTREE_BINDINGS, WORKTREE_HINTS
 from muxdeck.controllers import (
@@ -37,6 +39,18 @@ if TYPE_CHECKING:
     from muxdeck.app import MuxdeckApp, MuxdeckRuntime
 
 
+_WORKER_NAME = "worktrees_load"
+_DETAIL_WORKER_NAME = "worktrees_detail"
+
+
+@dataclass(frozen=True, slots=True)
+class _LoadedWorktreesState:
+    worktrees: tuple[WorktreeSummaryView, ...]
+    detail: WorktreeDetailView | None
+    start_intent: WorktreeStartAgentIntent | None
+    selected_worktree_id: str | None
+
+
 class WorktreesScreen(ShellScreen):
     SCREEN_TITLE = "WORKTREES"
     BINDINGS = WORKTREE_BINDINGS
@@ -49,6 +63,17 @@ class WorktreesScreen(ShellScreen):
         self._detail: WorktreeDetailView | None = None
         self._start_intent: WorktreeStartAgentIntent | None = None
         self._detail_timer: Timer | None = None
+        self._loading: bool = False
+        self._refresh_pending: bool = False
+        # Suppress the redundant ``on_show`` that fires immediately
+        # after ``on_mount`` on first activation.
+        self._skip_next_show_refresh: bool = True
+        self._loaded_once: bool = False
+        # Status message to display once the next refresh worker
+        # finishes — used by post-action callbacks (create/prune/etc.)
+        # so the user-visible "✓ created …" survives the async reload
+        # that would otherwise overwrite it with "X worktrees loaded".
+        self._pending_status_after_refresh: str | None = None
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="worktrees-root"):  # noqa: SIM117
@@ -64,31 +89,86 @@ class WorktreesScreen(ShellScreen):
         self.call_after_refresh(self.query_one(WorktreeListPanel).focus_list)
 
     def on_show(self) -> None:
+        if self._skip_next_show_refresh:
+            self._skip_next_show_refresh = False
+            return
         self.refresh_data()
 
     def refresh_data(self) -> None:
-        # The expensive bit used to be `WorktreeController._conflict_map`,
-        # which ran `git worktree list --porcelain` per repo_root on every
-        # refresh. The controller now skips conflict detection for the
-        # list view (only the selected worktree computes conflicts in its
-        # detail panel), so this call is back to a handful of cached
-        # SQLite queries and safe to run on the UI thread.
-        self._worktrees = self.runtime.worktrees.list_worktrees()
-        if self._selected_worktree_id is None and self._worktrees:
-            self._selected_worktree_id = self._worktrees[0].worktree_id
-        if self._selected_worktree_id is not None and not any(
-            worktree.worktree_id == self._selected_worktree_id for worktree in self._worktrees
-        ):
-            self._selected_worktree_id = self._worktrees[0].worktree_id if self._worktrees else None
-        self._detail = None
-        self._start_intent = None
-        if self._selected_worktree_id is not None:
-            model_hint = self._launch_model_hint()
-            self._detail = self.runtime.worktrees.get_worktree_detail(self._selected_worktree_id)
-            self._start_intent = self.runtime.worktrees.start_agent_intent(
-                self._selected_worktree_id,
-                model=model_hint.configured_model,
+        """Kick off a background worker; UI thread is never blocked.
+
+        ``WorktreeService.list_worktrees`` and ``get_worktree_detail``
+        each shell out to ``git`` and read on-disk worktree metadata.
+        On WSL with worktrees on ``/mnt/c`` that's seconds per call,
+        which used to freeze the tab on every switch. The work now
+        happens in a worker thread; the UI keeps showing the previous
+        snapshot (or a Textual ``loading`` overlay on first load) until
+        the worker returns.
+        """
+        if self._loading:
+            # Coalesce overlapping refresh requests — thread workers
+            # can't be force-cancelled mid-blocking-IO.
+            self._refresh_pending = True
+            return
+
+        # Snapshot inputs so the worker doesn't read mutable state.
+        # Use the thread-safe sync controller when available — the
+        # foreground SQLite connection is bound to the UI thread.
+        worktree_service = getattr(self.runtime, "sync_worktrees", None) or self.runtime.worktrees
+        selected_id = self._selected_worktree_id
+        model_hint: ActionModelHint = self._launch_model_hint()
+        configured_model = model_hint.configured_model
+
+        first_load = not self._loaded_once
+        if first_load:
+            self.set_status("loading worktrees…")
+            self.begin_loading(*self._loading_widgets())
+
+        def _load() -> _LoadedWorktreesState:
+            worktrees = worktree_service.list_worktrees()
+            effective_selected = selected_id
+            ids = {w.worktree_id for w in worktrees}
+            if effective_selected is None or effective_selected not in ids:
+                effective_selected = worktrees[0].worktree_id if worktrees else None
+            detail: WorktreeDetailView | None = None
+            start_intent: WorktreeStartAgentIntent | None = None
+            if effective_selected is not None:
+                detail = worktree_service.get_worktree_detail(effective_selected)
+                start_intent = worktree_service.start_agent_intent(
+                    effective_selected,
+                    model=configured_model,
+                )
+            return _LoadedWorktreesState(
+                worktrees=tuple(worktrees),
+                detail=detail,
+                start_intent=start_intent,
+                selected_worktree_id=effective_selected,
             )
+
+        self._loading = True
+        self.run_worker(_load, thread=True, exclusive=True, name=_WORKER_NAME)
+
+    def _schedule_pending_refresh(self) -> None:
+        if not self._refresh_pending:
+            return
+        self._refresh_pending = False
+        if self.is_mounted:
+            self.call_after_refresh(self.refresh_data)
+
+    def _loading_widgets(self) -> tuple[object, ...]:
+        return (
+            self.query_one(WorktreeListPanel),
+            self.query_one(WorktreeDetailPanel),
+            self.query_one(ConflictPanel),
+            self.query_one(StartIntentPanel),
+        )
+
+    def _apply_loaded_state(self, state: _LoadedWorktreesState) -> None:
+        self._worktrees = state.worktrees
+        self._selected_worktree_id = state.selected_worktree_id
+        self._detail = state.detail
+        self._start_intent = state.start_intent
+        if self._selected_worktree_id is not None:
             self.muxdeck_app.remember_worktree_selection(self._selected_worktree_id)
         self.query_one(WorktreeListPanel).set_worktrees(
             self._worktrees,
@@ -100,11 +180,25 @@ class WorktreesScreen(ShellScreen):
             () if self._detail is None else self._detail.conflicts
         )
         self.query_one(StartIntentPanel).set_intent(self._start_intent)
+        if self._pending_status_after_refresh is not None:
+            self.set_status(self._pending_status_after_refresh)
+            self._pending_status_after_refresh = None
+            return
         self.set_status(
             "no worktrees discovered"
             if not self._worktrees
             else f"{len(self._worktrees)} worktrees loaded"
         )
+
+    def set_status(self, message: str) -> None:
+        # Action callbacks frequently set a status right before/after a
+        # background refresh. Without this guard the refresh worker's
+        # default "X worktrees loaded" message would clobber the
+        # action result. Stash the message so ``_apply_loaded_state``
+        # can reapply it after the worker finishes.
+        if self._loading and not message.startswith("loading worktrees"):
+            self._pending_status_after_refresh = message
+        super().set_status(message)
 
     @property
     def muxdeck_app(self) -> MuxdeckApp:
@@ -124,22 +218,77 @@ class WorktreesScreen(ShellScreen):
         self._detail_timer = self.set_timer(0.05, self._update_selected_detail)
 
     def _update_selected_detail(self) -> None:
-        """Update only the detail/conflict/intent panels for the current selection."""
-        self._detail = None
-        self._start_intent = None
-        if self._selected_worktree_id is not None:
-            model_hint = self._launch_model_hint()
-            self._detail = self.runtime.worktrees.get_worktree_detail(self._selected_worktree_id)
-            self._start_intent = self.runtime.worktrees.start_agent_intent(
-                self._selected_worktree_id,
-                model=model_hint.configured_model,
+        """Refresh the detail/conflict/intent panels for the current selection.
+
+        Runs in a worker because ``get_worktree_detail`` and
+        ``start_agent_intent`` shell out to ``git`` and can take
+        seconds on slow filesystems. Holding arrow keys would
+        otherwise queue blocking calls behind every keypress.
+        """
+        if self._selected_worktree_id is None:
+            self._detail = None
+            self._start_intent = None
+            self.query_one(WorktreeDetailPanel).set_detail(None)
+            self.query_one(ConflictPanel).set_conflicts(())
+            self.query_one(StartIntentPanel).set_intent(None)
+            return
+        worktree_service = getattr(self.runtime, "sync_worktrees", None) or self.runtime.worktrees
+        target_id = self._selected_worktree_id
+        configured_model = self._launch_model_hint().configured_model
+        self.muxdeck_app.remember_worktree_selection(target_id)
+
+        def _load() -> tuple[str, WorktreeDetailView | None, WorktreeStartAgentIntent | None]:
+            return (
+                target_id,
+                worktree_service.get_worktree_detail(target_id),
+                worktree_service.start_agent_intent(target_id, model=configured_model),
             )
-            self.muxdeck_app.remember_worktree_selection(self._selected_worktree_id)
-        self.query_one(WorktreeDetailPanel).set_detail(self._detail)
-        self.query_one(ConflictPanel).set_conflicts(
-            () if self._detail is None else self._detail.conflicts
-        )
-        self.query_one(StartIntentPanel).set_intent(self._start_intent)
+
+        self.run_worker(_load, thread=True, exclusive=True, name=_DETAIL_WORKER_NAME)
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        name = event.worker.name
+        if name == _DETAIL_WORKER_NAME:
+            if event.state != WorkerState.SUCCESS:
+                return
+            payload = event.worker.result
+            if payload is None:
+                return
+            target_id, detail, start_intent = payload
+            # Drop stale results: the user may have moved on to a
+            # different selection while this worker was in flight.
+            if target_id != self._selected_worktree_id:
+                return
+            self._detail = detail
+            self._start_intent = start_intent
+            self.query_one(WorktreeDetailPanel).set_detail(detail)
+            self.query_one(ConflictPanel).set_conflicts(() if detail is None else detail.conflicts)
+            self.query_one(StartIntentPanel).set_intent(start_intent)
+            return
+        if name != _WORKER_NAME:
+            return
+        if event.state == WorkerState.ERROR:
+            self._loading = False
+            self.end_loading(*self._loading_widgets())
+            self.set_status("worktree load failed")
+            self._schedule_pending_refresh()
+            return
+        if event.state == WorkerState.CANCELLED:
+            self._loading = False
+            self.end_loading(*self._loading_widgets())
+            self._schedule_pending_refresh()
+            return
+        if event.state != WorkerState.SUCCESS:
+            return
+        self._loading = False
+        result = event.worker.result
+        self.end_loading(*self._loading_widgets())
+        if result is None:
+            self._schedule_pending_refresh()
+            return
+        self._apply_loaded_state(result)
+        self._loaded_once = True
+        self._schedule_pending_refresh()
 
     def action_cursor_down(self) -> None:
         self.query_one(WorktreeListPanel).move_cursor(1)
@@ -367,5 +516,12 @@ class WorktreesScreen(ShellScreen):
         self._start_intent = None
         if action_view.worktree is not None:
             self._selected_worktree_id = action_view.worktree.summary.worktree_id
+        # Surface the action result both immediately (in case the
+        # refresh worker is queued behind another) and after the
+        # worker completes (so it isn't overwritten by the default
+        # "X worktrees loaded" status the worker would otherwise
+        # set on completion).
+        message = f"✓ {action_view.message}"
+        self._pending_status_after_refresh = message
+        self.set_status(message)
         self.refresh_data()
-        self.set_status(f"✓ {action_view.message}")

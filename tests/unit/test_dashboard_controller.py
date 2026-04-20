@@ -452,9 +452,18 @@ class DashboardControllerTests(unittest.TestCase):
             ["live transcript line"],
         )
 
-    def test_build_state_skips_stale_session_fallback_when_live_resolution_is_ambiguous(
+    def test_build_state_prefers_persisted_session_id_over_live_resolver(
         self,
     ) -> None:
+        """Render path trusts persisted state over a live ``/proc`` walk.
+
+        The monitoring service already arbitrates live-vs-stored during
+        sync (clearing ``copilot_session_id`` when the resolver returns
+        ambiguous). The render path inherits that decision rather than
+        re-paying for a ``/proc`` walk on every row of every refresh.
+        See ``DashboardController._resolve_copilot_session_id``'s
+        ``prefer_live`` parameter.
+        """
         store = InMemoryDashboardStore()
         observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
         store.agents["agent-1"] = Agent(
@@ -468,17 +477,10 @@ class DashboardControllerTests(unittest.TestCase):
             branch="main",
             task_title="Plan dashboard",
             pid=4242,
-            copilot_session_id="stale-agent-session",
+            copilot_session_id="persisted-session",
             status=AgentStatus.RUNNING,
             started_at=observed_at,
             last_seen_at=observed_at,
-        )
-        store.sessions["session-1"] = Session(
-            id="session-1",
-            agent_id="agent-1",
-            task_title="Plan dashboard",
-            copilot_session_id="stale-session-row",
-            created_at=observed_at,
         )
         activity_reader = StubActivityReader(
             AgentActivity(
@@ -493,12 +495,14 @@ class DashboardControllerTests(unittest.TestCase):
                 TranscriptLine(
                     at=observed_at,
                     role="assistant",
-                    content="wrong transcript line",
+                    content="persisted transcript line",
                     sequence_no=1,
                 ),
             ),
         )
-        resolver = StubSessionResolver(ambiguous=True)
+        # Resolver would say "live-session" if asked, but the render
+        # path must not ask — the persisted value is authoritative.
+        resolver = StubSessionResolver(session_id="live-session")
 
         controller = DashboardController(
             store,
@@ -508,11 +512,10 @@ class DashboardControllerTests(unittest.TestCase):
         )
         state = controller.build_state(selected_agent_id="agent-1", preview_line_limit=1)
 
-        self.assertEqual(resolver.calls, [4242, 4242])
-        self.assertEqual(activity_reader.calls, [])
-        self.assertEqual(activity_reader.transcript_calls, [])
+        self.assertEqual(resolver.calls, [])
+        self.assertEqual(activity_reader.calls, ["persisted-session"])
         assert state.selected_agent is not None
-        self.assertIsNone(state.selected_agent.copilot_session_id)
+        self.assertEqual(state.selected_agent.copilot_session_id, "persisted-session")
 
     def test_build_state_recomputes_live_idle_seconds_from_last_activity(self) -> None:
         store = InMemoryDashboardStore()

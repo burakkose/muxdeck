@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -82,11 +83,23 @@ class InuseLockResolver:
     silently return ``None`` rather than raising — the dashboard treats
     that as "no sub-agents to show" which is the correct degraded
     behavior.
+
+    ``enumeration_ttl_seconds`` controls how long a single
+    ``_iter_locks`` walk is cached. The lock-set only changes when a
+    Copilot process starts or exits, which happens at the cadence of
+    the runtime sync (~2s), not at the cadence of every UI render.
+    Caching the *enumeration* (root scan + ``glob``) lets dozens of
+    per-render :meth:`resolve` calls share one filesystem walk while
+    each call still validates ``/proc`` freshly to avoid PID-reuse
+    traps. Set to ``0`` to disable.
     """
 
     store: _RootProvider
     proc_dir: Path = field(default_factory=lambda: Path("/proc"))
+    enumeration_ttl_seconds: float = 2.0
     _max_ancestors: int = 16
+    _lock_cache: tuple[tuple[Path, int], ...] | None = field(default=None, init=False, repr=False)
+    _lock_cache_at: float = field(default=0.0, init=False, repr=False)
 
     def resolve(self, pane_pid: int | None) -> CopilotSessionResolution:
         """Return the live-session resolution for ``pane_pid``.
@@ -164,6 +177,31 @@ class InuseLockResolver:
         return exact_matches, descendant_matches
 
     def _iter_locks(self) -> Iterable[tuple[Path, int]]:
+        if self.enumeration_ttl_seconds > 0.0:
+            now = time.monotonic()
+            cache = self._lock_cache
+            if cache is not None and (now - self._lock_cache_at) < self.enumeration_ttl_seconds:
+                yield from cache
+                return
+            snapshot = tuple(self._enumerate_locks())
+            self._lock_cache = snapshot
+            self._lock_cache_at = now
+            yield from snapshot
+            return
+        yield from self._enumerate_locks()
+
+    def invalidate_lock_cache(self) -> None:
+        """Drop the cached lock enumeration.
+
+        Call after operations that knowingly create or destroy a
+        Copilot session (e.g. starting/stopping an agent) when the
+        next :meth:`resolve` must observe the new state immediately
+        rather than wait out the TTL.
+        """
+        self._lock_cache = None
+        self._lock_cache_at = 0.0
+
+    def _enumerate_locks(self) -> Iterable[tuple[Path, int]]:
         for root in self._roots():
             try:
                 entries = list(root.iterdir())

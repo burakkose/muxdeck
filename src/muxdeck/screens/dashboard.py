@@ -73,6 +73,11 @@ class DashboardScreen(ShellScreen):
         self._state: DashboardState | None = None
         self._detail_timer: Timer | None = None
         self._loading: bool = False
+        # Textual fires ``on_mount`` followed immediately by ``on_show``
+        # on first activation. Without this guard the screen does
+        # ``build_state`` twice back-to-back on every cold open and any
+        # dashboard refresh that is in flight piles up.
+        self._skip_next_show_refresh: bool = True
 
     @property
     def current_filters(self) -> DashboardFilterState:
@@ -107,6 +112,9 @@ class DashboardScreen(ShellScreen):
         self.call_after_refresh(self.query_one(AgentListPanel).focus_list)
 
     def on_show(self) -> None:
+        if self._skip_next_show_refresh:
+            self._skip_next_show_refresh = False
+            return
         self.refresh_data()
 
     def refresh_data(self) -> None:

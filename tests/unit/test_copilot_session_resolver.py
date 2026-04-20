@@ -300,3 +300,80 @@ class TestInuseLockResolver:
             pane_id="%42",
             socket_path=nested_socket,
         )
+
+
+class TestEnumerationCache:
+    def test_iter_locks_caches_enumeration_within_ttl(self, tmp_path: Path) -> None:
+        root = tmp_path / "sessions"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(root, "sess-cached", lock_pid=4242)
+        _write_proc(proc, pid=4242, ppid=1)
+        store = _FakeStore(session_state_dir=root)
+        resolver = InuseLockResolver(store=store, proc_dir=proc, enumeration_ttl_seconds=60.0)
+        first = list(resolver._iter_locks())
+        # Add a second session after the cache populates — the TTL
+        # window means the second walk must reuse the cache and not
+        # see the new lock until invalidation.
+        _make_session(root, "sess-new", lock_pid=5555)
+        _write_proc(proc, pid=5555, ppid=1)
+        second = list(resolver._iter_locks())
+        assert first == second
+        resolver.invalidate_lock_cache()
+        third = list(resolver._iter_locks())
+        assert {pid for _, pid in third} == {4242, 5555}
+
+    def test_iter_locks_disabled_cache_always_walks(self, tmp_path: Path) -> None:
+        root = tmp_path / "sessions"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(root, "sess-a", lock_pid=4242)
+        _write_proc(proc, pid=4242, ppid=1)
+        store = _FakeStore(session_state_dir=root)
+        resolver = InuseLockResolver(store=store, proc_dir=proc, enumeration_ttl_seconds=0.0)
+        first = list(resolver._iter_locks())
+        _make_session(root, "sess-b", lock_pid=5555)
+        _write_proc(proc, pid=5555, ppid=1)
+        second = list(resolver._iter_locks())
+        assert {pid for _, pid in first} == {4242}
+        assert {pid for _, pid in second} == {4242, 5555}
+
+    def test_iter_locks_cache_expires_after_ttl(self, tmp_path: Path) -> None:
+        import time as time_mod
+
+        root = tmp_path / "sessions"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(root, "sess-a", lock_pid=4242)
+        _write_proc(proc, pid=4242, ppid=1)
+        store = _FakeStore(session_state_dir=root)
+        # Use a tiny TTL to keep the test cheap and deterministic.
+        resolver = InuseLockResolver(store=store, proc_dir=proc, enumeration_ttl_seconds=0.01)
+        list(resolver._iter_locks())
+        _make_session(root, "sess-b", lock_pid=5555)
+        _write_proc(proc, pid=5555, ppid=1)
+        time_mod.sleep(0.02)
+        refreshed = list(resolver._iter_locks())
+        assert {pid for _, pid in refreshed} == {4242, 5555}
+
+    def test_resolve_calls_share_cached_enumeration(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        root = tmp_path / "sessions"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(root, "sess-a", lock_pid=4242)
+        _write_proc(proc, pid=4242, ppid=1)
+        store = _FakeStore(session_state_dir=root)
+        resolver = InuseLockResolver(store=store, proc_dir=proc, enumeration_ttl_seconds=60.0)
+        # ``slots=True`` blocks attribute monkeypatching, so spy at
+        # the class level via patch.object.
+        with patch.object(
+            InuseLockResolver,
+            "_enumerate_locks",
+            autospec=True,
+            side_effect=InuseLockResolver._enumerate_locks,
+        ) as spy:
+            for _ in range(10):
+                resolver.resolve(4242)
+            assert spy.call_count == 1

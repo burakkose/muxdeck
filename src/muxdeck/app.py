@@ -143,6 +143,8 @@ class MuxdeckRuntime:
     sessions_ctrl: SessionsController | None = None
     sync_dashboard: DashboardController | None = None
     sync_fleet: FleetController | None = None
+    # Thread-safe worktree controller for worker-thread usage (worktrees screen).
+    sync_worktrees: WorktreeController | None = None
     setup: SetupDoctorService | None = None
     attention: AttentionController | None = None
     operations: OperationsController | None = None
@@ -800,6 +802,7 @@ def build_runtime(config: AppConfig | None = None) -> MuxdeckRuntime:
         store=store,
         dashboard=dashboard,
         worktrees=WorktreeController(worktree_service, store),
+        sync_worktrees=WorktreeController(sync_worktree_service, sync_store),
         replay=ReplayController(replay_service, annotations_service),
         replay_worker=ReplayController(sync_replay_service, sync_annotations_service),
         agents=agent_controller,
