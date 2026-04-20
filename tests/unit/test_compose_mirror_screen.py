@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
+from unittest.mock import patch
 
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
@@ -120,6 +121,34 @@ class _Harness(App[None]):
 
 class ComposeWithMirrorScreenTests(unittest.TestCase):
     """End-to-end behavioural tests for the compose + mirror screen."""
+
+    def test_custom_stream_adapter_overrides_runtime_default(self) -> None:
+        async def scenario(tmp: Path) -> tuple[list[str], list[str]]:
+            default_tmux = _FakeTmuxStream(seed_text="outer pane\n")
+            nested_tmux = _FakeTmuxStream(seed_text="inner pane\n")
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, PaneStreamAdapter(tmux=default_tmux))
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%42",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    stream_adapter=PaneStreamAdapter(tmux=nested_tmux),
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                return default_tmux.captures, nested_tmux.captures
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            default_captures, nested_captures = asyncio.run(scenario(Path(tmp)))
+
+        assert default_captures == []
+        assert nested_captures == ["%42"]
 
     def test_seeds_mirror_and_sends_composed_text(self) -> None:
         async def scenario(tmp: Path) -> tuple[list[str], list[tuple[str, str]]]:
@@ -372,6 +401,67 @@ class ComposeWithMirrorScreenTests(unittest.TestCase):
         assert restored_height == 10
         assert restored_style == 10.0
 
+    def test_viewer_only_mode_hides_editor_and_keeps_send_as_noop(self) -> None:
+        async def scenario(tmp: Path) -> tuple[bool, bool, int, list[tuple[str, str]]]:
+            tmux = _FakeTmuxStream(seed_text="hello pane\n")
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%19",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+
+                mirror = app.screen.query_one(LivePaneViewer)
+                editor_count = len(list(app.screen.query("#compose-editor")))
+                focus_on_mount = mirror.has_focus
+                await pilot.press("tab")
+                await pilot.pause()
+                focus_after_tab = mirror.has_focus
+                await pilot.press("ctrl+s")
+                await pilot.pause()
+                return focus_on_mount, focus_after_tab, editor_count, actions.calls
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            focus_on_mount, focus_after_tab, editor_count, send_calls = asyncio.run(
+                scenario(Path(tmp))
+            )
+
+        assert focus_on_mount is True
+        assert focus_after_tab is True
+        assert editor_count == 0
+        assert send_calls == []
+
+    def test_viewer_only_mode_footer_hints_drop_compose_shortcuts(self) -> None:
+        runtime = _fake_runtime(_FakeActionService(), PaneStreamAdapter(tmux=_FakeTmuxStream()))
+
+        screen = ComposeWithMirrorScreen(
+            runtime,
+            pane_id="%19",
+            display_name="demo",
+            ring_dir=Path.cwd(),
+            show_editor=False,
+        )
+
+        hints = tuple((hint.key, hint.label) for hint in screen.footer_hints())
+
+        assert hints == (
+            ("i", "interact"),
+            ("r", "resync"),
+            ("esc", "back"),
+            ("q", "quit"),
+        )
+
     def test_manual_refresh_reconciles_snapshot_tail_without_losing_history(self) -> None:
         async def scenario(tmp: Path) -> tuple[tuple[str, ...], list[tuple[str, bool, bool]]]:
             tmux = _FakeTmuxStream(seed_text="one\ntwo\nthree\n")
@@ -408,6 +498,85 @@ class ComposeWithMirrorScreenTests(unittest.TestCase):
 
         assert buffer_lines == ("one", "two", "three", "FOUR", "FIVE")
         assert capture_flags[0] == ("%17", False, True)
+
+    def test_manual_refresh_skips_tail_replay_when_stream_already_matches_snapshot(
+        self,
+    ) -> None:
+        async def scenario(tmp: Path) -> tuple[tuple[str, ...], int, str]:
+            tmux = _FakeTmuxStream(seed_text="one\ntwo\n")
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%23",
+                    display_name="demo",
+                    ring_dir=tmp,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+
+                ring_path = tmux.pipe_paths[0]
+                with ring_path.open("a", encoding="utf-8") as fh:
+                    fh.write("three\nfour\n")
+                screen._drain_ring()
+
+                mirror = app.screen.query_one(LivePaneViewer)
+                tmux.seed_text = "one\ntwo\nthree\nfour\n"
+
+                with patch.object(
+                    mirror,
+                    "replace_tail",
+                    wraps=mirror.replace_tail,
+                ) as replace_tail:
+                    screen.refresh_data()
+                    await pilot.pause()
+                    return mirror.buffer_lines, replace_tail.call_count, screen._last_snapshot
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            buffer_lines, replace_tail_calls, last_snapshot = asyncio.run(scenario(Path(tmp)))
+
+        assert buffer_lines == ("one", "two", "three", "four")
+        assert replace_tail_calls == 0
+        assert last_snapshot == "one\ntwo\nthree\nfour\n"
+
+    def test_manual_refresh_clears_mirror_when_snapshot_becomes_empty(self) -> None:
+        async def scenario(tmp: Path) -> tuple[tuple[str, ...], str]:
+            tmux = _FakeTmuxStream(seed_text="one\ntwo\n")
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%24",
+                    display_name="demo",
+                    ring_dir=tmp,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+
+                tmux.seed_text = ""
+                screen.refresh_data()
+                await pilot.pause()
+
+                mirror = app.screen.query_one(LivePaneViewer)
+                return mirror.buffer_lines, screen._last_snapshot
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            buffer_lines, last_snapshot = asyncio.run(scenario(Path(tmp)))
+
+        assert buffer_lines == ()
+        assert last_snapshot == ""
 
 
 if __name__ == "__main__":  # pragma: no cover

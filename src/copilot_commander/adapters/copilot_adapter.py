@@ -387,7 +387,9 @@ class CopilotAdapter:
 
     def interpret_output(self, output: str, /) -> CopilotSessionEvidence:
         parse_result = parse_copilot_output(output)
-        session_ids = tuple(candidate.value for candidate in parse_result.session_ids)
+        session_ids = _unique_session_ids(
+            tuple(candidate.value for candidate in parse_result.session_ids)
+        )
         usage_snapshots = tuple(
             CopilotUsageSummary(
                 input_tokens=snapshot.input_tokens,
@@ -414,7 +416,11 @@ class CopilotAdapter:
         )
         return CopilotSessionEvidence(
             parse_result=parse_result,
-            copilot_session_id=session_ids[0] if session_ids else None,
+            # Nested tmux layouts can render multiple Copilot panes into a
+            # single outer-pane capture. Picking the first parsed id there
+            # misattributes events/logs to the wrong agent; only publish an
+            # "authoritative" session id when the capture is unambiguous.
+            copilot_session_id=_select_copilot_session_id(session_ids),
             session_ids=session_ids,
             usage_snapshots=usage_snapshots,
             latest_usage=usage_snapshots[-1] if usage_snapshots else None,
@@ -459,3 +465,20 @@ class CopilotAdapter:
             stderr=result.stderr,
             stdout=result.stdout,
         )
+
+
+def _unique_session_ids(session_ids: tuple[str, ...]) -> tuple[str, ...]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for session_id in session_ids:
+        if session_id in seen:
+            continue
+        seen.add(session_id)
+        unique.append(session_id)
+    return tuple(unique)
+
+
+def _select_copilot_session_id(session_ids: tuple[str, ...]) -> str | None:
+    if len(session_ids) == 1:
+        return session_ids[0]
+    return None

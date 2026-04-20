@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import Screen
+from textual.widget import Widget
 
 from copilot_commander.bindings import KeyHint
 from copilot_commander.widgets.common import KeyHintFooter, TabBar
@@ -56,6 +57,29 @@ class ShellScreen(Screen[None]):
     def set_hints(self, hints: Iterable[KeyHint]) -> None:
         if self.is_mounted:
             self.query_one(KeyHintFooter).hints = tuple(hints)
+
+    @staticmethod
+    def _render_widget_text(widget: Widget) -> str:
+        renderable = widget.render()
+        plain: object = getattr(renderable, "plain", None)
+        if isinstance(plain, str):
+            return plain
+        inner_renderable: object = getattr(renderable, "_renderable", None)
+        inner_plain: object = getattr(inner_renderable, "plain", None)
+        if isinstance(inner_plain, str):
+            return inner_plain
+        if inner_renderable is not None:
+            return str(inner_renderable)
+        return str(renderable)
+
+    def copy_rendered_text(self, label: str, *widgets: Widget) -> None:
+        parts = [self._render_widget_text(widget).strip() for widget in widgets]
+        text = "\n\n".join(part for part in parts if part)
+        if not text:
+            self.set_status(f"no {label} available")
+            return
+        self.app.copy_to_clipboard(text)
+        self.set_status(f"copied {label} to clipboard")
 
     def refresh_data(self) -> None:
         return

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from copilot_commander.adapters.copilot_activity_reader import AgentActivity, TranscriptLine
+from copilot_commander.adapters.copilot_session_resolver import CopilotSessionResolution
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.events import Event, LogChunk
@@ -160,7 +161,10 @@ class DashboardAgentListItemView:
     attention_reason: str | None
     token_total: int | None
     estimated_cost_usd: str | None
+    token_input: int | None = None
+    token_output: int | None = None
     window_name: str | None = None
+    window_id: str | None = None
     current_activity: str | None = None
     sparkline: str = "        "
     is_potentially_stuck: bool = False
@@ -247,6 +251,8 @@ class CopilotActivityReaderPort(Protocol):
 class CopilotSessionResolverPort(Protocol):
     """Resolve a tmux pane's pid to a live Copilot session id."""
 
+    def resolve(self, pane_pid: int | None) -> CopilotSessionResolution: ...
+
     def resolve_for_pid(self, pane_pid: int | None) -> str | None: ...
 
 
@@ -325,22 +331,26 @@ class DashboardController:
             recent=tuple(_to_view(snapshot) for snapshot in tree.recent),
         )
 
-    def _resolve_copilot_session_id(self, agent: Agent) -> str | None:
+    def _resolve_copilot_session_id(
+        self,
+        agent: Agent,
+        *,
+        latest_session: Session | None = None,
+    ) -> str | None:
+        if self._session_resolver is not None:
+            resolution = self._session_resolver.resolve(agent.pid)
+            if resolution.session_id is not None:
+                return resolution.session_id
+            if resolution.is_ambiguous:
+                return None
         if agent.copilot_session_id:
             return agent.copilot_session_id
         # Fall back to the latest session linked to this agent in the
         # sqlite store — some agents only record their copilot session
         # id on the Session row, not the Agent row itself.
-        latest = self._store.get_latest_session_for_agent(agent.id)
+        latest = latest_session or self._store.get_latest_session_for_agent(agent.id)
         if latest is not None and latest.copilot_session_id:
             return latest.copilot_session_id
-        # Last resort: scan Copilot's ``inuse.<pid>.lock`` files and
-        # match against the pane's pid chain. Agent discovery does not
-        # always populate ``copilot_session_id`` (e.g. when the agent
-        # was adopted from a tmux pane that was already running), so
-        # the resolver fills that gap at read time.
-        if self._session_resolver is not None:
-            return self._session_resolver.resolve_for_pid(agent.pid)
         return None
 
     def build_state(
@@ -386,6 +396,12 @@ class DashboardController:
             )
 
     def _build_agent_item(self, agent: Agent) -> DashboardAgentListItemView:
+        now = self._clock()
+        token_total = _resolved_token_total(
+            token_total=agent.token_total,
+            token_input=agent.token_input,
+            token_output=agent.token_output,
+        )
         latest_session = self._store.get_latest_session_for_agent(agent.id)
         latest_event = (
             self._store.get_latest_event_for_session(latest_session.id)
@@ -406,7 +422,7 @@ class DashboardController:
 
         runaway = _check_runaway(
             agent,
-            now=self._clock(),
+            now=now,
             max_cost_usd=self._max_cost_usd,
             max_runtime_minutes=self._max_runtime_minutes,
         )
@@ -415,10 +431,7 @@ class DashboardController:
             attention_reason = runaway
 
         current_activity = _activity_from_task_title(agent.task_title)
-        now = self._clock()
-        copilot_session_id = agent.copilot_session_id
-        if copilot_session_id is None and latest_session is not None:
-            copilot_session_id = latest_session.copilot_session_id
+        copilot_session_id = self._resolve_copilot_session_id(agent, latest_session=latest_session)
 
         # Events-based current activity is much more reliable than regex
         # parsing of the scrollback. When we have a real copilot session
@@ -466,6 +479,7 @@ class DashboardController:
             output_blob,
             now=now,
             agent_status=agent.status,
+            observed_at=_latest_output_observed_at(agent, latest_log),
         )
         if is_potentially_stuck and not needs_attention:
             stale_entry = _output_hashes.get(agent.id)
@@ -477,11 +491,12 @@ class DashboardController:
             needs_attention = True
             attention_reason = f"output unchanged for {stale_secs}s — may be stuck"
 
+        idle_seconds = _effective_idle_seconds(agent, now)
         operator_status = describe_operator_status(
             agent_status=agent.status,
             needs_attention=needs_attention,
             attention_reason=attention_reason,
-            idle_seconds=agent.idle_seconds,
+            idle_seconds=idle_seconds,
             is_potentially_stuck=is_potentially_stuck,
             task_title=agent.task_title,
             current_activity=current_activity,
@@ -505,12 +520,15 @@ class DashboardController:
             last_log_at=latest_log.captured_at if latest_log is not None else None,
             last_seen_at=agent.last_seen_at,
             started_at=agent.started_at,
-            idle_seconds=agent.idle_seconds,
+            idle_seconds=idle_seconds,
             needs_attention=needs_attention,
             attention_reason=attention_reason,
-            token_total=agent.token_total,
+            token_total=token_total,
             estimated_cost_usd=estimated_cost,
+            token_input=agent.token_input,
+            token_output=agent.token_output,
             window_name=agent.tmux_window_name,
+            window_id=agent.tmux_window_id or None,
             current_activity=current_activity,
             sparkline=sparkline,
             is_potentially_stuck=is_potentially_stuck,
@@ -590,6 +608,10 @@ class DashboardController:
         *,
         preview_line_limit: int,
     ) -> DashboardSelectedAgentView:
+        agent = next(
+            (record for record in self._store.list_agents() if record.id == item.agent_id),
+            None,
+        )
         latest_session = self._store.get_latest_session_for_agent(item.agent_id)
         session_count = self._store.count_sessions_for_agent(item.agent_id)
         open_session = self._store.get_open_session_for_agent(item.agent_id)
@@ -619,10 +641,15 @@ class DashboardController:
         # we'd rather show the agent's actual speech from
         # ``events.jsonl``, which is clean and attributable. Fall back
         # to tmux only when no transcript is available yet.
+        copilot_session_id = (
+            self._resolve_copilot_session_id(agent, latest_session=latest_session)
+            if agent is not None
+            else latest_session.copilot_session_id
+            if latest_session is not None
+            else None
+        )
         log_preview = self._build_transcript_preview(
-            copilot_session_id=(
-                latest_session.copilot_session_id if latest_session is not None else None
-            ),
+            copilot_session_id=copilot_session_id,
             preview_line_limit=preview_line_limit,
         )
         if not log_preview:
@@ -638,9 +665,7 @@ class DashboardController:
             worktree_id=worktree_id,
             session_count=session_count,
             open_session_id=open_session.id if open_session is not None else None,
-            copilot_session_id=(
-                latest_session.copilot_session_id if latest_session is not None else None
-            ),
+            copilot_session_id=copilot_session_id,
             latest_event_kind=latest_event.kind if latest_event is not None else None,
             latest_event_severity=latest_event.severity if latest_event is not None else None,
             latest_event_at=latest_event.occurred_at if latest_event is not None else None,
@@ -803,7 +828,15 @@ class DashboardController:
         )
         attention_agents = sum(1 for agent in agents if agent.needs_attention)
         sessions_total = sum(1 for agent in agents if agent.latest_session_id is not None)
-        total_tokens = sum(a.token_total or 0 for a in agents)
+        total_tokens = sum(
+            _resolved_token_total(
+                token_total=agent.token_total,
+                token_input=agent.token_input,
+                token_output=agent.token_output,
+            )
+            or 0
+            for agent in agents
+        )
         metrics: list[DashboardMetricView] = [
             DashboardMetricView(key="agents", label="Agents", value=total_agents),
             DashboardMetricView(key="active", label="Active", value=active_agents),
@@ -958,6 +991,33 @@ def _path_name(value: str | None) -> str | None:
     return path_name or value
 
 
+def _resolved_token_total(
+    *,
+    token_total: int | None,
+    token_input: int | None,
+    token_output: int | None,
+) -> int | None:
+    if token_total is not None:
+        return token_total
+    if token_input is not None and token_output is not None:
+        return token_input + token_output
+    return None
+
+
+def _effective_idle_seconds(agent: Agent, now: datetime) -> int:
+    """Render idle time as a live clock between monitoring syncs.
+
+    Monitoring persists a point-in-time ``idle_seconds`` snapshot. The
+    dashboard may refresh far more often than monitoring runs, so showing
+    that cached value directly makes the detail panel stick at ``0s`` or
+    another stale number until the next background sync. Recompute from the
+    most recent activity timestamp and keep the stored value as a floor.
+    """
+    reference = agent.last_activity_at or agent.started_at
+    live_idle_seconds = max(0, int((now - reference).total_seconds()))
+    return max(agent.idle_seconds, live_idle_seconds)
+
+
 def _check_runaway(
     agent: Agent,
     *,
@@ -1030,6 +1090,7 @@ def _check_stale_output(
     *,
     now: datetime,
     agent_status: AgentStatus,
+    observed_at: datetime | None = None,
 ) -> bool:
     """Return True when running agent output hasn't changed beyond threshold."""
     terminal = {AgentStatus.COMPLETED, AgentStatus.DEAD, AgentStatus.ERROR}
@@ -1038,11 +1099,26 @@ def _check_stale_output(
         return False
     current_hash = hashlib.md5(output_blob.encode(), usedforsecurity=False).hexdigest()
     previous = _output_hashes.get(agent_id)
-    if previous is None or previous[0] != current_hash:
-        _output_hashes[agent_id] = (current_hash, now)
+    if previous is None:
+        baseline = observed_at if observed_at is not None and observed_at <= now else now
+        _output_hashes[agent_id] = (current_hash, baseline)
+        stale_seconds = (now - baseline).total_seconds()
+        return stale_seconds > _STALE_THRESHOLD_SECONDS
+    if previous[0] != current_hash:
+        baseline = observed_at if observed_at is not None and observed_at <= now else now
+        _output_hashes[agent_id] = (current_hash, baseline)
         return False
     stale_seconds = (now - previous[1]).total_seconds()
     return stale_seconds > _STALE_THRESHOLD_SECONDS
+
+
+def _latest_output_observed_at(agent: Agent, latest_log: LogChunk | None, /) -> datetime:
+    candidates = [agent.last_seen_at]
+    if agent.last_activity_at is not None:
+        candidates.append(agent.last_activity_at)
+    if latest_log is not None:
+        candidates.append(latest_log.captured_at)
+    return max(candidates)
 
 
 def _to_view(snapshot: SubAgentSnapshot) -> DashboardSubAgentView:

@@ -585,6 +585,100 @@ class TestReadAgentInteractions:
         assert "wait=false" in second.arguments_summary
         assert second.result_content == "final answer"
 
+    def test_idle_read_agent_status_removes_background_subagent_from_running_bucket(
+        self, tmp_path: Path
+    ) -> None:
+        session_dir = tmp_path / "sess-idle"
+        events = [
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:00:00Z",'
+                '"data":{"toolName":"task","toolCallId":"tc-idle",'
+                '"arguments":{"name":"repo-architecture","agent_type":"explore",'
+                '"mode":"background","prompt":"summarize architecture"}}}'
+            ),
+            _started_event(
+                tool_call_id="tc-idle",
+                agent_name="explore",
+                display="Explore Agent",
+                timestamp="2026-01-01T00:00:01Z",
+            ),
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:01:00Z",'
+                '"data":{"toolName":"read_agent","toolCallId":"tc-read-idle",'
+                '"arguments":{"agent_id":"repo-architecture","wait":false}}}'
+            ),
+            (
+                '{"type":"tool.execution_complete","timestamp":"2026-01-01T00:01:05Z",'
+                '"data":{"toolCallId":"tc-read-idle","success":true,'
+                '"result":{"content":"Agent is idle (waiting for messages). '
+                "agent_id: repo-architecture, agent_type: explore, status: idle, "
+                'description: Summarizing architecture, elapsed: 71s, total_turns: 1"}}}'
+            ),
+        ]
+        _write_events(session_dir, events)
+        reader = SubAgentReader(store=_FakeStore(session_state_dir=tmp_path))  # type: ignore[arg-type]
+
+        tree = reader.read("sess-idle")
+
+        assert tree is not None
+        assert tree.running == ()
+        assert len(tree.recent) == 1
+        snap = tree.recent[0]
+        assert snap.tool_call_id == "tc-idle"
+        assert snap.completed_at == datetime(2026, 1, 1, 0, 1, 5, tzinfo=UTC)
+
+    def test_latest_read_agent_status_can_move_background_subagent_back_to_running(
+        self, tmp_path: Path
+    ) -> None:
+        session_dir = tmp_path / "sess-resume"
+        events = [
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:00:00Z",'
+                '"data":{"toolName":"task","toolCallId":"tc-resume",'
+                '"arguments":{"name":"repo-architecture","agent_type":"explore",'
+                '"mode":"background","prompt":"summarize architecture"}}}'
+            ),
+            _started_event(
+                tool_call_id="tc-resume",
+                agent_name="explore",
+                display="Explore Agent",
+                timestamp="2026-01-01T00:00:01Z",
+            ),
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:01:00Z",'
+                '"data":{"toolName":"read_agent","toolCallId":"tc-read-idle",'
+                '"arguments":{"agent_id":"repo-architecture","wait":false}}}'
+            ),
+            (
+                '{"type":"tool.execution_complete","timestamp":"2026-01-01T00:01:05Z",'
+                '"data":{"toolCallId":"tc-read-idle","success":true,'
+                '"result":{"content":"Agent is idle (waiting for messages). '
+                "agent_id: repo-architecture, agent_type: explore, status: idle, "
+                'description: Summarizing architecture, elapsed: 71s, total_turns: 1"}}}'
+            ),
+            (
+                '{"type":"tool.execution_start","timestamp":"2026-01-01T00:02:00Z",'
+                '"data":{"toolName":"read_agent","toolCallId":"tc-read-running",'
+                '"arguments":{"agent_id":"repo-architecture","wait":false}}}'
+            ),
+            (
+                '{"type":"tool.execution_complete","timestamp":"2026-01-01T00:02:01Z",'
+                '"data":{"toolCallId":"tc-read-running","success":true,'
+                '"result":{"content":"Agent is still running. agent_id: repo-architecture, '
+                "agent_type: explore, status: running, description: Summarizing architecture, "
+                'elapsed: 80s, total_turns: 1"}}}'
+            ),
+        ]
+        _write_events(session_dir, events)
+        reader = SubAgentReader(store=_FakeStore(session_state_dir=tmp_path))  # type: ignore[arg-type]
+
+        tree = reader.read("sess-resume")
+
+        assert tree is not None
+        assert len(tree.running) == 1
+        assert tree.running[0].tool_call_id == "tc-resume"
+        assert tree.recent == ()
+
     def test_background_subagent_with_no_read_agent_calls_still_captures_metrics(
         self, tmp_path: Path
     ) -> None:

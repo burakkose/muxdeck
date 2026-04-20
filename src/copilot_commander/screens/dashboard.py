@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
 from textual.app import ComposeResult
@@ -8,6 +9,7 @@ from textual.containers import Horizontal, Vertical
 from textual.timer import Timer
 from textual.widgets import Input
 
+from copilot_commander.adapters.pane_stream import PaneStreamAdapter
 from copilot_commander.bindings import DASHBOARD_BINDINGS, DASHBOARD_HINTS
 from copilot_commander.controllers import (
     AgentIntentView,
@@ -437,7 +439,9 @@ class DashboardScreen(ShellScreen):
             MoveWindowScreen(
                 self._selected_action_subject(),
                 current_window_name=agent.window_name,
-                choices=self.runtime.actions.window_choices(),
+                choices=self.runtime.actions.window_choices(
+                    exclude_window_id=agent.window_id,
+                ),
             ),
             callback=self._on_move_window_result,
         )
@@ -501,35 +505,39 @@ class DashboardScreen(ShellScreen):
         self.commander_app.remember_session_selection(session_id)
         self.commander_app.switch_mode("replay")
 
-    def action_view_pane(self) -> None:
-        """Open the pane mirror + compose editor for the selected agent.
-
-        The mirror shows a live-streaming view of the agent's tmux
-        pane (seeded from the current scrollback and followed via
-        ``tmux pipe-pane``) so the user never loses context while
-        composing.  The bottom half is a multi-line editor with full
-        Textual ``TextArea`` editing — selection, copy/cut/paste,
-        word-wise motion, undo, etc.  ``ctrl+s`` sends; ``esc``
-        closes.
-        """
-        if self._selected_agent_id is None:
+    def action_copy_details(self) -> None:
+        list_panel = self.query_one(AgentListPanel)
+        selected_agent_id = list_panel.selected_agent_id
+        if selected_agent_id is None:
             self.set_status("no agent selected")
             return
-        if self.runtime.actions is None:
-            self.set_status("✗ action service unavailable")
+        if selected_agent_id != self._selected_agent_id:
+            self._selected_agent_id = selected_agent_id
+            self.commander_app.remember_agent_selection(selected_agent_id)
+        self._update_selected_detail()
+        label = "sub-agent details" if list_panel.selected_subagent is not None else "agent details"
+        self.copy_rendered_text(label, self.query_one(AgentDetailPanel))
+
+    def action_view_pane(self) -> None:
+        """Open a full-screen live mirror for the selected agent pane."""
+        if self._selected_agent_id is None:
+            self.set_status("no agent selected")
             return
         agent = self._find_selected_agent()
         if agent is None or not agent.pane_id:
             self.set_status("✗ agent has no pane")
             return
-        if self.runtime.pane_stream is None:
+        pane_id, stream_adapter = self._resolve_live_mirror_target(agent)
+        if stream_adapter is None:
             self.set_status("✗ pane streaming unavailable")
             return
         self.app.push_screen(
             ComposeWithMirrorScreen(
                 self.runtime,
-                pane_id=agent.pane_id,
+                pane_id=pane_id,
                 display_name=agent.repo_name or agent.name,
+                show_editor=False,
+                stream_adapter=stream_adapter,
             )
         )
 
@@ -664,6 +672,35 @@ class DashboardScreen(ShellScreen):
         else:
             self.query_one(AgentDetailPanel).set_agent(selected_view)
         self.query_one(LogPreviewPanel).set_logs(selected_view)
+
+    def _resolve_live_mirror_target(
+        self,
+        agent: DashboardAgentListItemView,
+    ) -> tuple[str, PaneStreamAdapter | None]:
+        stream_adapter = self.runtime.pane_stream
+        if not agent.pane_id:
+            return "", stream_adapter
+        resolver = self.runtime.session_resolver
+        if resolver is None:
+            return agent.pane_id, stream_adapter
+        agent_record = self.runtime.store.get_agent(agent.agent_id)
+        if agent_record is None:
+            return agent.pane_id, stream_adapter
+        target = resolver.resolve_target_for_pid(getattr(agent_record, "pid", None))
+        if target is None or target.pane_id is None:
+            return agent.pane_id, stream_adapter
+        if target.socket_path is None:
+            return target.pane_id, stream_adapter
+        nested_stream = self._stream_adapter_for_socket(target.socket_path)
+        if nested_stream is None:
+            return agent.pane_id, stream_adapter
+        return target.pane_id, nested_stream
+
+    def _stream_adapter_for_socket(self, socket_path: Path) -> PaneStreamAdapter | None:
+        tmux = self.runtime.tmux
+        if tmux is None:
+            return None
+        return PaneStreamAdapter(tmux=tmux.with_socket_path(socket_path))
 
     def _preview_line_limit(self) -> int:
         return min(max(self.runtime.config.general.log_preview_lines, 12), 24)

@@ -20,7 +20,9 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
+
+from copilot_commander.adapters.tmux_adapter import parse_tmux_socket_path
 
 _log = logging.getLogger(__name__)
 
@@ -55,6 +57,23 @@ class _RootProvider(Protocol):
     def extra_roots(self) -> tuple[object, ...]: ...
 
 
+@dataclass(frozen=True, slots=True)
+class CopilotSessionResolution:
+    session_id: str | None = None
+    state: Literal["resolved", "ambiguous", "missing"] = "missing"
+
+    @property
+    def is_ambiguous(self) -> bool:
+        return self.state == "ambiguous"
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedCopilotTarget:
+    session_id: str
+    pane_id: str | None = None
+    socket_path: Path | None = None
+
+
 @dataclass(slots=True)
 class InuseLockResolver:
     """Map a pane pid to a Copilot session id via ``inuse.<pid>.lock``.
@@ -69,9 +88,8 @@ class InuseLockResolver:
     proc_dir: Path = field(default_factory=lambda: Path("/proc"))
     _max_ancestors: int = 16
 
-    def resolve_for_pid(self, pane_pid: int | None) -> str | None:
-        """Return the Copilot session id whose live process is hosted
-        under ``pane_pid``, or ``None`` when no live match exists.
+    def resolve(self, pane_pid: int | None) -> CopilotSessionResolution:
+        """Return the live-session resolution for ``pane_pid``.
 
         Stale ``inuse.<pid>.lock`` files are the dominant failure mode
         here: Copilot does not always clean up its lock on exit, and
@@ -96,14 +114,35 @@ class InuseLockResolver:
         behaviour — tests still exercise the old branch and
         non-Linux hosts don't have a better signal anyway.
         """
+        exact_matches, descendant_matches = self._collect_matches(pane_pid)
+        exact_resolution = _resolution_from_matches(exact_matches)
+        if exact_resolution.state != "missing":
+            return exact_resolution
+        return _resolution_from_matches(descendant_matches)
+
+    def resolve_for_pid(self, pane_pid: int | None) -> str | None:
+        return self.resolve(pane_pid).session_id
+
+    def resolve_target_for_pid(self, pane_pid: int | None) -> ResolvedCopilotTarget | None:
+        exact_matches, descendant_matches = self._collect_matches(pane_pid)
+        exact_target = _target_from_matches(exact_matches)
+        if exact_target is not None:
+            return exact_target
+        return _target_from_matches(descendant_matches)
+
+    def _collect_matches(
+        self,
+        pane_pid: int | None,
+    ) -> tuple[list[ResolvedCopilotTarget], list[ResolvedCopilotTarget]]:
         if pane_pid is None or pane_pid <= 0:
-            return None
+            return [], []
         have_proc = self.proc_dir.is_dir()
-        fallback: str | None = None
+        exact_matches: list[ResolvedCopilotTarget] = []
+        descendant_matches: list[ResolvedCopilotTarget] = []
         for session_dir, lock_pid in self._iter_locks():
             if not have_proc:
                 if lock_pid == pane_pid:
-                    return session_dir.name
+                    exact_matches.append(ResolvedCopilotTarget(session_id=session_dir.name))
                 continue
             cmdline = self._read_cmdline(lock_pid)
             if cmdline is None:
@@ -116,13 +155,13 @@ class InuseLockResolver:
                 # lock file is a fossil; ignore it.
                 continue
             effective_session = _extract_resume_session(cmdline) or session_dir.name
+            target = self._build_target(effective_session, lock_pid)
             if lock_pid == pane_pid:
-                return effective_session
-            if fallback is None and self._is_descendant(lock_pid, pane_pid):
-                # Remember this descendant hit as a fallback but keep
-                # scanning — a later exact-pid match should still win.
-                fallback = effective_session
-        return fallback
+                exact_matches.append(target)
+                continue
+            if self._is_descendant(lock_pid, pane_pid):
+                descendant_matches.append(target)
+        return exact_matches, descendant_matches
 
     def _iter_locks(self) -> Iterable[tuple[Path, int]]:
         for root in self._roots():
@@ -195,6 +234,31 @@ class InuseLockResolver:
             return ""
         return raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
 
+    def _build_target(self, session_id: str, pid: int) -> ResolvedCopilotTarget:
+        environ = self._read_environ(pid)
+        return ResolvedCopilotTarget(
+            session_id=session_id,
+            pane_id=environ.get("TMUX_PANE"),
+            socket_path=parse_tmux_socket_path(environ.get("TMUX")),
+        )
+
+    def _read_environ(self, pid: int) -> dict[str, str]:
+        environ_path = self.proc_dir / str(pid) / "environ"
+        try:
+            raw = environ_path.read_bytes()
+        except OSError:
+            return {}
+        values: dict[str, str] = {}
+        for chunk in raw.split(b"\x00"):
+            if not chunk or b"=" not in chunk:
+                continue
+            key, value = chunk.split(b"=", 1)
+            values[key.decode("utf-8", errors="replace")] = value.decode(
+                "utf-8",
+                errors="replace",
+            )
+        return values
+
 
 def _parse_lock_pid(name: str) -> int | None:
     if not name.startswith("inuse.") or not name.endswith(".lock"):
@@ -220,3 +284,40 @@ def _extract_resume_session(cmdline: str) -> str | None:
     """Extract ``--resume=<uuid>`` from a Copilot cmdline, if present."""
     match = _RESUME_RE.search(cmdline)
     return match.group(1) if match else None
+
+
+def _resolution_from_matches(
+    matches: Iterable[ResolvedCopilotTarget],
+) -> CopilotSessionResolution:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for match in matches:
+        session_id = match.session_id
+        if session_id in seen:
+            continue
+        seen.add(session_id)
+        unique.append(session_id)
+    if len(unique) == 1:
+        return CopilotSessionResolution(session_id=unique[0], state="resolved")
+    if unique:
+        return CopilotSessionResolution(state="ambiguous")
+    return CopilotSessionResolution()
+
+
+def _target_from_matches(
+    matches: Iterable[ResolvedCopilotTarget],
+) -> ResolvedCopilotTarget | None:
+    merged: dict[str, ResolvedCopilotTarget] = {}
+    for match in matches:
+        existing = merged.get(match.session_id)
+        if existing is None:
+            merged[match.session_id] = match
+            continue
+        merged[match.session_id] = ResolvedCopilotTarget(
+            session_id=match.session_id,
+            pane_id=existing.pane_id or match.pane_id,
+            socket_path=existing.socket_path or match.socket_path,
+        )
+    if len(merged) == 1:
+        return next(iter(merged.values()))
+    return None

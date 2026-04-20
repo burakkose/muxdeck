@@ -21,6 +21,7 @@ _GIT_COMMON_DIR_ARGS = ("rev-parse", "--path-format=absolute", "--git-common-dir
 _GIT_TOPLEVEL_ARGS = ("rev-parse", "--path-format=absolute", "--show-toplevel")
 _GIT_STATUS_ARGS = ("status", "--short", "--branch", "--untracked-files=all")
 _GIT_WORKTREE_LIST_ARGS = ("worktree", "list", "--porcelain")
+_GIT_LOG_FORMAT = "%h%x1f%cr%x1f%s"
 _NO_UPSTREAM_SNIPPETS = (
     "no upstream configured",
     "no upstream branch",
@@ -28,6 +29,11 @@ _NO_UPSTREAM_SNIPPETS = (
     "does not have any commits yet",
     "unknown revision",
     "head does not point to a branch",
+)
+_NO_COMMIT_HISTORY_SNIPPETS = (
+    "does not have any commits yet",
+    "bad default revision 'head'",
+    "bad revision 'head'",
 )
 
 
@@ -92,6 +98,13 @@ class GitRepositorySnapshot:
     status_summary: GitStatusSummary
     current_worktree: GitWorktreeInfo | None
     safety_issues: tuple[GitSafetyIssue, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GitCommitSummary:
+    short_sha: str
+    relative_date: str
+    subject: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +259,51 @@ class GitAdapter:
                 ahead_behind=ahead_behind,
             ),
         )
+
+    def list_recent_commits(
+        self,
+        cwd: PathLike,
+        /,
+        *,
+        limit: int = 5,
+    ) -> tuple[GitCommitSummary, ...]:
+        if limit <= 0:
+            return ()
+        normalized_cwd = _normalize_path(cwd)
+        command = (
+            self._binary,
+            "log",
+            f"-{limit}",
+            "--date=relative",
+            f"--pretty=format:{_GIT_LOG_FORMAT}",
+        )
+        try:
+            result = self._run_command(command, cwd=normalized_cwd)
+        except GitCommandError as exc:
+            stderr = (exc.stderr or "").casefold()
+            if any(snippet in stderr for snippet in _NO_COMMIT_HISTORY_SNIPPETS):
+                return ()
+            raise
+        commits: list[GitCommitSummary] = []
+        for raw_line in result.stdout.splitlines():
+            if not raw_line.strip():
+                continue
+            short_sha, separator, remainder = raw_line.partition("\x1f")
+            relative_date, separator_two, subject = remainder.partition("\x1f")
+            if not separator or not separator_two:
+                self._raise_git_error(
+                    command,
+                    stderr=f"unexpected git log output: {raw_line}",
+                    stdout=result.stdout,
+                )
+            commits.append(
+                GitCommitSummary(
+                    short_sha=short_sha.strip(),
+                    relative_date=relative_date.strip(),
+                    subject=subject.strip(),
+                )
+            )
+        return tuple(commits)
 
     def build_create_worktree_command(
         self,

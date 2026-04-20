@@ -11,6 +11,8 @@ from textual.widgets import Static
 from copilot_commander.controllers import (
     WorktreeConflictView,
     WorktreeDetailView,
+    WorktreeProvenanceKind,
+    WorktreeProvenanceView,
     WorktreeStartAgentIntent,
     WorktreeSummaryView,
 )
@@ -50,9 +52,45 @@ def _field_row(
     text.append(f"{value}\n", style=style)
 
 
+def _truncate(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    if limit <= 1:
+        return value[:limit]
+    return value[: limit - 1] + "…"
+
+
 def _worktree_dir_name(path: str) -> str:
     """Extract the last directory component for disambiguation."""
     return Path(path).name if path else ""
+
+
+def _change_style(kind: str) -> str:
+    return {
+        "conflict": f"bold {SEVERITY_ERROR}",
+        "untracked": f"bold {AQUA}",
+        "mixed": f"bold {ORANGE}",
+        "staged": f"bold {GREEN}",
+        "unstaged": f"bold {YELLOW}",
+    }.get(kind, FG2)
+
+
+def _provenance_icon(provenance: WorktreeProvenanceView) -> str:
+    return "⚡" if provenance.kind != WorktreeProvenanceKind.SESSION else "◌"
+
+
+def _provenance_field_label(provenance: WorktreeProvenanceView) -> str:
+    return {
+        WorktreeProvenanceKind.ASSIGNED: "owner",
+        WorktreeProvenanceKind.LIVE_AGENT: "agent",
+        WorktreeProvenanceKind.SESSION: "recent",
+    }[provenance.kind]
+
+
+def _provenance_value(provenance: WorktreeProvenanceView) -> str:
+    if provenance.agent_name and provenance.agent_name != provenance.agent_id:
+        return f"{provenance.agent_name} ({provenance.agent_id})"
+    return provenance.label
 
 
 class WorktreeListPanel(Static, can_focus=True):
@@ -102,9 +140,9 @@ class WorktreeListPanel(Static, can_focus=True):
         if notify:
             self._post_selection(self._selected_index)
 
-    def move_cursor(self, delta: int) -> None:
+    def move_cursor(self, delta: int) -> str | None:
         if not self._worktrees:
-            return
+            return None
         new_idx = self._selected_index + delta
         self._selected_index = max(
             0,
@@ -113,9 +151,16 @@ class WorktreeListPanel(Static, can_focus=True):
         self.focus()
         self._refresh_list()
         self._post_selection(self._selected_index)
+        return self.selected_worktree_id
 
     def focus_list(self) -> None:
         self.focus()
+
+    @property
+    def selected_worktree_id(self) -> str | None:
+        if not self._worktrees:
+            return None
+        return self._worktrees[self._selected_index].worktree_id
 
     def _post_selection(self, index: int | None) -> None:
         if index is None or index >= len(self._worktrees):
@@ -189,9 +234,12 @@ class WorktreeListPanel(Static, can_focus=True):
             indicators: list[tuple[str, str]] = []
             if wt.is_dirty:
                 indicators.append(("D", f"bold {ORANGE}"))
-            if wt.assigned_agent_name:
+            if wt.provenance is not None:
                 indicators.append(
-                    (f"⚡{wt.assigned_agent_name}", f"bold {AQUA}"),
+                    (
+                        f"{_provenance_icon(wt.provenance)}{wt.provenance.label}",
+                        f"bold {AQUA}",
+                    ),
                 )
 
             if indicators:
@@ -242,6 +290,7 @@ class WorktreeDetailPanel(Static):
         # ── git info ──
         _field_row(result, "repo", summary.repo_root, FG2)
         _field_row(result, "base", summary.base_branch, FG1)
+        _field_row(result, "tracking", detail.branch_status, FG1)
         if summary.ahead_count is not None and summary.ahead_count > 0:
             _field_row(
                 result,
@@ -256,12 +305,17 @@ class WorktreeDetailPanel(Static):
                 str(summary.behind_count),
                 ORANGE,
             )
+        _field_row(result, "changes", detail.change_summary, FG1)
 
         # ── agent assignment ──
-        agent_name = summary.assigned_agent_name or summary.assigned_agent_id
-        if agent_name:
+        if summary.provenance is not None:
             result.append("\n")
-            _field_row(result, "agent", agent_name, f"bold {AQUA}")
+            _field_row(
+                result,
+                _provenance_field_label(summary.provenance),
+                _provenance_value(summary.provenance),
+                f"bold {AQUA}",
+            )
         _field_row(
             result,
             "sessions",
@@ -274,6 +328,35 @@ class WorktreeDetailPanel(Static):
             ", ".join(detail.pane_targets) if detail.pane_targets else None,
             BLUE,
         )
+
+        if detail.status_entries:
+            result.append("\n")
+            result.append("  changes\n", style=f"bold {FG4}")
+            visible_changes = detail.status_entries[:6]
+            for change in visible_changes:
+                result.append("  ")
+                result.append(f"{change.code:<2}", style=_change_style(change.kind))
+                result.append("  ", style=FG4)
+                result.append(f"{_truncate(change.path, 56)}\n", style=FG2)
+            remaining_changes = len(detail.status_entries) - len(visible_changes)
+            if remaining_changes > 0:
+                result.append(f"  +{remaining_changes} more\n", style=FG4)
+
+        if detail.recent_commits:
+            result.append("\n")
+            result.append("  recent commits\n", style=f"bold {FG4}")
+            for commit in detail.recent_commits[:5]:
+                result.append("  ")
+                result.append(commit.short_sha, style=f"bold {AQUA}")
+                result.append("  ")
+                result.append(_truncate(commit.subject, 42), style=FG1)
+                result.append("  ")
+                result.append(commit.relative_date, style=FG4)
+                result.append("\n")
+
+        result.append("\n  press ", style=FG4)
+        result.append("g", style=f"bold {BLUE}")
+        result.append(" to open a git terminal here\n", style=FG4)
 
         self.update(result)
 

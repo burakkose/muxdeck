@@ -14,6 +14,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from copilot_commander.adapters.copilot_activity_reader import AgentActivity, TranscriptLine
+from copilot_commander.adapters.copilot_session_resolver import CopilotSessionResolution
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.controllers.dashboard_controller import (
     DashboardController,
@@ -96,17 +97,42 @@ class InMemoryDashboardStore:
 
 
 class StubActivityReader:
-    def __init__(self, activity: AgentActivity | None) -> None:
+    def __init__(
+        self,
+        activity: AgentActivity | None,
+        *,
+        transcript: tuple[TranscriptLine, ...] = (),
+    ) -> None:
         self.activity = activity
+        self.transcript = transcript
         self.calls: list[str] = []
+        self.transcript_calls: list[tuple[str, int]] = []
 
     def read(self, session_id: str) -> AgentActivity | None:
         self.calls.append(session_id)
         return self.activity
 
     def read_transcript(self, session_id: str, *, limit: int = 40) -> tuple[TranscriptLine, ...]:
-        del session_id, limit
-        return ()
+        self.transcript_calls.append((session_id, limit))
+        return self.transcript[-limit:]
+
+
+class StubSessionResolver:
+    def __init__(self, session_id: str | None = None, *, ambiguous: bool = False) -> None:
+        state = "missing"
+        if session_id is not None:
+            state = "resolved"
+        elif ambiguous:
+            state = "ambiguous"
+        self.resolution = CopilotSessionResolution(session_id=session_id, state=state)
+        self.calls: list[int | None] = []
+
+    def resolve(self, pane_pid: int | None, /) -> CopilotSessionResolution:
+        self.calls.append(pane_pid)
+        return self.resolution
+
+    def resolve_for_pid(self, pane_pid: int | None, /) -> str | None:
+        return self.resolve(pane_pid).session_id
 
 
 class DashboardControllerTests(unittest.TestCase):
@@ -212,10 +238,44 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertEqual(state.selected_agent_id, "agent-1")
         assert state.selected_agent is not None
         self.assertEqual(state.selected_agent.worktree_id, "worktree-1")
+        self.assertEqual(state.selected_agent.item.token_input, 10)
+        self.assertEqual(state.selected_agent.item.token_output, 20)
+        self.assertEqual(state.selected_agent.item.token_total, 30)
         self.assertEqual(
             [line.content for line in state.selected_agent.log_preview],
             ["beta", "gamma"],
         )
+
+    def test_build_state_derives_token_total_from_input_and_output(self) -> None:
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Reviewer",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo/worktrees/review",
+            repo_root="/repo",
+            worktree_path="/repo/worktrees/review",
+            branch="task/review",
+            task_title="Review",
+            status=AgentStatus.RUNNING,
+            started_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+            last_activity_at=datetime(2025, 1, 1, 12, 4, tzinfo=UTC),
+            last_seen_at=observed_at,
+            token_input=10,
+            token_output=20,
+            estimated_cost_usd=Decimal("0.250000"),
+        )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        state = controller.build_state(selected_agent_id="agent-1")
+
+        self.assertEqual([metric.value for metric in state.metrics], [1, 1, 0, 0, 30])
+        self.assertEqual(state.agents[0].token_total, 30)
+        assert state.selected_agent is not None
+        self.assertEqual(state.selected_agent.item.token_total, 30)
 
     def test_terminal_status_agents_do_not_produce_alerts(self) -> None:
         """DEAD / COMPLETED agents carrying stale attention flags are
@@ -329,6 +389,159 @@ class DashboardControllerTests(unittest.TestCase):
 
         self.assertEqual(activity_reader.calls, ["copilot-123"])
         self.assertEqual(state.agents[0].current_activity, "Inspecting dashboard widgets")
+
+    def test_build_state_uses_session_resolver_for_activity_and_transcript_preview(self) -> None:
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Planner",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Plan dashboard",
+            pid=4242,
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_seen_at=observed_at,
+        )
+        store.sessions["session-1"] = Session(
+            id="session-1",
+            agent_id="agent-1",
+            task_title="Plan dashboard",
+            created_at=observed_at,
+        )
+        activity_reader = StubActivityReader(
+            AgentActivity(
+                intent="Inspecting dashboard",
+                tool_name="view",
+                tool_target="dashboard.py",
+                summary="Inspecting dashboard widgets",
+                waiting_for_user=False,
+                latest_at=observed_at,
+            ),
+            transcript=(
+                TranscriptLine(
+                    at=observed_at,
+                    role="assistant",
+                    content="live transcript line",
+                    sequence_no=1,
+                ),
+            ),
+        )
+        resolver = StubSessionResolver("copilot-live")
+
+        controller = DashboardController(
+            store,
+            clock=lambda: observed_at,
+            activity_reader=activity_reader,
+            session_resolver=resolver,
+        )
+        state = controller.build_state(selected_agent_id="agent-1", preview_line_limit=1)
+
+        self.assertEqual(resolver.calls, [4242, 4242])
+        self.assertEqual(activity_reader.calls, ["copilot-live"])
+        self.assertEqual(activity_reader.transcript_calls, [("copilot-live", 1)])
+        self.assertEqual(state.agents[0].current_activity, "Inspecting dashboard widgets")
+        assert state.selected_agent is not None
+        self.assertEqual(
+            [line.content for line in state.selected_agent.log_preview],
+            ["live transcript line"],
+        )
+
+    def test_build_state_skips_stale_session_fallback_when_live_resolution_is_ambiguous(
+        self,
+    ) -> None:
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Planner",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Plan dashboard",
+            pid=4242,
+            copilot_session_id="stale-agent-session",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_seen_at=observed_at,
+        )
+        store.sessions["session-1"] = Session(
+            id="session-1",
+            agent_id="agent-1",
+            task_title="Plan dashboard",
+            copilot_session_id="stale-session-row",
+            created_at=observed_at,
+        )
+        activity_reader = StubActivityReader(
+            AgentActivity(
+                intent="Inspecting dashboard",
+                tool_name="view",
+                tool_target="dashboard.py",
+                summary="Inspecting dashboard widgets",
+                waiting_for_user=False,
+                latest_at=observed_at,
+            ),
+            transcript=(
+                TranscriptLine(
+                    at=observed_at,
+                    role="assistant",
+                    content="wrong transcript line",
+                    sequence_no=1,
+                ),
+            ),
+        )
+        resolver = StubSessionResolver(ambiguous=True)
+
+        controller = DashboardController(
+            store,
+            clock=lambda: observed_at,
+            activity_reader=activity_reader,
+            session_resolver=resolver,
+        )
+        state = controller.build_state(selected_agent_id="agent-1", preview_line_limit=1)
+
+        self.assertEqual(resolver.calls, [4242, 4242])
+        self.assertEqual(activity_reader.calls, [])
+        self.assertEqual(activity_reader.transcript_calls, [])
+        assert state.selected_agent is not None
+        self.assertIsNone(state.selected_agent.copilot_session_id)
+
+    def test_build_state_recomputes_live_idle_seconds_from_last_activity(self) -> None:
+        store = InMemoryDashboardStore()
+        started_at = datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
+        last_activity_at = datetime(2025, 1, 1, 12, 4, tzinfo=UTC)
+        observed_at = datetime(2025, 1, 1, 12, 5, 15, tzinfo=UTC)
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Planner",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Plan dashboard",
+            status=AgentStatus.RUNNING,
+            started_at=started_at,
+            last_activity_at=last_activity_at,
+            last_seen_at=last_activity_at,
+            idle_seconds=0,
+        )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        state = controller.build_state(selected_agent_id="agent-1")
+
+        self.assertEqual(state.agents[0].idle_seconds, 75)
+        assert state.selected_agent is not None
+        self.assertEqual(state.selected_agent.item.idle_seconds, 75)
 
     def test_log_preview_dedupes_static_scrollback_across_snapshots(self) -> None:
         # Each tmux_capture LogChunk is a complete pane snapshot, not

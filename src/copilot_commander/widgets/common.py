@@ -42,6 +42,7 @@ ACTION_HINT_KEYS: frozenset[str] = frozenset(
         "R",
         "enter",
         "↵",
+        "y",
     }
 )
 

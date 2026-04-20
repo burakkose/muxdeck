@@ -10,6 +10,7 @@ import unittest
 
 from copilot_commander.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
 from copilot_commander.adapters.git_adapter import (
+    GitCommitSummary,
     GitRepositorySnapshot,
     GitWorktreeCreateOutcome,
     GitWorktreeCreateRequest,
@@ -48,6 +49,16 @@ class FakeGit:
 
     def inspect_repository(self, cwd: str | Path, /) -> GitRepositorySnapshot:
         return self._snapshots[Path(cwd).resolve(strict=False)]
+
+    def list_recent_commits(
+        self,
+        cwd: str | Path,
+        /,
+        *,
+        limit: int = 5,
+    ) -> tuple[GitCommitSummary, ...]:
+        del cwd, limit
+        return ()
 
     def create_worktree(
         self,
@@ -308,6 +319,83 @@ class WorktreeServiceTests(unittest.TestCase):
         report = self.service.prune_worktrees(self.repo_root, dry_run=True)
 
         self.assertEqual(report.pruned_paths, (prunable.path,))
+
+    def test_remove_worktree_reconciles_store_against_remaining_git_worktrees(self) -> None:
+        tracked = Worktree(
+            id="worktree-live",
+            repo_root=str(self.repo_root),
+            path=str(self.workspace_root / "repo--task"),
+            branch="task/live",
+            created_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+            last_seen_at=datetime(2025, 1, 1, 12, 1, tzinfo=UTC),
+        )
+        ghost = Worktree(
+            id="worktree-ghost",
+            repo_root=str(self.repo_root),
+            path=str(self.workspace_root / "repo--ghost"),
+            branch="task/ghost",
+            created_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+            last_seen_at=datetime(2025, 1, 1, 12, 1, tzinfo=UTC),
+        )
+        self.store.upsert_worktree(tracked)
+        self.store.upsert_worktree(ghost)
+        self.git._worktrees.append(
+            GitWorktreeInfo(
+                repo_root=self.repo_root,
+                path=Path(tracked.path),
+                branch=tracked.branch,
+                is_main_worktree=False,
+            )
+        )
+
+        self.service.remove_worktree(tracked.id)
+
+        self.assertIsNone(self.store.get_worktree(tracked.id))
+        self.assertIsNone(self.store.get_worktree(ghost.id))
+
+    def test_prune_worktrees_reconciles_store_against_git_state(self) -> None:
+        prunable = GitWorktreeInfo(
+            repo_root=self.repo_root,
+            path=self.workspace_root / "repo--old",
+            branch="task/old",
+            is_main_worktree=False,
+            is_prunable=True,
+        )
+        stale = Worktree(
+            id="worktree-stale",
+            repo_root=str(self.repo_root),
+            path=str(self.workspace_root / "repo--stale"),
+            branch="task/stale",
+            created_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+            last_seen_at=datetime(2025, 1, 1, 12, 1, tzinfo=UTC),
+        )
+        self.store.upsert_worktree(
+            Worktree(
+                id="worktree-old",
+                repo_root=str(self.repo_root),
+                path=str(prunable.path),
+                branch="task/old",
+                created_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+                last_seen_at=datetime(2025, 1, 1, 12, 1, tzinfo=UTC),
+            )
+        )
+        self.store.upsert_worktree(stale)
+        self.git._worktrees.append(prunable)
+        self.git._snapshots[prunable.path] = GitRepositorySnapshot(
+            repo_root=self.repo_root,
+            branch="task/old",
+            is_dirty=False,
+            ahead_behind=AheadBehindCounts(recognized=True),
+            status_summary=GitStatusSummary(entries=()),
+            current_worktree=prunable,
+            safety_issues=(),
+        )
+
+        report = self.service.prune_worktrees(self.repo_root, dry_run=False)
+
+        self.assertEqual(report.pruned_paths, (prunable.path,))
+        self.assertIsNone(self.store.get_worktree_by_path(str(prunable.path)))
+        self.assertIsNone(self.store.get_worktree(stale.id))
 
 
 def _result(command: tuple[str, ...], *, cwd: Path) -> CommandResult:

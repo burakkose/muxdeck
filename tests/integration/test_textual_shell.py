@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import threading
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -9,6 +10,7 @@ from typing import Any, Literal, cast
 import pytest
 from textual.widgets import Input
 
+from copilot_commander.adapters.pane_stream import PaneStreamAdapter
 from copilot_commander.app import CommanderApp, CommanderRuntime
 from copilot_commander.controllers import (
     DashboardAgentListItemView,
@@ -28,14 +30,20 @@ from copilot_commander.controllers import (
     SessionListItemView,
     SessionsState,
     WorktreeActionView,
+    WorktreeChangeView,
+    WorktreeCommitView,
     WorktreeConflictView,
     WorktreeDetailView,
+    WorktreeProvenanceKind,
+    WorktreeProvenanceView,
     WorktreeStartAgentIntent,
     WorktreeSummaryView,
 )
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.models import Session
 from copilot_commander.services import SetupCheck, SetupDoctorReport, TmuxSocketOption
+from copilot_commander.services.action_service import WindowChoice
+from copilot_commander.widgets.live_pane_viewer import LivePaneViewer
 
 
 class FakeConfig:
@@ -59,22 +67,28 @@ class FakeStore:
             "session-1": Session(id="session-1", agent_id="agent-1", created_at=timestamp),
             "session-2": Session(id="session-2", agent_id="agent-2", created_at=timestamp),
         }
-        self.list_agents_calls = 0
-
-    def list_agents(self) -> tuple[object, ...]:
-        self.list_agents_calls += 1
-        return (
-            type(
+        self.agent_records: dict[str, object] = {
+            "agent-1": type(
                 "AgentRecord",
                 (),
                 {
+                    "agent_id": "agent-1",
+                    "pid": 1101,
                     "copilot_session_id": "session-1",
                     "tmux_pane_id": "%1",
                     "tmux_window_id": "@1",
                     "tmux_session_name": "muxdeck",
                 },
             )(),
-        )
+        }
+        self.list_agents_calls = 0
+
+    def list_agents(self) -> tuple[object, ...]:
+        self.list_agents_calls += 1
+        return tuple(self.agent_records.values())
+
+    def get_agent(self, agent_id: str) -> object | None:
+        return self.agent_records.get(agent_id)
 
     def get_session(self, session_id: str) -> Session | None:
         return self.sessions.get(session_id)
@@ -98,6 +112,99 @@ class ThreadBoundFakeStore(FakeStore):
         return super().list_agents()
 
 
+class FakePaneTmux:
+    def __init__(
+        self,
+        *,
+        socket_path: Path | None = None,
+        snapshots: dict[tuple[Path | None, str], str] | None = None,
+        pipe_paths: list[Path] | None = None,
+        stopped: list[str] | None = None,
+        sent: list[tuple[str, tuple[str, ...], bool]] | None = None,
+        capture_calls: list[tuple[Path | None, str]] | None = None,
+        pipe_calls: list[tuple[Path | None, str]] | None = None,
+    ) -> None:
+        self.socket_path = socket_path
+        self._snapshots = snapshots or {
+            (None, "%1"): "planner live output\n",
+            (None, "%2"): "review live output\n",
+        }
+        self.pipe_paths = [] if pipe_paths is None else pipe_paths
+        self.stopped = [] if stopped is None else stopped
+        self.sent = [] if sent is None else sent
+        self.capture_calls = [] if capture_calls is None else capture_calls
+        self.pipe_calls = [] if pipe_calls is None else pipe_calls
+
+    def with_socket_path(self, socket_path: Path | None) -> FakePaneTmux:
+        return FakePaneTmux(
+            socket_path=socket_path,
+            snapshots=self._snapshots,
+            pipe_paths=self.pipe_paths,
+            stopped=self.stopped,
+            sent=self.sent,
+            capture_calls=self.capture_calls,
+            pipe_calls=self.pipe_calls,
+        )
+
+    def set_snapshot(
+        self,
+        pane_id: str,
+        text: str,
+        *,
+        socket_path: Path | None = None,
+    ) -> None:
+        self._snapshots[(socket_path, pane_id)] = text
+
+    def capture_pane(
+        self,
+        target_pane: str,
+        /,
+        *,
+        start_line: str | int | None = None,
+        end_line: str | int | None = None,
+        join_wrapped_lines: bool = False,
+        include_escape_sequences: bool = False,
+    ) -> str:
+        del start_line, end_line, join_wrapped_lines, include_escape_sequences
+        self.capture_calls.append((self.socket_path, target_pane))
+        return self._snapshots.get(
+            (self.socket_path, target_pane),
+            self._snapshots.get((None, target_pane), f"{target_pane} live output\n"),
+        )
+
+    def pipe_pane_to_file(
+        self,
+        target_pane: str,
+        /,
+        *,
+        target_path: Path,
+        append: bool = True,
+    ) -> None:
+        del append
+        self.pipe_calls.append((self.socket_path, target_pane))
+        self.pipe_paths.append(target_path)
+
+    def stop_pipe_pane(self, target_pane: str, /) -> None:
+        self.stopped.append(target_pane)
+
+    def send_keys(
+        self,
+        target_pane: str,
+        keys: Sequence[str],
+        /,
+        *,
+        literal: bool = False,
+        append_enter: bool = False,
+    ) -> object:
+        del append_enter
+        self.sent.append((target_pane, tuple(keys), literal))
+        return object()
+
+    def pane_exists(self, target_pane: str, /) -> bool:
+        del target_pane
+        return True
+
+
 class FakeDashboardController:
     def build_state(
         self,
@@ -119,6 +226,8 @@ class FakeDashboardController:
                 branch="task/planner",
                 worktree_name="planner",
                 pane_id="%1",
+                window_name="editor",
+                window_id="@1",
                 task_title="Plan UI shell",
                 worktree_path="/repo/planner",
                 latest_session_id="session-1",
@@ -130,6 +239,8 @@ class FakeDashboardController:
                 needs_attention=False,
                 attention_reason=None,
                 token_total=120,
+                token_input=90,
+                token_output=30,
                 estimated_cost_usd="0.120000",
                 current_activity="Planning dashboard layout",
                 sparkline="▁▂▄▆█",
@@ -142,6 +253,8 @@ class FakeDashboardController:
                 branch="task/reviewer",
                 worktree_name="reviewer",
                 pane_id="%2",
+                window_name="review",
+                window_id="@2",
                 task_title="Review logs",
                 worktree_path="/repo/reviewer",
                 latest_session_id="session-2",
@@ -153,6 +266,8 @@ class FakeDashboardController:
                 needs_attention=True,
                 attention_reason="waiting for operator",
                 token_total=33,
+                token_input=20,
+                token_output=13,
                 estimated_cost_usd="0.033000",
                 current_activity="Reviewing logs",
                 sparkline="▁▁▂▃▄▅",
@@ -168,6 +283,7 @@ class FakeDashboardController:
             metrics=(
                 DashboardMetricView(key="agents", label="Agents", value=2),
                 DashboardMetricView(key="active", label="Active", value=2),
+                DashboardMetricView(key="tokens", label="Tokens", value=153),
             ),
             filters=filters or DashboardFilterState(),
             sort=DashboardSort(),
@@ -220,6 +336,19 @@ class FakeDashboardController:
                 recent_events=("⚡ Running tests", "⚠ Needs input"),
             ),
         )
+
+    def build_selected_agent_view(
+        self,
+        item: DashboardAgentListItemView,
+        *,
+        preview_line_limit: int = 8,
+    ) -> DashboardSelectedAgentView:
+        state = self.build_state(
+            selected_agent_id=item.agent_id,
+            preview_line_limit=preview_line_limit,
+        )
+        assert state.selected_agent is not None
+        return state.selected_agent
 
 
 class FakeAgentController:
@@ -321,6 +450,34 @@ class FakeAgentController:
 class FakeActionService:
     def __init__(self) -> None:
         self.calls: list[tuple[object, ...]] = []
+        self._window_choices: tuple[WindowChoice, ...] = (
+            WindowChoice(
+                session_name="muxdeck",
+                window_id="@1",
+                window_name="editor",
+                pane_count=1,
+            ),
+            WindowChoice(
+                session_name="muxdeck",
+                window_id="@2",
+                window_name="review",
+                pane_count=2,
+            ),
+            WindowChoice(
+                session_name="muxdeck",
+                window_id="@3",
+                window_name="ops",
+                pane_count=1,
+            ),
+        )
+
+    def _window_label(self, window_id: str | None) -> str:
+        if window_id is None:
+            return "window"
+        for choice in self._window_choices:
+            if choice.window_id == window_id:
+                return choice.window_name or choice.window_id
+        return window_id
 
     def execute_intent(self, intent: object) -> object:
         record = cast(Any, intent)
@@ -328,13 +485,18 @@ class FakeActionService:
         pane_id = metadata.get("pane_target", "")
         kind = record.kind
         self.calls.append((kind, pane_id))
-        message = {
-            "interrupt": f"sent interrupt to pane {pane_id}",
-            "open_pane": f"focused pane {pane_id}",
-            "kill_pane": f"killed pane {pane_id}",
-            "rename_window": "renamed window @1 to ui-agent",
-            "move_to_window": f"moved pane {pane_id} to review",
-        }.get(kind, f"executed {kind}")
+        if kind == "move_to_window":
+            destination = metadata.get("new_window_name") or self._window_label(
+                metadata.get("window_target")
+            )
+            message = f"moved pane {pane_id} to {destination}"
+        else:
+            message = {
+                "interrupt": f"sent interrupt to pane {pane_id}",
+                "open_pane": f"focused pane {pane_id}",
+                "kill_pane": f"killed pane {pane_id}",
+                "rename_window": "renamed window @1 to ui-agent",
+            }.get(kind, f"executed {kind}")
         return type(
             "ActionResult",
             (),
@@ -379,8 +541,12 @@ class FakeActionService:
             },
         )()
 
-    def window_choices(self) -> tuple[object, ...]:
-        return ()
+    def window_choices(self, *, exclude_window_id: str | None = None) -> tuple[WindowChoice, ...]:
+        if exclude_window_id is None:
+            return self._window_choices
+        return tuple(
+            choice for choice in self._window_choices if choice.window_id != exclude_window_id
+        )
 
     def resume_session(
         self,
@@ -422,11 +588,42 @@ class FakeActionService:
             },
         )()
 
+    def open_terminal(
+        self,
+        *,
+        cwd: Path,
+        window_name: str | None = None,
+        target_session: str | None = None,
+    ) -> object:
+        del target_session
+        self.calls.append(("open_terminal", str(cwd), window_name))
+        return type(
+            "ActionResult",
+            (),
+            {
+                "success": True,
+                "message": f"opened {window_name or 'terminal'} at {cwd}",
+                "pane_id": "%11",
+            },
+        )()
+
+
+class FakeSessionResolver:
+    def __init__(self) -> None:
+        self.targets: dict[int, object] = {}
+
+    def resolve_target_for_pid(self, pane_pid: int | None) -> object | None:
+        if pane_pid is None:
+            return None
+        return self.targets.get(pane_pid)
+
 
 class FakeWorktreeController:
     def __init__(self) -> None:
         self.create_calls: list[tuple[str, str]] = []
         self.attach_calls: list[str] = []
+        self.remove_calls: list[str] = []
+        self.prune_calls: list[str] = []
         self._worktrees: list[WorktreeSummaryView] = [
             WorktreeSummaryView(
                 worktree_id="worktree-1",
@@ -439,11 +636,34 @@ class FakeWorktreeController:
                 ahead_count=1,
                 behind_count=0,
                 locked=False,
-                assigned_agent_id="agent-1",
-                assigned_agent_name="Planner",
+                assigned_agent_id=None,
+                assigned_agent_name=None,
+                provenance=WorktreeProvenanceView(
+                    kind=WorktreeProvenanceKind.LIVE_AGENT,
+                    agent_id="agent-1",
+                    agent_name="Planner",
+                ),
                 active_session_count=1,
                 context_count=1,
                 has_conflicts=True,
+            ),
+            WorktreeSummaryView(
+                worktree_id="worktree-2",
+                repo_root="/repo",
+                path="/repo/worktrees/stale",
+                branch="task/stale",
+                base_branch="main",
+                is_main_worktree=False,
+                is_dirty=False,
+                ahead_count=0,
+                behind_count=0,
+                locked=False,
+                assigned_agent_id=None,
+                assigned_agent_name=None,
+                provenance=None,
+                active_session_count=0,
+                context_count=0,
+                has_conflicts=False,
             ),
         ]
 
@@ -475,6 +695,25 @@ class FakeWorktreeController:
             conflicts=conflicts,
             active_session_ids=("session-1",),
             pane_targets=pane_targets,
+            branch_status="tracks origin/task/ui · ahead 1",
+            change_summary="1 staged · 1 unstaged · 1 untracked",
+            status_entries=(
+                WorktreeChangeView(code="M ", path="README.md", kind="staged"),
+                WorktreeChangeView(code=" M", path="src/app.py", kind="unstaged"),
+                WorktreeChangeView(code="??", path="notes.txt", kind="untracked"),
+            ),
+            recent_commits=(
+                WorktreeCommitView(
+                    short_sha="abc1234",
+                    relative_date="2 hours ago",
+                    subject="Tighten worktree board layout",
+                ),
+                WorktreeCommitView(
+                    short_sha="def5678",
+                    relative_date="1 day ago",
+                    subject="Add git terminal action",
+                ),
+            ),
         )
 
     def start_agent_intent(
@@ -521,6 +760,7 @@ class FakeWorktreeController:
             locked=False,
             assigned_agent_id=None,
             assigned_agent_name=None,
+            provenance=None,
             active_session_count=0,
             context_count=0,
             has_conflicts=False,
@@ -552,6 +792,7 @@ class FakeWorktreeController:
             locked=False,
             assigned_agent_id=None,
             assigned_agent_name=None,
+            provenance=None,
             active_session_count=0,
             context_count=0,
             has_conflicts=False,
@@ -564,6 +805,35 @@ class FakeWorktreeController:
             message=f"attached {summary.path}",
             worktree=detail,
             conflicts=(),
+        )
+
+    def remove_worktree(self, worktree_id: str, **_: object) -> WorktreeActionView:
+        self.remove_calls.append(worktree_id)
+        summary = next(
+            worktree for worktree in self._worktrees if worktree.worktree_id == worktree_id
+        )
+        self._worktrees = [
+            worktree for worktree in self._worktrees if worktree.worktree_id != worktree_id
+        ]
+        return WorktreeActionView(
+            action="remove",
+            message=f"removed {summary.path}",
+            worktree=None,
+            conflicts=(),
+        )
+
+    def prune_worktrees(self, cwd: str, **_: object) -> WorktreeActionView:
+        self.prune_calls.append(cwd)
+        pruned = [worktree for worktree in self._worktrees if worktree.path.endswith("/stale")]
+        self._worktrees = [
+            worktree for worktree in self._worktrees if not worktree.path.endswith("/stale")
+        ]
+        return WorktreeActionView(
+            action="prune",
+            message=f"pruned {len(pruned)} stale worktree(s)",
+            worktree=None,
+            conflicts=(),
+            pruned_paths=tuple(worktree.path for worktree in pruned),
         )
 
     @staticmethod
@@ -965,7 +1235,9 @@ class FakeRuntime:
         self.synchronizer = None
         self.sync_store: FakeStore | None = None
         self.actions: FakeActionService = FakeActionService()
-        self.pane_stream = None
+        self.tmux = FakePaneTmux()
+        self.pane_stream = PaneStreamAdapter(tmux=self.tmux)
+        self.session_resolver: FakeSessionResolver | None = None
 
     def export_path(self, filename: str) -> Path:
         return self.config.paths.state_dir / "replay-exports" / filename
@@ -988,6 +1260,7 @@ async def test_textual_shell_navigation_and_updates() -> None:
         async with app.run_test() as pilot:
             await pilot.pause()
             detail_text = rendered_text(app.screen.query_one("#dashboard-detail"))
+            status_text = rendered_text(app.screen.query_one("#dashboard-status-bar")).lower()
             assert "Planner" in detail_text
             # Dashboard overhaul (c30552f) inlined the former ActivityPanel
             # into the agent detail render and removed the standalone
@@ -995,6 +1268,13 @@ async def test_textual_shell_navigation_and_updates() -> None:
             # operations screen). The activity line is sourced from
             # FakeDashboardController's current_activity field.
             assert "planning" in detail_text.lower()
+            assert "tokens 153" in status_text
+            assert "120 tok" in status_text
+            assert "$0.12" in status_text
+            assert "usage" in detail_text.lower()
+            assert "total     120" in detail_text
+            assert "input     90" in detail_text
+            assert "output    30" in detail_text
             assert "output" in rendered_text(app.screen.query_one("#dashboard-log")).lower()
 
             await pilot.press("p")
@@ -1019,7 +1299,23 @@ async def test_textual_shell_navigation_and_updates() -> None:
 
             app.action_show_worktrees()
             await pilot.pause()
-            assert "task/ui" in rendered_text(app.screen.query_one("#worktrees-detail"))
+            worktree_detail = rendered_text(app.screen.query_one("#worktrees-detail"))
+            assert "task/ui" in worktree_detail
+            assert "tracks origin/task/ui" in worktree_detail
+            assert "Tighten worktree board layout" in worktree_detail
+            assert "src/app.py" in worktree_detail
+
+            await pilot.press("g")
+            await pilot.pause()
+            assert cast(tuple[object, ...], runtime.actions.calls[-1]) == (
+                "open_terminal",
+                "/repo/worktrees/ui",
+                "git-ui",
+            )
+            assert (
+                "opened git-ui at /repo/worktrees/ui"
+                in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            )
 
             await pilot.press("s")
             await pilot.pause()
@@ -1095,6 +1391,78 @@ async def test_textual_shell_navigation_and_updates() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dashboard_live_viewer_and_move_window_use_single_pane_flow() -> None:
+    runtime = FakeRuntime()
+    app = CommanderApp(cast(CommanderRuntime, runtime))
+
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await pilot.press("v")
+            await pilot.pause()
+            assert len(list(app.screen.query("#compose-editor"))) == 0
+            viewer = app.screen.query_one(LivePaneViewer)
+            assert "live pane" in str(viewer.border_title).lower()
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert "Planner" in rendered_text(app.screen.query_one("#dashboard-detail"))
+
+            await pilot.press("W")
+            await pilot.pause()
+            choice_text = rendered_text(app.screen.query_one("#window-choice-list")).lower()
+            assert "editor" not in choice_text
+            assert "review" in choice_text
+            assert "ops" in choice_text
+
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.screen.query_one("#window-input-value", Input).value == "muxdeck:ops"
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert (
+                "moved pane %1 to ops"
+                in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            )
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_live_viewer_prefers_nested_tmux_target_when_available() -> None:
+    runtime = FakeRuntime()
+    nested_socket = runtime.runtime_dir / "nested.sock"
+    runtime.tmux.set_snapshot("%42", "inner planner output\n", socket_path=nested_socket)
+    resolver = FakeSessionResolver()
+    resolver.targets[1101] = type(
+        "ResolvedTarget",
+        (),
+        {
+            "session_id": "session-1",
+            "pane_id": "%42",
+            "socket_path": nested_socket,
+        },
+    )()
+    runtime.session_resolver = resolver
+    app = CommanderApp(cast(CommanderRuntime, runtime))
+
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await pilot.press("v")
+            await pilot.pause()
+            viewer = app.screen.query_one(LivePaneViewer)
+            assert viewer.buffer_lines == ("inner planner output",)
+            assert runtime.tmux.capture_calls[-1] == (nested_socket, "%42")
+            assert runtime.tmux.pipe_calls[-1] == (nested_socket, "%42")
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
 async def test_worktrees_launch_uses_default_model_hint_when_actions_lack_helper() -> None:
     runtime = FakeRuntime()
     cast(Any, runtime).actions = object()
@@ -1106,6 +1474,7 @@ async def test_worktrees_launch_uses_default_model_hint_when_actions_lack_helper
             app.action_show_worktrees()
             await pilot.pause()
 
+            assert "Planner (agent-1)" in rendered_text(app.screen.query_one("#worktrees-detail"))
             await pilot.press("s")
             await pilot.pause()
 
@@ -1114,6 +1483,64 @@ async def test_worktrees_launch_uses_default_model_hint_when_actions_lack_helper
                 "enter a model manually"
                 in rendered_text(app.screen.query_one("#launch-agent-model-help")).lower()
             )
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_sessions_live_viewer_uses_mirror_only_screen() -> None:
+    runtime = FakeRuntime()
+    app = CommanderApp(cast(CommanderRuntime, runtime))
+
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_show_sessions()
+            await pilot.pause()
+
+            await pilot.press("l")
+            await pilot.pause()
+            assert len(list(app.screen.query("#compose-editor"))) == 0
+            viewer = app.screen.query_one(LivePaneViewer)
+            assert "live pane" in str(viewer.border_title).lower()
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert "session-1" in rendered_text(app.screen.query_one("#sessions-detail"))
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_sessions_live_viewer_prefers_nested_tmux_target_when_available() -> None:
+    runtime = FakeRuntime()
+    nested_socket = runtime.runtime_dir / "nested.sock"
+    runtime.tmux.set_snapshot("%42", "inner session output\n", socket_path=nested_socket)
+    resolver = FakeSessionResolver()
+    resolver.targets[1101] = type(
+        "ResolvedTarget",
+        (),
+        {
+            "session_id": "session-1",
+            "pane_id": "%42",
+            "socket_path": nested_socket,
+        },
+    )()
+    runtime.session_resolver = resolver
+    app = CommanderApp(cast(CommanderRuntime, runtime))
+
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_show_sessions()
+            await pilot.pause()
+
+            await pilot.press("l")
+            await pilot.pause()
+            viewer = app.screen.query_one(LivePaneViewer)
+            assert viewer.buffer_lines == ("inner session output",)
+            assert runtime.tmux.capture_calls[-1] == (nested_socket, "%42")
+            assert runtime.tmux.pipe_calls[-1] == (nested_socket, "%42")
     finally:
         runtime.cleanup()
 
@@ -1144,6 +1571,62 @@ async def test_sessions_screen_open_replay_uses_selected_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_copy_details_shortcuts_copy_current_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = FakeRuntime()
+    app = CommanderApp(cast(CommanderRuntime, runtime))
+    copied: list[str] = []
+    monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
+
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await pilot.press("j")
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+            assert "Reviewer" in copied[-1]
+            assert "waiting for operator" in copied[-1]
+            assert "task/reviewer" in copied[-1]
+            assert (
+                "copied agent details to clipboard"
+                in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            )
+
+            app.action_show_worktrees()
+            await pilot.pause()
+
+            await pilot.press("y")
+            await pilot.pause()
+            assert "task/ui" in copied[-1]
+            assert "tracks origin/task/ui" in copied[-1]
+            assert "Continue work for task/ui" in copied[-1]
+            assert (
+                "copied worktree details to clipboard"
+                in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            )
+
+            app.action_show_sessions()
+            await pilot.pause()
+
+            await pilot.press("j")
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+            assert "session-2" in copied[-1]
+            assert "Review logs" in copied[-1]
+            assert "Session completed cleanly" in copied[-1]
+            assert (
+                "copied session details to clipboard"
+                in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            )
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
 async def test_sessions_screen_uses_sync_store_for_worker_load() -> None:
     runtime = FakeRuntime()
     runtime.store = ThreadBoundFakeStore()
@@ -1163,6 +1646,93 @@ async def test_sessions_screen_uses_sync_store_for_worker_load() -> None:
             assert runtime.sync_store is not None
             assert runtime.sync_store.list_agents_calls >= 1
             assert runtime.store.list_agents_calls == 0
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_sessions_screen_coalesces_refresh_requests_while_loading() -> None:
+    class BlockingSessionsController:
+        def __init__(self, base: FakeSessionsController) -> None:
+            self._base = base
+            self.build_state_calls = 0
+            self.max_concurrent_calls = 0
+            self._current_calls = 0
+            self._lock = threading.Lock()
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def build_state(
+            self,
+            *,
+            live_session_ids: frozenset[str] = frozenset(),
+            selected_session_id: str | None = None,
+            filter_text: str = "",
+            show_completed: bool = True,
+        ) -> SessionsState:
+            with self._lock:
+                self.build_state_calls += 1
+                self._current_calls += 1
+                self.max_concurrent_calls = max(
+                    self.max_concurrent_calls,
+                    self._current_calls,
+                )
+                self.entered.set()
+            try:
+                assert self.release.wait(timeout=3.0)
+                return self._base.build_state(
+                    live_session_ids=live_session_ids,
+                    selected_session_id=selected_session_id,
+                    filter_text=filter_text,
+                    show_completed=show_completed,
+                )
+            finally:
+                with self._lock:
+                    self._current_calls -= 1
+
+        def get_session_detail(
+            self,
+            session_id: str | None,
+            *,
+            live_session_ids: frozenset[str] = frozenset(),
+        ) -> SessionDetailView | None:
+            return self._base.get_session_detail(
+                session_id,
+                live_session_ids=live_session_ids,
+            )
+
+    runtime = FakeRuntime()
+    controller = BlockingSessionsController(runtime.sessions_ctrl)
+    runtime.sessions_ctrl = cast(Any, controller)
+    app = CommanderApp(cast(CommanderRuntime, runtime))
+
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_show_sessions()
+
+            for _ in range(10):
+                await pilot.pause(0.05)
+                if controller.entered.is_set():
+                    break
+            assert controller.entered.is_set()
+
+            screen = cast(Any, app.screen)
+            screen.refresh_data()
+            screen.refresh_data()
+            await pilot.pause(0.2)
+
+            assert controller.max_concurrent_calls == 1
+
+            controller.release.set()
+            for _ in range(20):
+                await pilot.pause(0.1)
+                if controller.build_state_calls >= 2 and not screen._loading:
+                    break
+
+            assert controller.build_state_calls == 2
+            assert controller.max_concurrent_calls == 1
+            assert "session-1" in rendered_text(app.screen.query_one("#sessions-detail"))
     finally:
         runtime.cleanup()
 
@@ -1246,6 +1816,46 @@ async def test_worktrees_screen_can_create_and_select_existing_worktrees() -> No
             assert "/repo/worktrees/ops" in rendered_text(app.screen.query_one("#worktrees-detail"))
             assert (
                 "attached /repo/worktrees/ops"
+                in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            )
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_worktrees_screen_refreshes_after_prune_and_delete() -> None:
+    runtime = FakeRuntime()
+    app = CommanderApp(cast(CommanderRuntime, runtime))
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.action_show_worktrees()
+            await pilot.pause()
+
+            assert "task/stale" in rendered_text(app.screen.query_one("#worktrees-list"))
+
+            await pilot.press("P")
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+
+            assert runtime.worktrees.prune_calls == ["/repo"]
+            assert "task/stale" not in rendered_text(app.screen.query_one("#worktrees-list"))
+            assert (
+                "pruned 1 stale worktree(s)"
+                in rendered_text(app.screen.query_one("#shell-footer")).lower()
+            )
+
+            await pilot.press("d")
+            await pilot.pause()
+            await pilot.press("y")
+            await pilot.pause()
+
+            assert runtime.worktrees.remove_calls == ["worktree-1"]
+            worktrees_list = rendered_text(app.screen.query_one("#worktrees-list")).lower()
+            assert "no worktrees found" in worktrees_list
+            assert (
+                "removed /repo/worktrees/ui"
                 in rendered_text(app.screen.query_one("#shell-footer")).lower()
             )
     finally:

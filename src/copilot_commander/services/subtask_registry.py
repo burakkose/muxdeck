@@ -83,9 +83,7 @@ class SubTaskRegistry:
 
         if background_task_count == 0 and not evidence:
             updated = {
-                k: v
-                for k, v in updated.items()
-                if v.status in ("completed", "failed", "cancelled")
+                k: v for k, v in updated.items() if v.status in ("completed", "failed", "cancelled")
             }
 
         if updated:

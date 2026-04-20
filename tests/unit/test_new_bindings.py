@@ -14,7 +14,12 @@ if str(SRC_ROOT) not in sys.path:
 
 from textual.binding import Binding
 
-from copilot_commander.bindings import DASHBOARD_BINDINGS, WORKTREE_BINDINGS, BindingSpec
+from copilot_commander.bindings import (
+    DASHBOARD_BINDINGS,
+    SESSIONS_BINDINGS,
+    WORKTREE_BINDINGS,
+    BindingSpec,
+)
 
 
 class TestDashboardBindings(unittest.TestCase):
@@ -49,9 +54,21 @@ class TestDashboardBindings(unittest.TestCase):
         actions = self._binding_actions(DASHBOARD_BINDINGS)
         assert "kill_agent" in actions
 
+    def test_dashboard_copy_details_binding_exists(self) -> None:
+        actions = self._binding_actions(DASHBOARD_BINDINGS)
+        assert "copy_details" in actions
+
     def test_worktree_delete_binding_exists(self) -> None:
         actions = self._binding_actions(WORKTREE_BINDINGS)
         assert "delete_worktree" in actions
+
+    def test_worktree_copy_details_binding_exists(self) -> None:
+        actions = self._binding_actions(WORKTREE_BINDINGS)
+        assert "copy_details" in actions
+
+    def test_sessions_copy_details_binding_exists(self) -> None:
+        actions = self._binding_actions(SESSIONS_BINDINGS)
+        assert "copy_details" in actions
 
     def test_worktree_launch_binding_exists(self) -> None:
         actions = self._binding_actions(WORKTREE_BINDINGS)
@@ -104,9 +121,21 @@ class TestDashboardBindingKeys(unittest.TestCase):
         km = self._key_map(DASHBOARD_BINDINGS)
         assert km["kill_agent"] == "K"
 
+    def test_dashboard_copy_details_key_is_y(self) -> None:
+        km = self._key_map(DASHBOARD_BINDINGS)
+        assert km["copy_details"] == "y"
+
     def test_worktree_delete_key_is_d(self) -> None:
         km = self._key_map(WORKTREE_BINDINGS)
         assert km["delete_worktree"] == "d"
+
+    def test_worktree_copy_details_key_is_y(self) -> None:
+        km = self._key_map(WORKTREE_BINDINGS)
+        assert km["copy_details"] == "y"
+
+    def test_sessions_copy_details_key_is_y(self) -> None:
+        km = self._key_map(SESSIONS_BINDINGS)
+        assert km["copy_details"] == "y"
 
     def test_worktree_create_key_is_c(self) -> None:
         km = self._key_map(WORKTREE_BINDINGS)

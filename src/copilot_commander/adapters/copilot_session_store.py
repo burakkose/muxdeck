@@ -30,6 +30,33 @@ SessionOrigin = Literal["local", "windows"]
 
 
 @dataclass(frozen=True, slots=True)
+class CopilotSessionUsage:
+    """Aggregated usage copied from a ``session.shutdown`` event."""
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    premium_requests: int | None = None
+
+    @property
+    def total_tokens(self) -> int | None:
+        parts = tuple(
+            value
+            for value in (
+                self.input_tokens,
+                self.output_tokens,
+                self.cache_read_tokens,
+                self.cache_write_tokens,
+            )
+            if value is not None
+        )
+        if not parts:
+            return None
+        return sum(parts)
+
+
+@dataclass(frozen=True, slots=True)
 class CopilotLocalSession:
     """Metadata about a Copilot CLI session discovered from disk."""
 
@@ -44,6 +71,7 @@ class CopilotLocalSession:
     last_event_type: str | None = None
     last_event_at: datetime | None = None
     checkpoint_count: int = 0
+    usage: CopilotSessionUsage | None = None
     is_cleanly_closed: bool = False
     origin: SessionOrigin = "local"
     # Verbatim Windows-style paths (``C:\Users\...``) preserved from
@@ -250,6 +278,58 @@ def _count_checkpoints(session_dir: Path) -> int:
     return sum(1 for f in cp_dir.iterdir() if f.suffix == ".md" and f.name != "index.md")
 
 
+def _as_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        cleaned = value.strip().replace(",", "")
+        if cleaned.startswith("-"):
+            cleaned = cleaned[1:]
+        if cleaned.isdigit():
+            return int(value.strip().replace(",", ""))
+    return None
+
+
+def _extract_session_usage(last_event: dict[str, object] | None) -> CopilotSessionUsage | None:
+    if last_event is None or last_event.get("type") not in _CLEANLY_CLOSED_EVENTS:
+        return None
+    data = last_event.get("data")
+    if not isinstance(data, dict):
+        return None
+
+    model_metrics = data.get("modelMetrics")
+    input_tokens = 0
+    output_tokens = 0
+    cache_read_tokens = 0
+    cache_write_tokens = 0
+    saw_usage = False
+    if isinstance(model_metrics, dict):
+        for details in model_metrics.values():
+            if not isinstance(details, dict):
+                continue
+            usage = details.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            input_tokens += _as_int(usage.get("inputTokens")) or 0
+            output_tokens += _as_int(usage.get("outputTokens")) or 0
+            cache_read_tokens += _as_int(usage.get("cacheReadTokens")) or 0
+            cache_write_tokens += _as_int(usage.get("cacheWriteTokens")) or 0
+            saw_usage = True
+
+    premium_requests = _as_int(data.get("totalPremiumRequests"))
+    if not saw_usage and premium_requests is None:
+        return None
+    return CopilotSessionUsage(
+        input_tokens=input_tokens if saw_usage else None,
+        output_tokens=output_tokens if saw_usage else None,
+        cache_read_tokens=cache_read_tokens if saw_usage else None,
+        cache_write_tokens=cache_write_tokens if saw_usage else None,
+        premium_requests=premium_requests,
+    )
+
+
 def _is_windows_style_path(value: str) -> bool:
     """Heuristic: drive-letter absolute paths like ``C:\\foo`` or ``C:/foo``."""
     return len(value) >= 3 and value[1:3] in (":\\", ":/")
@@ -292,6 +372,7 @@ def _parse_session_dir(
         ts = last_event.get("timestamp")
         if isinstance(ts, str):
             last_event_at = _parse_iso(ts)
+    usage = _extract_session_usage(last_event)
 
     is_closed = last_event_type in _CLEANLY_CLOSED_EVENTS
 
@@ -307,6 +388,7 @@ def _parse_session_dir(
         last_event_type=last_event_type,
         last_event_at=last_event_at,
         checkpoint_count=_count_checkpoints(session_dir),
+        usage=usage,
         is_cleanly_closed=is_closed,
         origin=origin,
         windows_cwd=windows_cwd,
@@ -565,6 +647,7 @@ class CopilotSessionStore:
 __all__ = [
     "CopilotLocalSession",
     "CopilotSessionStore",
+    "CopilotSessionUsage",
     "SessionOrigin",
     "SessionStoreRoot",
 ]

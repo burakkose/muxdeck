@@ -5,12 +5,14 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Final, Protocol, cast, runtime_checkable
+from typing import Final, Literal, Protocol, cast, runtime_checkable
 
+from copilot_commander.adapters.copilot_session_resolver import CopilotSessionResolution
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.models import Agent
 from copilot_commander.domain.value_objects import ensure_aware_datetime, utc_now
 from copilot_commander.exceptions import GitCommandError, TmuxCommandError
+from copilot_commander.parsers.copilot_output_parser import CopilotTaskEvidence
 from copilot_commander.perf import timed
 from copilot_commander.services.discovery_service import PaneDiscovery, PaneDiscoveryReport
 from copilot_commander.services.monitoring_service import MonitoringDiscovery, MonitoringReport
@@ -77,6 +79,40 @@ class RuntimeWorktreeSyncPort(Protocol):
         """Discover and upsert worktrees from git for the given repo roots."""
 
 
+@runtime_checkable
+class RuntimeSubAgentSnapshot(Protocol):
+    display_name: str
+    agent_name: str
+    model: str | None
+    task_name: str | None
+    prompt: str | None
+    description: str | None
+    is_running: bool
+    success: bool | None
+    error_message: str | None
+
+
+@runtime_checkable
+class RuntimeSubAgentTree(Protocol):
+    running: Sequence[RuntimeSubAgentSnapshot]
+    recent: Sequence[RuntimeSubAgentSnapshot]
+
+
+@runtime_checkable
+class RuntimeSubAgentReaderPort(Protocol):
+    def read(self, session_id: str) -> RuntimeSubAgentTree | None:
+        """Return the sub-agent tree for a Copilot session."""
+
+
+@runtime_checkable
+class RuntimeSessionResolverPort(Protocol):
+    def resolve(self, pane_pid: int | None, /) -> CopilotSessionResolution:
+        """Resolve a live Copilot session id for a pane pid."""
+
+    def resolve_for_pid(self, pane_pid: int | None, /) -> str | None:
+        """Resolve a live Copilot session id for a pane pid."""
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeSyncWarning:
     message: str
@@ -127,6 +163,8 @@ class RuntimeSynchronizer:
         agent_store: RuntimeAgentStore | None = None,
         worktree_sync: RuntimeWorktreeSyncPort | None = None,
         subtask_registry: SubTaskRegistry | None = None,
+        subagent_reader: RuntimeSubAgentReaderPort | None = None,
+        session_resolver: RuntimeSessionResolverPort | None = None,
         dead_grace_period_sec: int = 10,
         clock: Clock = utc_now,
     ) -> None:
@@ -136,6 +174,8 @@ class RuntimeSynchronizer:
         self._agent_store = agent_store
         self._worktree_sync = worktree_sync
         self._subtask_registry = subtask_registry
+        self._subagent_reader = subagent_reader
+        self._session_resolver = session_resolver
         self._dead_grace_period_sec = dead_grace_period_sec
         self._clock = clock
 
@@ -289,16 +329,48 @@ class RuntimeSynchronizer:
             return
         for pane in report.panes:
             evidence = pane.session_evidence
-            if evidence is None:
-                continue
             bg_count = getattr(evidence, "background_task_count", 0)
             task_ev = getattr(evidence, "task_evidence", ())
+            if self._subagent_reader is not None and (not task_ev or bg_count == 0):
+                session_id = self._resolve_copilot_session_id(pane)
+                if session_id is not None:
+                    tree = self._subagent_reader.read(session_id)
+                    if tree is not None:
+                        if not task_ev:
+                            task_ev = _task_evidence_from_tree(tree)
+                        bg_count = max(bg_count, len(tree.running))
+            if evidence is None and not task_ev:
+                continue
             self._subtask_registry.update(
                 pane.snapshot.pane_id,
                 task_ev,
                 bg_count,
             )
         self._subtask_registry.expire_all()
+
+    def _resolve_copilot_session_id(self, pane: PaneDiscovery, /) -> str | None:
+        if self._session_resolver is not None:
+            resolution = self._session_resolver.resolve(pane.snapshot.pane_pid)
+            if resolution.session_id is not None:
+                return resolution.session_id
+            if resolution.is_ambiguous:
+                return None
+        evidence = pane.session_evidence
+        candidate_ids = _unique_session_ids(
+            tuple(getattr(evidence, "session_ids", ())) if evidence is not None else ()
+        )
+        if len(candidate_ids) == 1:
+            return candidate_ids[0]
+        if len(candidate_ids) > 1:
+            return None
+        if pane.managed_agent is not None and pane.managed_agent.copilot_session_id is not None:
+            return pane.managed_agent.copilot_session_id
+        matched_session = getattr(pane, "matched_session", None)
+        if matched_session is not None:
+            return getattr(matched_session, "copilot_session_id", None)
+        if evidence is not None:
+            return evidence.copilot_session_id
+        return None
 
     def _enrich_discovery(
         self,
@@ -417,6 +489,44 @@ def _infer_capture_branch(captured_output: str | None, /) -> str | None:
             if branch is not None:
                 return branch
     return None
+
+
+def _task_evidence_from_tree(tree: RuntimeSubAgentTree, /) -> tuple[CopilotTaskEvidence, ...]:
+    tasks: list[CopilotTaskEvidence] = []
+    for snapshot in (*tree.running, *tree.recent):
+        description = (
+            snapshot.task_name
+            or snapshot.prompt
+            or snapshot.description
+            or snapshot.display_name
+            or snapshot.agent_name
+        )
+        status: Literal["running", "completed", "failed"] = "running"
+        if not snapshot.is_running:
+            if snapshot.success is False or snapshot.error_message:
+                status = "failed"
+            else:
+                status = "completed"
+        tasks.append(
+            CopilotTaskEvidence(
+                agent_type_label=snapshot.display_name or snapshot.agent_name,
+                model=snapshot.model,
+                description=description,
+                status=status,
+            )
+        )
+    return tuple(tasks)
+
+
+def _unique_session_ids(session_ids: tuple[str, ...], /) -> tuple[str, ...]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for session_id in session_ids:
+        if session_id in seen:
+            continue
+        seen.add(session_id)
+        unique.append(session_id)
+    return tuple(unique)
 
 
 def _normalize_capture_branch(value: str, /) -> str | None:

@@ -642,6 +642,20 @@ class TestWindowChoices:
             ),
         )
 
+    def test_window_choices_can_exclude_current_window(self) -> None:
+        svc = TmuxActionService(FakeTmux())
+
+        choices = svc.window_choices(exclude_window_id="@2")
+
+        assert choices == (
+            WindowChoice(
+                session_name="muxdeck",
+                window_id="@3",
+                window_name="review",
+                pane_count=2,
+            ),
+        )
+
 
 class TestLaunchModelHint:
     def test_uses_configured_copilot_model(self) -> None:
@@ -678,6 +692,20 @@ class TestLaunchModelHint:
 # ---------------------------------------------------------------------------
 # start_agent
 # ---------------------------------------------------------------------------
+
+
+class TestOpenTerminal:
+    def test_opens_attached_terminal_in_selected_worktree(self) -> None:
+        tmux = FakeTmux()
+        svc = TmuxActionService(tmux)
+        from pathlib import Path
+
+        result = svc.open_terminal(cwd=Path("/repo/worktree"), window_name="git-ui")
+
+        assert result.success is True
+        assert result.pane_id == "%10"
+        assert tmux.new_window_calls == [(None, "git-ui", Path("/repo/worktree"), False)]
+        assert "git-ui" in result.message
 
 
 class TestStartAgent:

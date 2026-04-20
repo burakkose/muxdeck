@@ -346,6 +346,31 @@ class TmuxActionService:
             pane_id=metadata.pane_id,
         )
 
+    def open_terminal(
+        self,
+        *,
+        cwd: Path,
+        window_name: str | None = None,
+        target_session: str | None = None,
+    ) -> ActionResult:
+        normalized_cwd = cwd.expanduser().resolve(strict=False)
+        has_client = self._tmux.has_attached_client()
+        try:
+            metadata = self._tmux.new_window(
+                target_session,
+                window_name=window_name,
+                start_directory=normalized_cwd,
+                detached=not has_client,
+            )
+        except (CommandError, RuntimeError, ValueError) as exc:
+            return ActionResult(success=False, message=f"failed to open terminal: {exc}")
+        destination = metadata.window_name or window_name or metadata.window_id or "terminal"
+        if has_client:
+            message = f"opened {destination} at {normalized_cwd}"
+        else:
+            message = f"opened detached {destination} at {normalized_cwd}"
+        return ActionResult(success=True, message=message, pane_id=metadata.pane_id)
+
     def execute_intent(self, intent: AgentIntentView) -> ActionResult:
         """Execute an agent intent by dispatching to the appropriate method."""
         meta = dict(intent.metadata)

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -61,6 +62,7 @@ class _SessionDirProvider(Protocol):
 _MAX_READ_INTERACTIONS_PER_TASK = 50
 _READ_AGENT_RESULT_MAX_CHARS = 2000
 _READ_AGENT_ARGS_MAX_CHARS = 200
+_READ_AGENT_STATUS_RE = re.compile(r"\bstatus:\s*([a-z_]+)\b", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -274,10 +276,17 @@ def _build_tree(
     running bucket, which is exactly what the dashboard should show:
     "these were in flight when we lost contact".
     """
-    running = tuple(_enrich(s, task_details) for s in reversed(started.values()))
+    running_candidates = tuple(_enrich(s, task_details) for s in reversed(started.values()))
+    running = tuple(snapshot for snapshot in running_candidates if snapshot.is_running)
     recent = tuple(
-        _enrich(s, task_details)
-        for s in sorted(completed, key=_completed_sort_key, reverse=True)[:recent_limit]
+        sorted(
+            (
+                *(snapshot for snapshot in running_candidates if not snapshot.is_running),
+                *(_enrich(snapshot, task_details) for snapshot in completed),
+            ),
+            key=_completed_sort_key,
+            reverse=True,
+        )[:recent_limit]
     )
     return SubAgentTree(
         session_id=session_id,
@@ -308,6 +317,8 @@ class _TaskDetails:
     error_message: str | None = None
     # Correlated ``read_agent`` interactions for background sub-agents.
     read_interactions: list[ReadAgentInteraction] = field(default_factory=list)
+    latest_agent_status: str | None = None
+    latest_agent_status_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -381,11 +392,13 @@ def _apply_event(
         tcid = _as_str(data.get("toolCallId"))
         if not tcid:
             return
+        timestamp = _parse_iso(event.get("timestamp"))
         pending = pending_read_agents.pop(tcid, None)
         if pending is not None:
             _record_read_agent_completion(
                 pending,
                 data,
+                observed_at=timestamp,
                 task_name_to_tcid=task_name_to_tcid,
                 task_details=task_details,
             )
@@ -492,6 +505,7 @@ def _record_read_agent_completion(
     pending: _PendingReadAgent,
     data: dict[str, object],
     *,
+    observed_at: datetime | None,
     task_name_to_tcid: dict[str, str],
     task_details: dict[str, _TaskDetails],
 ) -> None:
@@ -506,6 +520,7 @@ def _record_read_agent_completion(
         return
     detail = task_details.setdefault(task_tcid, _TaskDetails())
     result_content = _extract_read_agent_result(data.get("result"))
+    status = _extract_read_agent_status(data.get("result"))
     detail.read_interactions.append(
         ReadAgentInteraction(
             timestamp=pending.timestamp,
@@ -513,6 +528,9 @@ def _record_read_agent_completion(
             result_content=result_content,
         )
     )
+    if status is not None:
+        detail.latest_agent_status = status
+        detail.latest_agent_status_at = observed_at or pending.timestamp
     if len(detail.read_interactions) > _MAX_READ_INTERACTIONS_PER_TASK:
         # Keep the most recent window so long-running coordinators
         # don't grow memory without bound.
@@ -533,6 +551,23 @@ def _extract_read_agent_result(result: object) -> str | None:
     if len(chosen) > _READ_AGENT_RESULT_MAX_CHARS:
         return chosen[: _READ_AGENT_RESULT_MAX_CHARS - 1].rstrip() + "…"
     return chosen
+
+
+def _extract_read_agent_status(result: object) -> str | None:
+    candidates: tuple[object, ...]
+    if isinstance(result, dict):
+        candidates = (result.get("content"), result.get("detailedContent"))
+    elif isinstance(result, str):
+        candidates = (result,)
+    else:
+        candidates = ()
+    for candidate in candidates:
+        if not isinstance(candidate, str) or not candidate:
+            continue
+        match = _READ_AGENT_STATUS_RE.search(candidate)
+        if match is not None:
+            return match.group(1).lower()
+    return None
 
 
 def _summarise_read_agent_args(args: dict[str, object]) -> str:
@@ -563,13 +598,16 @@ def _enrich(snapshot: SubAgentSnapshot, task_details: dict[str, _TaskDetails]) -
     detail = task_details.get(snapshot.tool_call_id)
     if detail is None:
         return snapshot
+    completed_at = snapshot.completed_at
+    if completed_at is None and detail.latest_agent_status not in (None, "running"):
+        completed_at = detail.latest_agent_status_at or snapshot.started_at
     return SubAgentSnapshot(
         tool_call_id=snapshot.tool_call_id,
         agent_name=snapshot.agent_name,
         display_name=snapshot.display_name,
         description=snapshot.description,
         started_at=snapshot.started_at,
-        completed_at=snapshot.completed_at,
+        completed_at=completed_at,
         task_name=detail.task_name,
         agent_type=detail.agent_type,
         prompt=detail.prompt,

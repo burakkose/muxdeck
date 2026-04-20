@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from copilot_commander.adapters.copilot_session_store import (
         CopilotLocalSession,
         CopilotSessionStore,
+        CopilotSessionUsage,
     )
 
 
@@ -94,6 +95,46 @@ def _status_glyph(status: str) -> str:
     }.get(status, "⚫")
 
 
+def _format_usage_count(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}k"
+    return str(value)
+
+
+def _premium_requests_text(usage: CopilotSessionUsage | None) -> str | None:
+    if usage is None or usage.premium_requests is None:
+        return None
+    return f"{usage.premium_requests} req"
+
+
+def _usage_view_for(session: CopilotLocalSession) -> tuple[str, str, bool, str | None]:
+    usage = session.usage
+    premium_requests = _premium_requests_text(usage)
+    if usage is None or usage.total_tokens is None:
+        if not session.is_cleanly_closed:
+            return ("pending (recorded on clean shutdown)", "pending", False, premium_requests)
+        return ("not recorded in session state", "n/a", False, premium_requests)
+
+    cache_tokens = (usage.cache_read_tokens or 0) + (usage.cache_write_tokens or 0)
+    parts: list[str] = []
+    if usage.input_tokens is not None:
+        parts.append(f"{usage.input_tokens:,} in")
+    if usage.output_tokens is not None:
+        parts.append(f"{usage.output_tokens:,} out")
+    if cache_tokens > 0:
+        parts.append(f"{cache_tokens:,} cached")
+    total_tokens = usage.total_tokens
+    parts.append(f"{total_tokens:,} total")
+    return (
+        " · ".join(parts),
+        f"{_format_usage_count(total_tokens)} tok",
+        True,
+        premium_requests,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SessionListItemView:
     """View model for a session in the list."""
@@ -134,6 +175,10 @@ class SessionDetailView:
     resume_command: str
     origin: str = "local"
     windows_cwd: str | None = None
+    usage_summary: str = "not recorded in session state"
+    usage_badge: str = "n/a"
+    usage_available: bool = False
+    premium_requests: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,6 +265,12 @@ class SessionsController:
             raw = self._store.get_session(resolved_selected_session_id)
             if raw is not None:
                 status = _session_status(raw, live_session_ids)
+                (
+                    usage_summary,
+                    usage_badge,
+                    usage_available,
+                    premium_requests,
+                ) = _usage_view_for(raw)
                 selected = SessionDetailView(
                     session_id=raw.session_id,
                     summary=_summary_for(raw),
@@ -238,6 +289,10 @@ class SessionsController:
                     resume_command=_resume_command_for(raw),
                     origin=raw.origin,
                     windows_cwd=raw.windows_cwd,
+                    usage_summary=usage_summary,
+                    usage_badge=usage_badge,
+                    usage_available=usage_available,
+                    premium_requests=premium_requests,
                 )
 
         return SessionsState(
@@ -270,6 +325,7 @@ class SessionsController:
         if raw is None:
             return None
         status = _session_status(raw, live_session_ids)
+        usage_summary, usage_badge, usage_available, premium_requests = _usage_view_for(raw)
         return SessionDetailView(
             session_id=raw.session_id,
             summary=_summary_for(raw),
@@ -288,6 +344,10 @@ class SessionsController:
             resume_command=_resume_command_for(raw),
             origin=raw.origin,
             windows_cwd=raw.windows_cwd,
+            usage_summary=usage_summary,
+            usage_badge=usage_badge,
+            usage_available=usage_available,
+            premium_requests=premium_requests,
         )
 
 

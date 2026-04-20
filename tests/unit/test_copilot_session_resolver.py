@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from copilot_commander.adapters.copilot_session_resolver import InuseLockResolver
+from copilot_commander.adapters.copilot_session_resolver import (
+    CopilotSessionResolution,
+    InuseLockResolver,
+    ResolvedCopilotTarget,
+)
 
 
 @dataclass
@@ -25,6 +29,7 @@ def _write_proc(
     ppid: int,
     *,
     cmdline: str = "/usr/local/lib/node_modules/@github/copilot/copilot",
+    environ: dict[str, str] | None = None,
 ) -> None:
     d = proc_dir / str(pid)
     d.mkdir(parents=True, exist_ok=True)
@@ -36,6 +41,12 @@ def _write_proc(
     if payload:
         payload += "\x00"
     (d / "cmdline").write_bytes(payload.encode("utf-8"))
+    environ_payload = b""
+    if environ:
+        environ_payload = b"\x00".join(f"{key}={value}".encode() for key, value in environ.items())
+        if environ_payload:
+            environ_payload += b"\x00"
+    (d / "environ").write_bytes(environ_payload)
 
 
 def _make_session(root: Path, session_id: str, *, lock_pid: int | None) -> Path:
@@ -244,3 +255,48 @@ class TestInuseLockResolver:
         store = _FakeStore(session_state_dir=root)
         resolver = InuseLockResolver(store=store, proc_dir=proc)
         assert resolver.resolve_for_pid(500) == "exact-sess"
+
+    def test_multiple_descendant_sessions_return_none(self, tmp_path: Path) -> None:
+        """Nested tmux can host multiple Copilot children under one outer pane.
+
+        In that case there is no clean one-to-one mapping from the outer pane pid
+        to a single Copilot session, so the resolver must refuse to guess.
+        """
+        root = tmp_path / "sessions"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(root, "sess-one", lock_pid=4101)
+        _make_session(root, "sess-two", lock_pid=4102)
+        _write_proc(proc, pid=4101, ppid=3100)
+        _write_proc(proc, pid=4102, ppid=3100)
+        _write_proc(proc, pid=3100, ppid=2100, cmdline="tmux")
+        _write_proc(proc, pid=2100, ppid=1, cmdline="zsh")
+        store = _FakeStore(session_state_dir=root)
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.resolve_for_pid(2100) is None
+        assert resolver.resolve(2100) == CopilotSessionResolution(state="ambiguous")
+
+    def test_resolve_target_reads_nested_tmux_metadata(self, tmp_path: Path) -> None:
+        root = tmp_path / "sessions"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(root, "sess-inner", lock_pid=7001)
+        nested_socket = tmp_path / "nested" / "tmux.sock"
+        _write_proc(
+            proc,
+            pid=7001,
+            ppid=6100,
+            environ={
+                "TMUX": f"{nested_socket},123,0",
+                "TMUX_PANE": "%42",
+            },
+        )
+        _write_proc(proc, pid=6100, ppid=5100, cmdline="tmux")
+        _write_proc(proc, pid=5100, ppid=1, cmdline="zsh")
+        store = _FakeStore(session_state_dir=root)
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.resolve_target_for_pid(5100) == ResolvedCopilotTarget(
+            session_id="sess-inner",
+            pane_id="%42",
+            socket_path=nested_socket,
+        )

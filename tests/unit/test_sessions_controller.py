@@ -7,6 +7,7 @@ from pathlib import Path
 
 from copilot_commander.adapters.copilot_session_store import (
     CopilotLocalSession,
+    CopilotSessionUsage,
 )
 from copilot_commander.controllers.sessions_controller import (
     SessionsController,
@@ -28,6 +29,7 @@ def _session(
     updated_at: datetime | None = None,
     checkpoint_count: int = 0,
     last_event_type: str | None = None,
+    usage: CopilotSessionUsage | None = None,
 ) -> CopilotLocalSession:
     now = datetime.now(UTC)
     return CopilotLocalSession(
@@ -42,6 +44,7 @@ def _session(
         last_event_type=last_event_type,
         last_event_at=now,
         checkpoint_count=checkpoint_count,
+        usage=usage,
         is_cleanly_closed=is_cleanly_closed,
     )
 
@@ -180,6 +183,34 @@ def test_controller_selected_detail() -> None:
     assert state.selected.session_id == "s1"
     assert state.selected.checkpoint_count == 5
     assert state.selected.resume_command == "copilot --resume=s1"
+    assert state.selected.usage_summary == "pending (recorded on clean shutdown)"
+    assert state.selected.usage_badge == "pending"
+    assert state.selected.usage_available is False
+
+
+def test_controller_selected_detail_surfaces_usage() -> None:
+    sessions = [
+        _session(
+            "s1",
+            summary="Selected",
+            checkpoint_count=5,
+            is_cleanly_closed=True,
+            usage=CopilotSessionUsage(
+                input_tokens=1200,
+                output_tokens=345,
+                cache_read_tokens=1000,
+                premium_requests=4,
+            ),
+        )
+    ]
+    ctrl = SessionsController(FakeSessionStore(sessions))  # type: ignore[arg-type]
+    state = ctrl.build_state(selected_session_id="s1")
+
+    assert state.selected is not None
+    assert state.selected.usage_summary == "1,200 in · 345 out · 1,000 cached · 2,545 total"
+    assert state.selected.usage_badge == "2.5k tok"
+    assert state.selected.usage_available is True
+    assert state.selected.premium_requests == "4 req"
 
 
 def test_controller_selected_not_found() -> None:

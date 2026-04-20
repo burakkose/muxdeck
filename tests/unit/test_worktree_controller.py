@@ -14,7 +14,9 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from copilot_commander.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
+from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.adapters.git_adapter import (
+    GitCommitSummary,
     GitRepositorySnapshot,
     GitWorktreeCreateOutcome,
     GitWorktreeCreateRequest,
@@ -23,12 +25,15 @@ from copilot_commander.adapters.git_adapter import (
     GitWorktreeRemoveOutcome,
 )
 from copilot_commander.config import AppConfig, PathsConfig
-from copilot_commander.controllers.worktree_controller import WorktreeController
+from copilot_commander.controllers.worktree_controller import (
+    WorktreeController,
+    WorktreeProvenanceKind,
+)
 from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.models import Agent
+from copilot_commander.domain.models import Agent, Session
 from copilot_commander.domain.value_objects import CommandResult
-from copilot_commander.parsers.git_parser import AheadBehindCounts, GitStatusSummary
-from copilot_commander.services.worktree_service import WorktreeService
+from copilot_commander.parsers.git_parser import AheadBehindCounts, GitStatusEntry, GitStatusSummary
+from copilot_commander.services.worktree_service import WorktreeOrphanConflict, WorktreeService
 
 
 class FakeGit:
@@ -38,10 +43,12 @@ class FakeGit:
         repo_root: Path,
         worktrees: tuple[GitWorktreeInfo, ...],
         snapshots: dict[Path, GitRepositorySnapshot],
+        recent_commits: dict[Path, tuple[GitCommitSummary, ...]] | None = None,
     ) -> None:
         self.repo_root = repo_root
         self._worktrees = list(worktrees)
         self._snapshots = dict(snapshots)
+        self._recent_commits = {} if recent_commits is None else dict(recent_commits)
 
     def discover_repo_root(self, cwd: str | Path, /) -> Path:
         del cwd
@@ -53,6 +60,16 @@ class FakeGit:
 
     def inspect_repository(self, cwd: str | Path, /) -> GitRepositorySnapshot:
         return self._snapshots[Path(cwd).resolve(strict=False)]
+
+    def list_recent_commits(
+        self,
+        cwd: str | Path,
+        /,
+        *,
+        limit: int = 5,
+    ) -> tuple[GitCommitSummary, ...]:
+        commits = self._recent_commits.get(Path(cwd).resolve(strict=False), ())
+        return commits[:limit]
 
     def create_worktree(
         self,
@@ -206,6 +223,8 @@ class WorktreeControllerTests(unittest.TestCase):
 
         self.assertEqual(len(worktrees), 1)
         self.assertEqual(worktrees[0].assigned_agent_name, "Planner")
+        assert worktrees[0].provenance is not None
+        self.assertEqual(worktrees[0].provenance.kind, WorktreeProvenanceKind.ASSIGNED)
         self.assertFalse(detail.summary.has_conflicts)
         self.assertEqual(start_intent.model, "gpt-5.4")
         self.assertIn("task/replay-state", start_intent.prompt)
@@ -222,14 +241,14 @@ class WorktreeControllerTests(unittest.TestCase):
             attach_agent_id="agent-1",
         )
 
-        detect_calls: list[object] = []
+        detect_calls: list[str | Path] = []
         original_detect = self.service.detect_orphan_conflicts
 
-        def spy(repo_root: object) -> object:  # pragma: no cover - invoked only on regression
+        def spy(repo_root: str | Path) -> tuple[WorktreeOrphanConflict, ...]:
             detect_calls.append(repo_root)
             return original_detect(repo_root)
 
-        self.service.detect_orphan_conflicts = spy  # type: ignore[method-assign]
+        self.service.detect_orphan_conflicts = spy  # type: ignore[assignment,method-assign]
         try:
             rows = self.controller.list_worktrees(repo_root=str(self.repo_root))
         finally:
@@ -238,6 +257,131 @@ class WorktreeControllerTests(unittest.TestCase):
         self.assertEqual(detect_calls, [])
         self.assertTrue(rows)
         self.assertFalse(rows[0].has_conflicts)
+
+    def test_detail_includes_git_status_and_recent_commits(self) -> None:
+        created = self.controller.create_worktree(
+            self.repo_root,
+            task_title="Replay state",
+            attach_agent_id="agent-1",
+        )
+        assert created.worktree is not None
+        worktree_path = Path(created.worktree.summary.path)
+        git_worktree = next(
+            worktree for worktree in self.git._worktrees if worktree.path == worktree_path
+        )
+        self.git._snapshots[worktree_path] = GitRepositorySnapshot(
+            repo_root=self.repo_root,
+            branch="task/replay-state",
+            is_dirty=True,
+            ahead_behind=AheadBehindCounts(ahead=1, behind=0, recognized=True),
+            status_summary=GitStatusSummary(
+                entries=(
+                    GitStatusEntry(index_status=" ", worktree_status="M", path="src/app.py"),
+                    GitStatusEntry(
+                        index_status="?",
+                        worktree_status="?",
+                        path="notes.txt",
+                        is_untracked=True,
+                    ),
+                ),
+                branch_line="## task/replay-state...origin/task/replay-state [ahead 1]",
+            ),
+            current_worktree=git_worktree,
+            safety_issues=(),
+        )
+        self.git._recent_commits[worktree_path] = (
+            GitCommitSummary(
+                short_sha="abc1234",
+                relative_date="2 hours ago",
+                subject="Fix worktree detail panel",
+            ),
+            GitCommitSummary(
+                short_sha="def5678",
+                relative_date="1 day ago",
+                subject="Add worktree board actions",
+            ),
+        )
+
+        detail = self.controller.get_worktree_detail(created.worktree.summary.worktree_id)
+
+        self.assertEqual(detail.branch_status, "tracks origin/task/replay-state · ahead 1")
+        assert detail.change_summary is not None
+        self.assertIn("unstaged", detail.change_summary)
+        self.assertIn("untracked", detail.change_summary)
+        self.assertEqual(detail.status_entries[0].path, "src/app.py")
+        self.assertEqual(detail.recent_commits[0].subject, "Fix worktree detail panel")
+
+    def test_list_worktrees_shows_live_agent_provenance_from_nested_path(self) -> None:
+        created = self.controller.create_worktree(self.repo_root, task_title="Replay state")
+        assert created.worktree is not None
+        worktree_path = Path(created.worktree.summary.path)
+        self.store.upsert_agent(
+            Agent(
+                id="agent-2",
+                name="Implementer",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@2",
+                tmux_pane_id="%2",
+                cwd=str(worktree_path / "src"),
+                repo_root=str(self.repo_root),
+                worktree_path=str(worktree_path / "src"),
+                branch="task/replay-state",
+                status=AgentStatus.RUNNING,
+                started_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+                last_seen_at=datetime(2025, 1, 1, 12, 2, tzinfo=UTC),
+            )
+        )
+
+        summary = self.controller.list_worktrees(repo_root=str(self.repo_root))[0]
+
+        self.assertIsNone(summary.assigned_agent_id)
+        self.assertIsNone(summary.assigned_agent_name)
+        assert summary.provenance is not None
+        self.assertEqual(summary.provenance.kind, WorktreeProvenanceKind.LIVE_AGENT)
+        self.assertEqual(summary.provenance.agent_name, "Implementer")
+
+    def test_list_worktrees_uses_recent_session_provenance_when_unassigned(self) -> None:
+        created = self.controller.create_worktree(self.repo_root, task_title="Replay state")
+        assert created.worktree is not None
+        worktree_id = created.worktree.summary.worktree_id
+        worktree_path = created.worktree.summary.path
+        self.store.upsert_agent(
+            Agent(
+                id="agent-3",
+                name="Reviewer",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@3",
+                tmux_pane_id="%3",
+                cwd=str(self.repo_root),
+                repo_root=str(self.repo_root),
+                branch="task/replay-state",
+                status=AgentStatus.RUNNING,
+                started_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+                last_seen_at=datetime(2025, 1, 1, 12, 3, tzinfo=UTC),
+            )
+        )
+        self.store.upsert_session(
+            Session(
+                id="session-3",
+                agent_id="agent-3",
+                created_at=datetime(2025, 1, 1, 12, 4, tzinfo=UTC),
+            )
+        )
+        self.store.upsert_session_context(
+            SessionContextRecord(
+                session_id="session-3",
+                agent_id="agent-3",
+                worktree_id=worktree_id,
+                worktree_path=worktree_path,
+                updated_at=datetime(2025, 1, 1, 12, 5, tzinfo=UTC),
+            )
+        )
+
+        summary = self.controller.list_worktrees(repo_root=str(self.repo_root))[0]
+
+        assert summary.provenance is not None
+        self.assertEqual(summary.provenance.kind, WorktreeProvenanceKind.SESSION)
+        self.assertEqual(summary.provenance.agent_name, "Reviewer")
 
 
 def _result(command: tuple[str, ...], *, cwd: Path) -> CommandResult:

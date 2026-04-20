@@ -57,6 +57,17 @@ class CheckStaleOutputTests(unittest.TestCase):
         )
         self.assertTrue(result)
 
+    def test_first_call_uses_persisted_observed_at_to_flag_stale(self) -> None:
+        t0 = datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
+        result = _check_stale_output(
+            "agent-1",
+            "output",
+            now=t0 + timedelta(seconds=130),
+            agent_status=AgentStatus.RUNNING,
+            observed_at=t0,
+        )
+        self.assertTrue(result)
+
     def test_hash_change_resets_timer(self) -> None:
         t0 = datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
         _check_stale_output("agent-1", "output-A", now=t0, agent_status=AgentStatus.RUNNING)

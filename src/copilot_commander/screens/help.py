@@ -47,6 +47,7 @@ class HelpScreen(ShellScreen):
                 "Discovery scans tmux with list-panes -a across the current server",
                 "Copilot panes in other windows appear on the dashboard",
                 "Use the Setup screen to inspect tmux socket health and switch servers",
+                "Press y on dashboard, worktrees, or sessions to copy the selected details",
                 "Use r to rescan, j/k to move, / to filter, 1/2/3/4/5 to switch",
             ):
                 content.append(f"  • {note}\n", style=FG4)

@@ -131,17 +131,37 @@ class LivePaneViewer(RichLog):
             self.scroll_end(animate=False, immediate=True, force=True, x_axis=False)
 
     def replace_tail(self, payload: str | Text) -> None:
-        """Replace only the newest lines with a corrected tmux snapshot."""
+        """Replace only the newest lines with a corrected tmux snapshot.
+
+        Snapshot sync runs independently from the pipe-pane stream. When
+        the live stream has already appended the same buffered tail we
+        avoid a full RichLog replay so the mirror doesn't visibly jump
+        during routine resyncs.
+        """
         text = payload.plain if isinstance(payload, Text) else payload
         if not text:
             return
+        if self.matches_snapshot_tail(payload):
+            return
         self._buffer.replace_tail_text(text)
-        self._has_content = self.buffer_line_count > 0
+        after = self._buffer.lines()
+        self._has_content = len(after) > 0
         self._rerender_from_buffer()
+
+    def matches_snapshot_tail(self, payload: str | Text) -> bool:
+        """Return whether the viewer already ends with ``payload``."""
+        snapshot_lines = self._payload_lines(payload)
+        buffer_lines = self._buffer.lines()
+        if not snapshot_lines:
+            return len(buffer_lines) == 0
+        if len(snapshot_lines) > len(buffer_lines):
+            return False
+        return buffer_lines[-len(snapshot_lines) :] == snapshot_lines
 
     def clear_buffer(self) -> None:
         """Drop all rendered content and reset the ring buffer."""
         self._buffer = RingLineBuffer(self._buffer.max_lines)
+        self._decoder = AnsiDecoder()
         self._has_content = False
         self.clear()
 
@@ -153,12 +173,23 @@ class LivePaneViewer(RichLog):
         for line in self._decoder.decode(payload.rstrip("\n")):
             self._write_styled(line)
 
+    @staticmethod
+    def _payload_lines(payload: str | Text) -> tuple[str, ...]:
+        text = payload.plain if isinstance(payload, Text) else payload
+        if not text:
+            return ()
+        parts = text.split("\n")
+        if parts[-1] == "":
+            parts.pop()
+        return tuple(parts)
+
     def _rerender_from_buffer(self) -> None:
         if not self.is_mounted:
             return
         follow_tail = self.is_vertical_scroll_end
         previous_scroll_y = self.scroll_y
         lines = self._buffer.lines()
+        self._decoder = AnsiDecoder()
         self.clear()
         for raw_line in lines:
             self._render_string(raw_line)

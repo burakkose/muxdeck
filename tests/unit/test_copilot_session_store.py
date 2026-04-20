@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -177,7 +178,7 @@ def _make_session(
     repository: str = "user/repo",
     branch: str = "main",
     summary: str = "Test session",
-    events: list[dict[str, str]] | None = None,
+    events: Sequence[Mapping[str, object]] | None = None,
     checkpoints: int = 0,
 ) -> Path:
     session_dir = tmp_path / session_id
@@ -221,6 +222,47 @@ def test_parse_session_dir_complete(tmp_path: Path) -> None:
     assert session.last_event_type == "session.shutdown"
 
 
+def test_parse_session_dir_extracts_shutdown_usage(tmp_path: Path) -> None:
+    events: list[dict[str, object]] = [
+        {"type": "session.start", "timestamp": "2026-01-15T10:00:00Z"},
+        {
+            "type": "session.shutdown",
+            "timestamp": "2026-01-15T12:00:00Z",
+            "data": {
+                "totalPremiumRequests": 4,
+                "modelMetrics": {
+                    "gpt-5.4": {
+                        "usage": {
+                            "inputTokens": 1200,
+                            "outputTokens": 45,
+                            "cacheReadTokens": 400,
+                            "cacheWriteTokens": 0,
+                        }
+                    },
+                    "claude-opus-4.6": {
+                        "usage": {
+                            "inputTokens": 300,
+                            "outputTokens": 30,
+                            "cacheReadTokens": 50,
+                            "cacheWriteTokens": 10,
+                        }
+                    },
+                },
+            },
+        },
+    ]
+    sd = _make_session(tmp_path, "usage-123", events=events)
+    session = _parse_session_dir(sd)
+    assert session is not None
+    assert session.usage is not None
+    assert session.usage.input_tokens == 1500
+    assert session.usage.output_tokens == 75
+    assert session.usage.cache_read_tokens == 450
+    assert session.usage.cache_write_tokens == 10
+    assert session.usage.total_tokens == 2035
+    assert session.usage.premium_requests == 4
+
+
 def test_parse_session_dir_unclosed(tmp_path: Path) -> None:
     events = [
         {"type": "session.start", "timestamp": "2026-01-15T10:00:00Z"},
@@ -231,6 +273,7 @@ def test_parse_session_dir_unclosed(tmp_path: Path) -> None:
     assert session is not None
     assert session.is_cleanly_closed is False
     assert session.last_event_type == "tool.execution_start"
+    assert session.usage is None
 
 
 def test_parse_session_dir_no_workspace(tmp_path: Path) -> None:

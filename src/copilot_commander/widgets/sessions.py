@@ -271,7 +271,19 @@ class SessionDetailPanel(Static):
 
         content.append("  Checkpoints ", style=f"bold {FG4}")
         content.append(str(detail.checkpoint_count), style=BLUE)
-        content.append("\n\n")
+        content.append("\n")
+
+        content.append("  Usage       ", style=f"bold {FG4}")
+        content.append(
+            detail.usage_summary,
+            style=AQUA if detail.usage_available else FG4,
+        )
+        content.append("\n")
+        if detail.premium_requests is not None:
+            content.append("  Premium     ", style=f"bold {FG4}")
+            content.append(detail.premium_requests, style=BLUE)
+            content.append("\n")
+        content.append("\n")
 
         if detail.is_resumable:
             content.append("  Resume: ", style=f"bold {FG4}")
@@ -389,6 +401,14 @@ class SessionActionBar(Static):
         _append_chip(text, "repo", detail.repository, value_style=AQUA)
         _append_chip(text, "branch", detail.branch, value_style=YELLOW)
         _append_chip(text, "checkpoints", str(detail.checkpoint_count), value_style=BLUE)
+        _append_chip(
+            text,
+            "usage",
+            detail.usage_badge,
+            value_style=AQUA if detail.usage_available else FG4,
+        )
+        if detail.premium_requests is not None:
+            _append_chip(text, "premium", detail.premium_requests, value_style=BLUE)
         if detail.origin == "windows":
             _append_chip(text, "host", "windows", value_style=BLUE)
         if filter_text.strip():

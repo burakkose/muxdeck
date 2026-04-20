@@ -16,7 +16,9 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from copilot_commander.adapters.copilot_adapter import CopilotAdapter
+from copilot_commander.adapters.copilot_session_resolver import CopilotSessionResolution
 from copilot_commander.domain.enums import AgentStatus
+from copilot_commander.domain.models import Agent
 from copilot_commander.domain.value_objects import CommandResult
 from copilot_commander.services.agent_service import AgentFactInput
 from copilot_commander.services.discovery_service import DiscoveryPaneSnapshot, PaneDiscovery
@@ -50,6 +52,19 @@ class FakeRecorder:
     def persist_agent_facts(self, facts: AgentFactInput, /) -> AgentFactInput:
         self.recorded.append(facts)
         return facts
+
+
+@dataclass(slots=True)
+class FakeSessionResolver:
+    resolution: CopilotSessionResolution
+    seen_pids: list[int | None]
+
+    def resolve(self, pane_pid: int | None, /) -> CopilotSessionResolution:
+        self.seen_pids.append(pane_pid)
+        return self.resolution
+
+    def resolve_for_pid(self, pane_pid: int | None, /) -> str | None:
+        return self.resolve(pane_pid).session_id
 
 
 class MonitoringServiceTests(unittest.TestCase):
@@ -315,6 +330,111 @@ class MonitoringServiceTests(unittest.TestCase):
         assert facts.status is AgentStatus.WAITING_INPUT
         assert facts.token_input == 8
         assert facts.capture_text == "Copilot session id: copilot-123"
+
+    def test_monitor_discoveries_uses_resolver_when_capture_has_multiple_session_ids(self) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        recorder = FakeRecorder(recorded=[])
+        resolver = FakeSessionResolver(
+            resolution=CopilotSessionResolution(
+                session_id="copilot-live",
+                state="resolved",
+            ),
+            seen_pids=[],
+        )
+        service = MonitoringService(
+            recorder,
+            session_resolver=resolver,
+            clock=lambda: now,
+        )
+        copilot = CopilotAdapter(DummyRunner())
+        evidence = copilot.interpret_output(
+            "Copilot session id: stale-pane\n"
+            "split view\n"
+            "Copilot session id: copilot-live\n"
+            "input_tokens: 3\n"
+        )
+        discovery = PaneDiscovery(
+            snapshot=DiscoveryPaneSnapshot(
+                pane_id="%9",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@9",
+                tmux_window_name="nested",
+                pane_current_path="/repo/worktrees/task",
+                pane_current_command="tmux",
+                pane_pid=9876,
+                repo_root="/repo",
+                branch="task/demo",
+            ),
+            discovered_at=now,
+            classification="unmanaged_probable_agent",
+            reasons=("captured Copilot evidence",),
+            command_detection=copilot.detect_command("tmux"),
+            captured_output="nested capture",
+            session_evidence=evidence,
+        )
+
+        report = service.monitor_discoveries(cast("Sequence[MonitoringDiscovery]", (discovery,)))
+
+        assert len(report.results) == 1
+        assert resolver.seen_pids == [9876]
+        assert recorder.recorded[0].copilot_session_id == "copilot-live"
+
+    def test_monitor_discoveries_suppresses_stale_session_when_live_resolution_is_ambiguous(
+        self,
+    ) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        recorder = FakeRecorder(recorded=[])
+        resolver = FakeSessionResolver(
+            resolution=CopilotSessionResolution(state="ambiguous"),
+            seen_pids=[],
+        )
+        service = MonitoringService(
+            recorder,
+            session_resolver=resolver,
+            clock=lambda: now,
+        )
+        existing_agent = Agent(
+            id="agent-1",
+            name="agent-1",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@9",
+            tmux_pane_id="%9",
+            cwd="/repo/worktrees/task",
+            repo_root="/repo",
+            worktree_path="/repo/worktrees/task",
+            branch="task/demo",
+            task_title="Nested agent",
+            copilot_session_id="stale-session",
+            pid=9876,
+            status=AgentStatus.RUNNING,
+            started_at=now,
+            last_seen_at=now,
+        )
+        discovery = PaneDiscovery(
+            snapshot=DiscoveryPaneSnapshot(
+                pane_id="%9",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@9",
+                tmux_window_name="nested",
+                pane_current_path="/repo/worktrees/task",
+                pane_current_command="tmux",
+                pane_pid=9876,
+                repo_root="/repo",
+                branch="task/demo",
+            ),
+            discovered_at=now,
+            classification="managed_agent",
+            reasons=("matched stored agent",),
+            command_detection=CopilotAdapter(DummyRunner()).detect_command("tmux"),
+            captured_output="nested capture",
+            managed_agent=existing_agent,
+        )
+
+        report = service.monitor_discoveries(cast("Sequence[MonitoringDiscovery]", (discovery,)))
+
+        assert len(report.results) == 1
+        assert resolver.seen_pids == [9876]
+        assert recorder.recorded[0].copilot_session_id is None
 
 
 if __name__ == "__main__":

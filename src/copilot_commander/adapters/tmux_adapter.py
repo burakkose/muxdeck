@@ -156,6 +156,14 @@ class TmuxAdapter:
     def socket_path(self) -> Path | None:
         return self._socket_path
 
+    def with_socket_path(self, socket_path: PathLike | None) -> TmuxAdapter:
+        return TmuxAdapter(
+            self._command_runner,
+            binary=self._binary,
+            timeout_sec=self._timeout_sec,
+            socket_path=socket_path,
+        )
+
     def set_socket_path(self, socket_path: PathLike | None) -> None:
         if socket_path is None:
             self._socket_path = None

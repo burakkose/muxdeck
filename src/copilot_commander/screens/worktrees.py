@@ -257,6 +257,39 @@ class WorktreesScreen(ShellScreen):
             return
         self._refresh_after_worktree_action(action_view)
 
+    def action_open_git_terminal(self) -> None:
+        if self._detail is None:
+            self.set_status("no worktree selected")
+            return
+        if self.runtime.actions is None:
+            self.set_status("✗ action service unavailable")
+            return
+        branch_tail = self._detail.summary.branch.rsplit("/", 1)[-1]
+        result = self.runtime.actions.open_terminal(
+            cwd=Path(self._detail.summary.path),
+            window_name=f"git-{branch_tail}",
+        )
+        prefix = "✓" if result.success else "✗"
+        self.set_status(f"{prefix} {result.message}")
+
+    def action_copy_details(self) -> None:
+        selected_worktree_id = self.query_one(WorktreeListPanel).selected_worktree_id
+        if selected_worktree_id is None:
+            self.set_status("no worktree selected")
+            return
+        self._selected_worktree_id = selected_worktree_id
+        self.commander_app.remember_worktree_selection(selected_worktree_id)
+        self._update_selected_detail()
+        if self._detail is None:
+            self.set_status("no worktree detail loaded")
+            return
+        self.copy_rendered_text(
+            "worktree details",
+            self.query_one(WorktreeDetailPanel),
+            self.query_one(ConflictPanel),
+            self.query_one(StartIntentPanel),
+        )
+
     def action_delete_worktree(self) -> None:
         """Delete the selected worktree after confirmation."""
         if self._selected_worktree_id is None:
@@ -288,12 +321,10 @@ class WorktreesScreen(ShellScreen):
                 self._selected_worktree_id,
                 force=False,
             )
-            self.set_status(f"✓ {action_view.message}")
         except Exception as exc:
             self.set_status(f"✗ delete failed: {exc}")
             return
-        self._selected_worktree_id = None
-        self.refresh_data()
+        self._refresh_after_worktree_action(action_view)
 
     def action_prune_worktrees(self) -> None:
         """Prune stale worktrees after confirmation."""
@@ -327,12 +358,10 @@ class WorktreesScreen(ShellScreen):
                 self._detail.summary.repo_root,
                 dry_run=False,
             )
-            count = len(action_view.pruned_paths)
-            self.set_status(f"✓ pruned {count} stale worktree(s)")
         except Exception as exc:
             self.set_status(f"✗ prune failed: {exc}")
             return
-        self.refresh_data()
+        self._refresh_after_worktree_action(action_view)
 
     def _refresh_after_worktree_action(self, action_view: WorktreeActionView) -> None:
         self._start_intent = None

@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import PurePosixPath
 from typing import Literal, Protocol, cast, runtime_checkable
 
+from copilot_commander.adapters.copilot_session_resolver import CopilotSessionResolution
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.models import Agent
 from copilot_commander.domain.value_objects import ensure_aware_datetime, utc_now
@@ -43,6 +44,15 @@ class MonitoringDiscovery(Protocol):
 class MonitoringAgentRecorder(Protocol):
     def persist_agent_facts(self, facts: AgentFactInput, /) -> object:
         """Persist agent/session/event/log facts for an observation."""
+
+
+@runtime_checkable
+class MonitoringSessionResolver(Protocol):
+    def resolve(self, pane_pid: int | None, /) -> CopilotSessionResolution:
+        """Resolve a live Copilot session id for a pane pid."""
+
+    def resolve_for_pid(self, pane_pid: int | None, /) -> str | None:
+        """Resolve a live Copilot session id for a pane pid."""
 
 
 @runtime_checkable
@@ -172,10 +182,12 @@ class MonitoringService:
         self,
         agent_recorder: MonitoringAgentRecorder,
         *,
+        session_resolver: MonitoringSessionResolver | None = None,
         thresholds: MonitoringThresholds | None = None,
         clock: Clock = utc_now,
     ) -> None:
         self._agent_recorder = agent_recorder
+        self._session_resolver = session_resolver
         self._thresholds = MonitoringThresholds() if thresholds is None else thresholds
         self._clock = clock
 
@@ -260,9 +272,11 @@ class MonitoringService:
         worktree_path = current_path or (
             existing_agent.worktree_path if existing_agent is not None else None
         )
-        copilot_session_id = session_evidence.copilot_session_id if session_evidence else None
-        if copilot_session_id is None and existing_agent is not None:
-            copilot_session_id = existing_agent.copilot_session_id
+        copilot_session_id = self._resolve_copilot_session_id(
+            snapshot=snapshot,
+            session_evidence=session_evidence,
+            existing_agent=existing_agent,
+        )
         latest_activity = (
             _extract_latest_activity(session_evidence.parse_result)
             if session_evidence is not None
@@ -311,6 +325,28 @@ class MonitoringService:
             ),
             error_messages=tuple(session_evidence.error_messages) if session_evidence else (),
         )
+
+    def _resolve_copilot_session_id(
+        self,
+        *,
+        snapshot: MonitoringSnapshot,
+        session_evidence: MonitoringEvidence | None,
+        existing_agent: Agent | None,
+    ) -> str | None:
+        candidate_ids = _candidate_session_ids(session_evidence)
+        if self._session_resolver is not None:
+            resolution = self._session_resolver.resolve(snapshot.pane_pid)
+            if resolution.session_id is not None:
+                return resolution.session_id
+            if resolution.is_ambiguous:
+                return None
+        if len(candidate_ids) == 1:
+            return candidate_ids[0]
+        if len(candidate_ids) > 1:
+            return None
+        if existing_agent is not None:
+            return existing_agent.copilot_session_id
+        return None
 
 
 def compute_status_heuristics(
@@ -512,6 +548,22 @@ def _extract_latest_activity(
         return None
     marker = parse_result.activity_markers[-1]
     return getattr(marker, "activity", None)
+
+
+def _candidate_session_ids(session_evidence: MonitoringEvidence | None, /) -> tuple[str, ...]:
+    if session_evidence is None:
+        return ()
+    unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in getattr(session_evidence, "session_ids", ()):
+        if not isinstance(candidate, str) or not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        unique.append(candidate)
+    session_id = session_evidence.copilot_session_id
+    if session_id is not None and session_id not in seen:
+        unique.insert(0, session_id)
+    return tuple(unique)
 
 
 def _derive_agent_name(

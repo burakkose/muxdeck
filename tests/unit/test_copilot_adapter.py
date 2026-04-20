@@ -166,6 +166,21 @@ class CopilotAdapterTests(unittest.TestCase):
         assert latest_usage.input_tokens == 1200
         assert evidence.usage_snapshots[0].output_tokens == 345
 
+    def test_interpret_output_leaves_session_id_unset_when_capture_is_ambiguous(self) -> None:
+        adapter = CopilotAdapter(FakeRunner(()))
+        output = "\n".join(
+            (
+                "Copilot session id: session-outer",
+                "some nested tmux layout",
+                "Copilot session id: session-inner",
+            )
+        )
+
+        evidence = adapter.interpret_output(output)
+
+        assert evidence.session_ids == ("session-outer", "session-inner")
+        assert evidence.copilot_session_id is None
+
     def test_interpret_command_result_combines_stdout_and_stderr(self) -> None:
         adapter = CopilotAdapter(FakeRunner(()))
         result = _result(

@@ -81,7 +81,8 @@ DASHBOARD_BINDINGS: Final[list[BindingSpec]] = [
     Binding("w", "open_worktree", "Worktree", show=False),
     Binding("m", "send_message", "Send message", show=False),
     Binding("l", "view_logs", "View logs", show=False),
-    Binding("v", "view_pane", "Compose message", show=False),
+    Binding("y", "copy_details", "Copy details", show=False),
+    Binding("v", "view_pane", "Live pane", show=False),
     Binding("enter", "toggle_expand", "Expand sub-agents", show=False),
     Binding("S", "stop_all", "Stop all", show=False),
     Binding("A", "open_attention_inbox", "Attention inbox", show=False),
@@ -100,7 +101,8 @@ DASHBOARD_HINTS = (
     KeyHint("W", "move"),
     KeyHint("m", "message"),
     KeyHint("l", "logs"),
-    KeyHint("v", "compose"),
+    KeyHint("y", "copy"),
+    KeyHint("v", "live"),
     KeyHint("↵", "expand"),
     KeyHint("S", "stop all"),
 )
@@ -128,6 +130,8 @@ WORKTREE_BINDINGS: Final[list[BindingSpec]] = [
     Binding("x", "launch_agent", "Launch agent", show=False),
     Binding("c", "create_worktree", "Create worktree", show=False),
     Binding("a", "attach_worktree", "Select existing", show=False),
+    Binding("g", "open_git_terminal", "Git terminal", show=False),
+    Binding("y", "copy_details", "Copy details", show=False),
     Binding("d", "delete_worktree", "Delete", show=False),
     Binding("P", "prune_worktrees", "Prune stale", show=False),
 ]
@@ -137,6 +141,8 @@ WORKTREE_HINTS = (
     KeyHint("s/x/↵", "launch"),
     KeyHint("c", "create"),
     KeyHint("a", "select existing"),
+    KeyHint("g", "git shell"),
+    KeyHint("y", "copy"),
     KeyHint("d", "delete"),
     KeyHint("P", "prune"),
 )
@@ -211,7 +217,7 @@ SESSIONS_BINDINGS: Final[list[BindingSpec]] = [
     Binding("R", "resume_session", "Resume", show=False),
     Binding("l", "open_live", "Live mirror", show=False),
     Binding("x", "toggle_completed", "Toggle completed", show=False),
-    Binding("y", "copy_session_id", "Copy ID", show=False),
+    Binding("y", "copy_details", "Copy details", show=False),
     Binding("p", "focus_pane", "Focus pane", show=False),
 ]
 
@@ -221,8 +227,8 @@ SESSIONS_HINTS = (
     KeyHint("/", "filter"),
     KeyHint("l", "live"),
     KeyHint("R", "resume"),
+    KeyHint("y", "copy"),
     KeyHint("x", "completed"),
-    KeyHint("y", "copy ID"),
     KeyHint("p", "focus pane"),
 )
 

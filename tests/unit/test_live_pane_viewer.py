@@ -7,6 +7,8 @@ tests don't need a running Textual app.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from rich.text import Text
 
 from copilot_commander.widgets.live_pane_viewer import LivePaneViewer
@@ -76,3 +78,20 @@ class TestLineCap:
         viewer.append("one\ntwo\nthree\nfour\nfive\n")
         viewer.replace_tail("three\nFOUR\nFIVE\n")
         assert viewer.buffer_lines == ("one", "two", "three", "FOUR", "FIVE")
+
+    def test_replace_tail_skips_rerender_when_snapshot_matches_tail(self) -> None:
+        viewer = LivePaneViewer(max_lines=6)
+        viewer.append("one\ntwo\nthree\nfour\n")
+
+        with patch.object(viewer, "_rerender_from_buffer") as rerender:
+            viewer.replace_tail("two\nthree\nfour\n")
+
+        assert viewer.buffer_lines == ("one", "two", "three", "four")
+        rerender.assert_not_called()
+
+    def test_matches_snapshot_tail_detects_existing_suffix(self) -> None:
+        viewer = LivePaneViewer(max_lines=6)
+        viewer.append("one\ntwo\nthree\nfour\n")
+
+        assert viewer.matches_snapshot_tail("two\nthree\nfour\n") is True
+        assert viewer.matches_snapshot_tail("three\nfour\nfive\n") is False

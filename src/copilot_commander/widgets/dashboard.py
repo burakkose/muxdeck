@@ -345,6 +345,42 @@ def _format_cost(value: str | None) -> str:
         return f"${value}"
 
 
+def _resolved_token_total(agent: DashboardAgentListItemView) -> int | None:
+    if agent.token_total is not None:
+        return agent.token_total
+    if agent.token_input is not None and agent.token_output is not None:
+        return agent.token_input + agent.token_output
+    return None
+
+
+def _usage_badges(agent: DashboardAgentListItemView) -> tuple[tuple[str, str], ...]:
+    badges: list[tuple[str, str]] = []
+    token_total = _resolved_token_total(agent)
+    if token_total is not None:
+        badges.append((f"{token_total:,} tok", AQUA))
+    else:
+        if agent.token_input is not None:
+            badges.append((f"in {agent.token_input:,}", BLUE))
+        if agent.token_output is not None:
+            badges.append((f"out {agent.token_output:,}", PURPLE))
+    cost = _format_cost(agent.estimated_cost_usd)
+    if cost != "-":
+        badges.append((cost, GREEN))
+    return tuple(badges)
+
+
+def _append_badges(
+    text: Text,
+    badges: Sequence[tuple[str, str]],
+    *,
+    separator: str = " · ",
+) -> None:
+    for index, (label, style) in enumerate(badges):
+        if index:
+            text.append(separator, style=FG4)
+        text.append(label, style=f"bold {style}")
+
+
 def _format_session(agent: DashboardSelectedAgentView) -> str:
     session = agent.open_session_id or agent.item.latest_session_id
     if session is None:
@@ -418,16 +454,21 @@ class StatusBar(Static):
 
         if "tokens" in metric_lookup:
             line.append(sep_text, style=FG4)
-            line.append("tok: ", style=FG4)
-            line.append(str(metric_lookup["tokens"]), style=f"bold {AQUA}")
+            line.append("tokens ", style=FG4)
+            line.append(f"{metric_lookup['tokens']:,}", style=f"bold {AQUA}")
         if selected is not None:
             focus, focus_style = _focus_summary(selected)
-            if focus:
+            usage_badges = _usage_badges(selected)
+            if focus or usage_badges:
                 line.append(sep_text, style=FG4)
                 line.append("focus ", style=FG4)
                 line.append(selected.name, style=f"bold {FG}")
-                line.append(" → ", style=FG4)
-                line.append(focus, style=focus_style)
+                if focus:
+                    line.append(" → ", style=FG4)
+                    line.append(focus, style=focus_style)
+                if usage_badges:
+                    line.append("  ·  ", style=FG4)
+                    _append_badges(line, usage_badges)
         self.update(line)
 
 
@@ -787,6 +828,10 @@ class AgentListPanel(Static, can_focus=True):
                 name_text = Text(display_name, style=f"bold {FG}" if is_selected else f"bold {FG2}")
                 if agent.subtask_count > 0:
                     name_text.append(f" ⚡{agent.subtask_count}", style=f"bold {YELLOW}")
+                usage_badges = _usage_badges(agent)
+                if usage_badges:
+                    name_text.append("  ", style=FG4)
+                    _append_badges(name_text, usage_badges, separator=" ")
                 is_attention_like = agent.needs_attention or agent.status in {
                     AgentStatus.DISCOVERED,
                     AgentStatus.STARTING,
@@ -923,6 +968,10 @@ class AgentDetailPanel(Static):
         result.append(item.name, style=f"bold {FG}")
         result.append("  ")
         result.append(operator_status.headline, style=bold_status_style)
+        usage_badges = _usage_badges(item)
+        if usage_badges:
+            result.append("  ·  ", style=FG4)
+            _append_badges(result, usage_badges)
         # The task_title is the high-level work ("Investigating cache
         # bug"). Only render it on the header when it genuinely differs
         # from the tool-level activity we show below — otherwise we
@@ -983,6 +1032,7 @@ class AgentDetailPanel(Static):
             ),
         )
 
+        token_total = _resolved_token_total(item)
         cost = _format_cost(item.estimated_cost_usd)
         pulse = item.sparkline if item.sparkline.strip() else ""
         _append_inline_fields(
@@ -990,11 +1040,36 @@ class AgentDetailPanel(Static):
             (
                 ("uptime", _format_duration(item.started_at), FG2),
                 ("idle", _format_idle(item.idle_seconds), FG2),
-                ("cost", cost if cost != "-" else None, GREEN),
-                ("tokens", str(item.token_total) if item.token_total is not None else None, AQUA),
                 ("pulse", pulse, AQUA),
             ),
         )
+
+        if (
+            token_total is not None
+            or item.token_input is not None
+            or item.token_output is not None
+            or cost != "-"
+        ):
+            result.append("  usage\n", style=f"bold {FG4}")
+            _field_row(
+                result,
+                "total",
+                f"{token_total:,}" if token_total is not None else None,
+                AQUA,
+            )
+            _field_row(
+                result,
+                "input",
+                f"{item.token_input:,}" if item.token_input is not None else None,
+                BLUE,
+            )
+            _field_row(
+                result,
+                "output",
+                f"{item.token_output:,}" if item.token_output is not None else None,
+                PURPLE,
+            )
+            _field_row(result, "cost", cost if cost != "-" else None, GREEN)
 
         # ── recent parsed events (deduplicated) ──
         if agent.recent_events:
@@ -1017,7 +1092,7 @@ class AgentDetailPanel(Static):
         _render_action_shortcuts(
             result,
             (
-                (("p", "console"), ("m", "message"), ("v", "compose"), ("i", "interrupt")),
+                (("p", "console"), ("m", "message"), ("v", "live"), ("i", "interrupt")),
                 (("K", "kill pane"), ("R", "rename"), ("W", "move"), ("w", "worktree")),
                 (("l", "logs"), ("S", "stop visible")),
             ),

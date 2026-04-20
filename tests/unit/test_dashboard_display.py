@@ -34,6 +34,8 @@ def _agent(
     sparkline: str = "        ",
     is_potentially_stuck: bool = False,
     token_total: int | None = None,
+    token_input: int | None = None,
+    token_output: int | None = None,
     estimated_cost_usd: str | None = None,
     last_event_kind: str | None = "agent.updated",
 ) -> DashboardAgentListItemView:
@@ -56,6 +58,8 @@ def _agent(
         needs_attention=needs_attention,
         attention_reason=attention_reason,
         token_total=token_total,
+        token_input=token_input,
+        token_output=token_output,
         estimated_cost_usd=estimated_cost_usd,
         window_name=window_name,
         current_activity=current_activity,
@@ -154,6 +158,23 @@ class TestAgentListTable:
         row_cells = table.columns[2]._cells
         assert len(row_cells) == 1
         assert "Planner" in str(row_cells[0])
+
+    def test_list_shows_usage_badges_in_name_column(self):
+        from copilot_commander.widgets.dashboard import AgentListPanel
+
+        agent = _agent(
+            name="Planner",
+            token_total=120,
+            estimated_cost_usd="0.120000",
+        )
+        panel = AgentListPanel(widget_id="test")
+        panel._agents = (agent,)
+        panel._selected_index = 0
+        table = panel._build_table()
+
+        row_cells = table.columns[2]._cells
+        assert "120 tok" in str(row_cells[0]).lower()
+        assert "$0.12" in str(row_cells[0])
 
     def test_display_name_disambiguates_duplicates(self):
         """When names collide, worktree/repo suffix is added."""
@@ -297,6 +318,8 @@ class TestDashboardPanels:
                 current_activity="Reviewing layout",
                 sparkline="▁▂▄▆█",
                 token_total=120,
+                token_input=90,
+                token_output=30,
                 estimated_cost_usd="0.120000",
             ),
             latest_event_severity="warning",
@@ -310,6 +333,11 @@ class TestDashboardPanels:
         assert "waiting for operator" in rendered
         assert "session-1 (2 total)" in rendered
         assert "branch main │ repo myrepo │ worktree myworktree" in rendered
+        assert "usage" in rendered
+        assert "total     120" in rendered
+        assert "input     90" in rendered
+        assert "output    30" in rendered
+        assert "cost      $0.12" in rendered
 
     def test_activity_panel_renders_recent_markers(self):
         from copilot_commander.widgets.dashboard import ActivityPanel
@@ -373,7 +401,15 @@ class TestDashboardPanels:
             error_agents=1,
         )
 
-        bar.set_state(health, (), _agent(current_activity="Planning dashboard layout"))
+        bar.set_state(
+            health,
+            (),
+            _agent(
+                current_activity="Planning dashboard layout",
+                token_total=120,
+                estimated_cost_usd="0.120000",
+            ),
+        )
 
         rendered = _render(bar).lower()
         assert "3 active" in rendered
@@ -381,6 +417,8 @@ class TestDashboardPanels:
         assert "1 failed" in rendered
         assert "focus node" in rendered
         assert "planning dashboard layout" in rendered
+        assert "120 tok" in rendered
+        assert "$0.12" in rendered
 
     def test_fleet_health_panel_renders_counts_and_selected_status(self):
         from copilot_commander.widgets.dashboard import FleetHealthPanel

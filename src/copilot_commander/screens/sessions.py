@@ -12,6 +12,7 @@ from textual.timer import Timer
 from textual.widgets import Input
 from textual.worker import Worker, WorkerState
 
+from copilot_commander.adapters.pane_stream import PaneStreamAdapter
 from copilot_commander.bindings import SESSIONS_BINDINGS, SESSIONS_HINTS
 from copilot_commander.screens.base import ShellScreen
 from copilot_commander.screens.compose_mirror import ComposeWithMirrorScreen
@@ -36,6 +37,7 @@ class _LiveSessionTarget:
     pane_id: str
     window_id: str | None
     session_name: str | None
+    pane_pid: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +61,7 @@ class SessionsScreen(ShellScreen):
         self._filter_debounce_timer: Timer | None = None
         self._detail_timer: Timer | None = None
         self._loading: bool = False
+        self._refresh_pending: bool = False
         self._selected_detail: SessionDetailView | None = None
         self._live_session_ids: frozenset[str] = frozenset()
         self._live_targets: dict[str, _LiveSessionTarget] = {}
@@ -116,6 +119,12 @@ class SessionsScreen(ShellScreen):
         """
         if self.runtime.sessions_ctrl is None:
             return
+        if self._loading:
+            # Thread workers can't be force-cancelled once they're inside
+            # a blocking filesystem scan, so coalesce refresh requests
+            # instead of piling up parallel rescans.
+            self._refresh_pending = True
+            return
 
         # Keep showing the previous state until the worker finishes so
         # the screen never flashes blank on refresh. On first load
@@ -162,6 +171,7 @@ class SessionsScreen(ShellScreen):
                     pane_id=agent.tmux_pane_id,
                     window_id=agent.tmux_window_id or None,
                     session_name=agent.tmux_session_name or None,
+                    pane_pid=getattr(agent, "pid", None),
                 )
             state = sessions_ctrl.build_state(
                 live_session_ids=frozenset(live_ids),
@@ -188,6 +198,15 @@ class SessionsScreen(ShellScreen):
                 self.query_one(SessionDetailPanel),
             )
             self.set_status("session load failed")
+            self._schedule_pending_refresh()
+            return
+        if event.state == WorkerState.CANCELLED:
+            self._loading = False
+            self.end_loading(
+                self.query_one(SessionListPanel),
+                self.query_one(SessionDetailPanel),
+            )
+            self._schedule_pending_refresh()
             return
         if event.state != WorkerState.SUCCESS:
             return
@@ -198,10 +217,19 @@ class SessionsScreen(ShellScreen):
         )
         loaded = cast(_LoadedSessionsState | None, event.worker.result)
         if loaded is None:
+            self._schedule_pending_refresh()
             return
         self._live_session_ids = loaded.live_session_ids
         self._live_targets = loaded.live_targets
         self._apply_state(loaded.state)
+        self._schedule_pending_refresh()
+
+    def _schedule_pending_refresh(self) -> None:
+        if not self._refresh_pending:
+            return
+        self._refresh_pending = False
+        if self.is_mounted:
+            self.call_after_refresh(self.refresh_data)
 
     def _apply_state(self, state: SessionsState) -> None:
         self._state = state
@@ -328,12 +356,18 @@ class SessionsScreen(ShellScreen):
         else:
             self.set_status(f"✗ {result.message}")
 
-    def action_copy_session_id(self) -> None:
-        """Show session ID and resume command in status for easy copy."""
-        if self._selected_detail is None:
+    def action_copy_details(self) -> None:
+        selected_session_id = self.query_one(SessionListPanel).get_selected_id()
+        if selected_session_id is None:
             self.set_status("no session selected")
             return
-        self.set_status(self._selected_detail.resume_command)
+        self._selected_session_id = selected_session_id
+        self.commander_app.remember_session_selection(selected_session_id)
+        self._update_selected_detail()
+        if self._selected_detail is None:
+            self.set_status("no session detail loaded")
+            return
+        self.copy_rendered_text("session details", self.query_one(SessionDetailPanel))
 
     def action_focus_pane(self) -> None:
         """Focus the tmux pane of an active session."""
@@ -360,7 +394,8 @@ class SessionsScreen(ShellScreen):
         if target is None:
             self.set_status("session has no live pane to mirror")
             return
-        if self.runtime.pane_stream is None:
+        pane_id, stream_adapter = self._resolve_live_mirror_target(target)
+        if stream_adapter is None:
             self.set_status("✗ pane streaming unavailable")
             return
         display_name = (
@@ -371,8 +406,10 @@ class SessionsScreen(ShellScreen):
         self.app.push_screen(
             ComposeWithMirrorScreen(
                 self.runtime,
-                pane_id=target.pane_id,
+                pane_id=pane_id,
                 display_name=display_name,
+                show_editor=False,
+                stream_adapter=stream_adapter,
             )
         )
 
@@ -380,6 +417,30 @@ class SessionsScreen(ShellScreen):
         if self._selected_session_id is None:
             return None
         return self._live_targets.get(self._selected_session_id)
+
+    def _resolve_live_mirror_target(
+        self,
+        target: _LiveSessionTarget,
+    ) -> tuple[str, PaneStreamAdapter | None]:
+        stream_adapter = self.runtime.pane_stream
+        resolver = self.runtime.session_resolver
+        if resolver is None or target.pane_pid is None:
+            return target.pane_id, stream_adapter
+        resolved = resolver.resolve_target_for_pid(target.pane_pid)
+        if resolved is None or resolved.pane_id is None:
+            return target.pane_id, stream_adapter
+        if resolved.socket_path is None:
+            return resolved.pane_id, stream_adapter
+        nested_stream = self._stream_adapter_for_socket(resolved.socket_path)
+        if nested_stream is None:
+            return target.pane_id, stream_adapter
+        return resolved.pane_id, nested_stream
+
+    def _stream_adapter_for_socket(self, socket_path: Path) -> PaneStreamAdapter | None:
+        tmux = self.runtime.tmux
+        if tmux is None:
+            return None
+        return PaneStreamAdapter(tmux=tmux.with_socket_path(socket_path))
 
 
 __all__ = ["SessionsScreen"]

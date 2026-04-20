@@ -1,23 +1,19 @@
-"""Full-screen compose-with-live-mirror screen.
+"""Full-screen live tmux-pane viewer with optional compose editor.
 
-Opened from the Dashboard via ``v``. The layout:
-
-* **Top (most of the screen)** — a live mirror of the agent's tmux
-  pane. We seed it with the pane's current rendered contents, follow
-  new bytes via ``tmux pipe-pane``, and periodically resync with
-  ``capture-pane`` so carriage-return heavy / dynamically redrawn output
-  stays faithful to what tmux actually shows.
-* **Bottom** — a multi-line :class:`TextArea` composer backed by
-  Textual's full editor bindings (cursor motion, selection, copy, cut,
-  paste, delete, undo).
+The screen always renders a live mirror of the agent's tmux pane. Callers
+may additionally enable a bottom-half compose editor when they want
+message drafting in the same view.
 
 Key bindings:
 
-* ``tab`` / ``shift+tab`` — move focus between the editor and mirror.
-* ``ctrl+s`` / ``ctrl+enter`` / ``ctrl+j`` — send the composed text.
+* ``tab`` / ``shift+tab`` — move focus between the editor and mirror
+  when compose mode is enabled.
+* ``ctrl+s`` / ``ctrl+enter`` / ``ctrl+j`` — send the composed text in
+  compose mode.
 * ``i`` (while the mirror is focused) — enter live-input mode; keys go
   directly to the tmux pane until ``escape``.
-* ``alt+up`` / ``alt+down`` — shrink / grow the compose editor.
+* ``alt+up`` / ``alt+down`` — shrink / grow the compose editor in
+  compose mode.
 * ``escape`` — leave live-input mode, otherwise close the screen.
 
 Closing the screen tears the ``pipe-pane`` down and removes the per-pane
@@ -80,6 +76,12 @@ COMPOSE_MIRROR_HINTS: tuple[KeyHint, ...] = (
     KeyHint("esc", "back"),
 )
 
+LIVE_MIRROR_HINTS: tuple[KeyHint, ...] = (
+    KeyHint("i", "interact"),
+    KeyHint("r", "resync"),
+    KeyHint("esc", "back"),
+)
+
 
 class ComposeWithMirrorScreen(ShellScreen):
     """Pane mirror on top, compose editor on bottom, single screen."""
@@ -135,15 +137,18 @@ class ComposeWithMirrorScreen(ShellScreen):
         pane_id: str,
         display_name: str,
         ring_dir: Path | None = None,
+        show_editor: bool = True,
+        stream_adapter: PaneStreamAdapter | None = None,
     ) -> None:
         super().__init__(runtime)
         self._pane_id = pane_id
         self._display_name = display_name
+        self._show_editor = show_editor
         resolved_root = (
             ring_dir if ring_dir is not None else runtime.config.paths.state_dir / _RING_DIR_NAME
         )
         self._ring_path = ring_file_for_pane(resolved_root, pane_id)
-        self._adapter: PaneStreamAdapter | None = runtime.pane_stream
+        self._adapter: PaneStreamAdapter | None = stream_adapter or runtime.pane_stream
         self._reader = PaneRingReader(self._ring_path)
         self._pipe_started = False
         self._loading_cleared = False
@@ -162,6 +167,10 @@ class ComposeWithMirrorScreen(ShellScreen):
     def mirror_input_active(self) -> bool:
         return self._mirror_input_active
 
+    def footer_hints(self) -> tuple[KeyHint, ...]:
+        hints = COMPOSE_MIRROR_HINTS if self._show_editor else LIVE_MIRROR_HINTS
+        return (*hints, KeyHint("q", "quit"))
+
     # ── composition & mount ──────────────────────────────────────────
 
     def compose_body(self) -> ComposeResult:
@@ -170,15 +179,16 @@ class ComposeWithMirrorScreen(ShellScreen):
                 viewer = LivePaneViewer(widget_id="compose-mirror")
                 viewer.border_title = self._format_mirror_title()
                 yield viewer
-            with Vertical(id="compose-editor-wrap"):
-                yield Label("loading pane mirror…", id="compose-editor-label")
-                editor = TextArea(
-                    id="compose-editor",
-                    show_line_numbers=False,
-                    soft_wrap=True,
-                )
-                editor.border_title = f"message → {self._display_name}"
-                yield editor
+            if self._show_editor:
+                with Vertical(id="compose-editor-wrap"):
+                    yield Label("loading pane mirror…", id="compose-editor-label")
+                    editor = TextArea(
+                        id="compose-editor",
+                        show_line_numbers=False,
+                        soft_wrap=True,
+                    )
+                    editor.border_title = f"message → {self._display_name}"
+                    yield editor
 
     def on_mount(self) -> None:
         viewer = self.query_one(LivePaneViewer)
@@ -192,9 +202,12 @@ class ComposeWithMirrorScreen(ShellScreen):
             self._loading_cleared = True
         else:
             self._seed_and_stream(viewer)
-        # Land focus in the editor so typing just works. The mirror can
-        # be reached with tab.
-        self.query_one("#compose-editor", TextArea).focus()
+        if self._show_editor:
+            # Land focus in the editor so typing just works. The mirror can
+            # be reached with tab.
+            self.query_one("#compose-editor", TextArea).focus()
+        else:
+            viewer.focus()
         self._refresh_guidance()
 
     def on_unmount(self) -> None:
@@ -282,11 +295,14 @@ class ComposeWithMirrorScreen(ShellScreen):
         self._capture_error = None
         self._sync_warning = None
         if snapshot != self._last_snapshot:
-            if viewer.has_content:
+            if viewer.matches_snapshot_tail(snapshot):
+                self._last_snapshot = snapshot
+            elif viewer.has_content and snapshot:
                 viewer.replace_tail(snapshot)
+                self._last_snapshot = snapshot
             else:
                 viewer.set_snapshot(snapshot)
-            self._last_snapshot = snapshot
+                self._last_snapshot = snapshot
         if force or not self._loading_cleared:
             self.end_loading(viewer)
             self._loading_cleared = True
@@ -311,13 +327,18 @@ class ComposeWithMirrorScreen(ShellScreen):
         # Tab/Shift+Tab cycles focus between editor and mirror. The
         # editor consumes tab for indentation by default, so we handle
         # the swap at the screen level *before* it gets there.
-        if event.key == "tab":
+        if self._show_editor and event.key == "tab":
             self._swap_focus(forward=True)
             event.stop()
             event.prevent_default()
             return
-        if event.key == "shift+tab":
+        if self._show_editor and event.key == "shift+tab":
             self._swap_focus(forward=False)
+            event.stop()
+            event.prevent_default()
+            return
+        if not self._show_editor and event.key in {"tab", "shift+tab"}:
+            self.query_one(LivePaneViewer).focus()
             event.stop()
             event.prevent_default()
             return
@@ -347,6 +368,9 @@ class ComposeWithMirrorScreen(ShellScreen):
 
     def _swap_focus(self, *, forward: bool) -> None:
         del forward  # two-widget cycle — direction doesn't matter
+        if not self._show_editor:
+            self.query_one(LivePaneViewer).focus()
+            return
         editor = self.query_one("#compose-editor", TextArea)
         mirror = self.query_one(LivePaneViewer)
         if editor.has_focus:
@@ -357,6 +381,9 @@ class ComposeWithMirrorScreen(ShellScreen):
     # ── actions ──────────────────────────────────────────────────────
 
     def action_send(self) -> None:
+        if not self._show_editor:
+            self.set_status("live viewer only · this screen does not compose messages")
+            return
         if self.runtime.actions is None:
             self.set_status("✗ action service unavailable")
             return
@@ -375,9 +402,13 @@ class ComposeWithMirrorScreen(ShellScreen):
             self.set_status(f"✗ {result.message}")
 
     def action_grow_editor(self) -> None:
+        if not self._show_editor:
+            return
         self._set_editor_height(self._editor_height + _EDITOR_HEIGHT_STEP)
 
     def action_shrink_editor(self) -> None:
+        if not self._show_editor:
+            return
         self._set_editor_height(self._editor_height - _EDITOR_HEIGHT_STEP)
 
     def action_close(self) -> None:
@@ -395,6 +426,8 @@ class ComposeWithMirrorScreen(ShellScreen):
         self._refresh_guidance()
 
     def _apply_editor_height(self) -> None:
+        if not self._show_editor:
+            return
         editor_wrap = self.query_one("#compose-editor-wrap", Vertical)
         editor_wrap.styles.height = self._editor_height
 
@@ -410,8 +443,9 @@ class ComposeWithMirrorScreen(ShellScreen):
         if not self.is_mounted:
             return
         viewer = self.query_one(LivePaneViewer)
-        label = self.query_one("#compose-editor-label", Label)
-        label.update(self._editor_label(viewer))
+        if self._show_editor:
+            label = self.query_one("#compose-editor-label", Label)
+            label.update(self._editor_label(viewer))
         if self._mirror_input_active and viewer.has_focus:
             viewer.add_class("-input-on")
         else:
@@ -421,6 +455,8 @@ class ComposeWithMirrorScreen(ShellScreen):
             self.set_status(self._status_message(viewer))
 
     def _editor_label(self, viewer: LivePaneViewer) -> str:
+        if not self._show_editor:
+            return "live pane viewer"
         if self._mirror_input_active and viewer.has_focus:
             return (
                 f"live input on · keys go to tmux · esc stop · editor {self._editor_height} lines"
@@ -447,6 +483,8 @@ class ComposeWithMirrorScreen(ShellScreen):
             return "snapshot sync only · r resync"
         if not viewer.has_content:
             return "waiting for pane output · live mirror armed"
+        if not self._show_editor:
+            return "live mirror · i interact · r resync"
         return "live mirror + snapshot sync · r resync"
 
     def _status_message(self, viewer: LivePaneViewer) -> str:
@@ -455,6 +493,10 @@ class ComposeWithMirrorScreen(ShellScreen):
         if self._mirror_input_active and viewer.has_focus:
             guidance = (
                 f"live input → {self._display_name} ({self._pane_id}) · keys go to tmux · esc stops"
+            )
+        elif not self._show_editor:
+            guidance = (
+                f"live pane → {self._display_name} ({self._pane_id}) · scroll freely · i interact"
             )
         elif viewer.has_focus:
             guidance = (
@@ -486,7 +528,8 @@ class ComposeWithMirrorScreen(ShellScreen):
             self._ring_path.unlink()
 
     def _format_mirror_title(self) -> str:
-        return f"mirror · pane {self._pane_id} — {self._display_name}"
+        prefix = "mirror" if self._show_editor else "live pane"
+        return f"{prefix} · pane {self._pane_id} — {self._display_name}"
 
 
 __all__ = [

@@ -14,9 +14,11 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from copilot_commander.adapters.copilot_adapter import CopilotCommandDetection
+from copilot_commander.adapters.copilot_session_resolver import CopilotSessionResolution
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.domain.enums import AgentStatus
 from copilot_commander.domain.models import Agent
+from copilot_commander.domain.subagents import SubAgentSnapshot, SubAgentTree
 from copilot_commander.exceptions import TmuxCommandError
 from copilot_commander.services.discovery_service import (
     DiscoveryPaneSnapshot,
@@ -25,6 +27,7 @@ from copilot_commander.services.discovery_service import (
 )
 from copilot_commander.services.monitoring_service import MonitoringDiscovery, MonitoringReport
 from copilot_commander.services.runtime_service import RuntimeSynchronizer
+from copilot_commander.services.subtask_registry import SubTaskRegistry
 
 
 class FakeDiscovery:
@@ -82,6 +85,42 @@ class CountingGit:
     def current_branch(self, cwd: str | Path, /) -> str | None:
         self.branch_calls.append(str(cwd))
         return self.branch
+
+
+class FakeSessionResolver:
+    def __init__(
+        self,
+        resolved: dict[int, str] | None = None,
+        *,
+        ambiguous: set[int] | None = None,
+    ) -> None:
+        self._resolved = resolved or {}
+        self._ambiguous = ambiguous or set()
+        self.calls: list[int | None] = []
+
+    def resolve(self, pane_pid: int | None, /) -> CopilotSessionResolution:
+        self.calls.append(pane_pid)
+        if pane_pid is None:
+            return CopilotSessionResolution()
+        if pane_pid in self._ambiguous:
+            return CopilotSessionResolution(state="ambiguous")
+        session_id = self._resolved.get(pane_pid)
+        if session_id is None:
+            return CopilotSessionResolution()
+        return CopilotSessionResolution(session_id=session_id, state="resolved")
+
+    def resolve_for_pid(self, pane_pid: int | None, /) -> str | None:
+        return self.resolve(pane_pid).session_id
+
+
+class FakeSubagentReader:
+    def __init__(self, trees: dict[str, SubAgentTree]) -> None:
+        self._trees = trees
+        self.calls: list[str] = []
+
+    def read(self, session_id: str) -> SubAgentTree | None:
+        self.calls.append(session_id)
+        return self._trees.get(session_id)
 
 
 class RuntimeSynchronizerTests(unittest.TestCase):
@@ -335,6 +374,163 @@ class RuntimeSynchronizerTests(unittest.TestCase):
 
         assert report.error is None
         assert monitoring.seen[0].snapshot.branch == "users/burakkose/rcm-opencontext"
+
+    def test_refresh_populates_subtasks_from_resolved_subagent_tree(self) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        pane = PaneDiscovery(
+            snapshot=DiscoveryPaneSnapshot(
+                pane_id="%27",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@7",
+                tmux_window_name="nested",
+                pane_current_path="/repo/worktrees/task-one",
+                pane_current_command="tmux",
+                pane_pid=7272,
+            ),
+            discovered_at=now,
+            classification="unmanaged_probable_agent",
+            reasons=("captured Copilot evidence",),
+            command_detection=CopilotCommandDetection(
+                candidate=("tmux",),
+                is_likely_copilot=False,
+                reason="no_copilot_signature",
+            ),
+        )
+        discovery = FakeDiscovery(
+            PaneDiscoveryReport(
+                discovered_at=now,
+                panes=(pane,),
+                managed_agents=(),
+                unmanaged_probable_agents=(pane,),
+                non_agent_panes=(),
+            )
+        )
+        monitoring = FakeMonitoring(now)
+        subtask_registry = SubTaskRegistry()
+        resolver = FakeSessionResolver({7272: "copilot-live"})
+        reader = FakeSubagentReader(
+            {
+                "copilot-live": SubAgentTree(
+                    session_id="copilot-live",
+                    running=(
+                        SubAgentSnapshot(
+                            tool_call_id="tc-1",
+                            agent_name="general-purpose",
+                            display_name="General Purpose Agent",
+                            description="review logs",
+                            started_at=now,
+                            completed_at=None,
+                        ),
+                    ),
+                    recent=(),
+                    scanned_at=now,
+                )
+            }
+        )
+
+        report = RuntimeSynchronizer(
+            discovery,
+            monitoring,
+            CountingGit(),
+            subtask_registry=subtask_registry,
+            subagent_reader=reader,
+            session_resolver=resolver,
+        ).refresh()
+
+        assert report.error is None
+        assert resolver.calls == [7272]
+        assert reader.calls == ["copilot-live"]
+        tasks = subtask_registry.get_tasks("%27")
+        assert len(tasks) == 1
+        assert tasks[0].status == "running"
+        assert tasks[0].agent_type_label == "General Purpose Agent"
+
+    def test_refresh_does_not_use_stale_managed_session_when_live_resolution_is_ambiguous(
+        self,
+    ) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        managed_agent = Agent(
+            id="agent-1",
+            name="planner",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@7",
+            tmux_pane_id="%27",
+            cwd="/repo/worktrees/task-one",
+            repo_root="/repo",
+            worktree_path="/repo/worktrees/task-one",
+            branch="task/task-one",
+            task_title="Nested agent",
+            copilot_session_id="stale-session",
+            pid=7272,
+            status=AgentStatus.RUNNING,
+            started_at=now,
+            last_seen_at=now,
+        )
+        pane = PaneDiscovery(
+            snapshot=DiscoveryPaneSnapshot(
+                pane_id="%27",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@7",
+                tmux_window_name="nested",
+                pane_current_path="/repo/worktrees/task-one",
+                pane_current_command="tmux",
+                pane_pid=7272,
+            ),
+            discovered_at=now,
+            classification="managed_agent",
+            reasons=("matched stored agent",),
+            command_detection=CopilotCommandDetection(
+                candidate=("tmux",),
+                is_likely_copilot=False,
+                reason="no_copilot_signature",
+            ),
+            managed_agent=managed_agent,
+        )
+        discovery = FakeDiscovery(
+            PaneDiscoveryReport(
+                discovered_at=now,
+                panes=(pane,),
+                managed_agents=(pane,),
+                unmanaged_probable_agents=(),
+                non_agent_panes=(),
+            )
+        )
+        monitoring = FakeMonitoring(now)
+        subtask_registry = SubTaskRegistry()
+        resolver = FakeSessionResolver(ambiguous={7272})
+        reader = FakeSubagentReader(
+            {
+                "stale-session": SubAgentTree(
+                    session_id="stale-session",
+                    running=(
+                        SubAgentSnapshot(
+                            tool_call_id="tc-stale",
+                            agent_name="general-purpose",
+                            display_name="General Purpose Agent",
+                            description="wrong task",
+                            started_at=now,
+                            completed_at=None,
+                        ),
+                    ),
+                    recent=(),
+                    scanned_at=now,
+                )
+            }
+        )
+
+        report = RuntimeSynchronizer(
+            discovery,
+            monitoring,
+            CountingGit(),
+            subtask_registry=subtask_registry,
+            subagent_reader=reader,
+            session_resolver=resolver,
+        ).refresh()
+
+        assert report.error is None
+        assert resolver.calls == [7272]
+        assert reader.calls == []
+        assert subtask_registry.get_tasks("%27") == ()
 
 
 if __name__ == "__main__":

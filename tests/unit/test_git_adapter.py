@@ -233,6 +233,34 @@ class GitAdapterTests(unittest.TestCase):
         assert snapshot.ahead_behind.recognized is False
         assert [issue.code for issue in snapshot.safety_issues] == ["detached_head"]
 
+    def test_list_recent_commits_parses_git_log_output(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    (
+                        "git",
+                        "log",
+                        "-2",
+                        "--date=relative",
+                        "--pretty=format:%h%x1f%cr%x1f%s",
+                    ),
+                    stdout=(
+                        "abc1234\x1f2 hours ago\x1fFix worktree board\n"
+                        "fedcba9\x1f1 day ago\x1fAdd git panel"
+                    ),
+                    cwd=Path("/repo/worktrees/task-one"),
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+
+        commits = adapter.list_recent_commits("/repo/worktrees/task-one", limit=2)
+
+        assert [(commit.short_sha, commit.relative_date, commit.subject) for commit in commits] == [
+            ("abc1234", "2 hours ago", "Fix worktree board"),
+            ("fedcba9", "1 day ago", "Add git panel"),
+        ]
+
     def test_create_worktree_rejects_conflicting_branch_without_force(self) -> None:
         runner = FakeRunner(
             (

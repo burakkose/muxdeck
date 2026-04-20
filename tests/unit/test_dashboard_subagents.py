@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
+from copilot_commander.adapters.copilot_session_resolver import CopilotSessionResolution
 from copilot_commander.adapters.sqlite_store import SessionContextRecord
 from copilot_commander.controllers.dashboard_controller import DashboardController
 from copilot_commander.domain.enums import AgentStatus
@@ -73,6 +74,19 @@ class _FakeReader:
     def read(self, session_id: str) -> SubAgentTree | None:
         self.calls.append(session_id)
         return self.trees.get(session_id)
+
+
+@dataclass
+class _FakeSessionResolver:
+    resolution: CopilotSessionResolution
+    calls: list[int | None] = field(default_factory=list)
+
+    def resolve(self, pane_pid: int | None, /) -> CopilotSessionResolution:
+        self.calls.append(pane_pid)
+        return self.resolution
+
+    def resolve_for_pid(self, pane_pid: int | None, /) -> str | None:
+        return self.resolve(pane_pid).session_id
 
 
 def _make_agent(agent_id: str, *, copilot_session_id: str | None = None) -> Agent:
@@ -159,6 +173,77 @@ class TestLoadSubagents:
         assert tree.running[0].agent_name == "explore"
         assert tree.running[0].is_running is True
         assert reader.calls == ["copilot-sess"]
+
+    def test_prefers_live_session_resolver_over_stale_agent_session_id(self) -> None:
+        agent = replace(_make_agent("a1", copilot_session_id="stale-sess"), pid=31337)
+        store = _SingleAgentStore(agent=agent)
+        reader = _FakeReader(
+            trees={
+                "live-sess": SubAgentTree(
+                    session_id="live-sess",
+                    running=(
+                        SubAgentSnapshot(
+                            tool_call_id="call_r",
+                            agent_name="explore",
+                            display_name="Explore Agent",
+                            description=None,
+                            started_at=datetime(2026, 1, 1, tzinfo=UTC),
+                            completed_at=None,
+                        ),
+                    ),
+                    recent=(),
+                    scanned_at=datetime(2026, 1, 1, 1, tzinfo=UTC),
+                )
+            }
+        )
+        resolver = _FakeSessionResolver(
+            CopilotSessionResolution(session_id="live-sess", state="resolved")
+        )
+        controller = DashboardController(
+            store,
+            subagent_reader=reader,
+            session_resolver=resolver,
+        )
+
+        tree = controller.load_subagents("a1")
+
+        assert tree.session_id == "live-sess"
+        assert resolver.calls == [31337]
+        assert reader.calls == ["live-sess"]
+
+    def test_ambiguous_live_resolution_does_not_fall_back_to_stale_sessions(self) -> None:
+        agent = replace(_make_agent("a1", copilot_session_id="stale-agent"), pid=31337)
+        latest = Session(
+            id="session-1",
+            agent_id="a1",
+            task_title="t",
+            copilot_session_id="stale-latest",
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        store = _SingleAgentStore(agent=agent, latest_session=latest)
+        reader = _FakeReader(
+            trees={
+                "stale-agent": SubAgentTree(
+                    session_id="stale-agent",
+                    running=(),
+                    recent=(),
+                    scanned_at=datetime(2026, 1, 1, 1, tzinfo=UTC),
+                )
+            }
+        )
+        resolver = _FakeSessionResolver(CopilotSessionResolution(state="ambiguous"))
+        controller = DashboardController(
+            store,
+            subagent_reader=reader,
+            session_resolver=resolver,
+        )
+
+        tree = controller.load_subagents("a1")
+
+        assert tree.session_id is None
+        assert tree.is_empty
+        assert resolver.calls == [31337]
+        assert reader.calls == []
 
     def test_maps_running_and_recent_to_views(self) -> None:
         agent = _make_agent("a1", copilot_session_id="sess-42")

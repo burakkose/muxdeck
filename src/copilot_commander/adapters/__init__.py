@@ -12,6 +12,7 @@ from copilot_commander.adapters.copilot_adapter import (
 )
 from copilot_commander.adapters.git_adapter import (
     GitAdapter,
+    GitCommitSummary,
     GitRepositorySnapshot,
     GitSafetyIssue,
     GitWorktreeCreateOutcome,
@@ -37,6 +38,7 @@ __all__ = [
     "CopilotSessionEvidence",
     "CopilotUsageSummary",
     "GitAdapter",
+    "GitCommitSummary",
     "GitRepositorySnapshot",
     "GitSafetyIssue",
     "GitWorktreeCreateOutcome",

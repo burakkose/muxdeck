@@ -222,6 +222,7 @@ class ReplayServiceTests(unittest.TestCase):
     def test_load_multi_session_replay_rejects_empty_input(self) -> None:
         with self.assertRaises(ValueError):
             self.replays.load_multi_session_replay(())
+
     def test_jump_markers_include_file_edit_and_tool_call_kinds(self) -> None:
         bundle = self.sessions.create_session(
             "agent-123",

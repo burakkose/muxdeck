@@ -128,7 +128,9 @@ class CommanderRuntime:
     attention: AttentionController | None = None
     operations: OperationsController | None = None
     fleet: FleetController | None = None
+    tmux: TmuxAdapter | None = None
     pane_stream: PaneStreamAdapter | None = None
+    session_resolver: InuseLockResolver | None = None
     notifier: OsNotifier | None = None
 
 
@@ -449,8 +451,23 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         sync_store,
         sync_store,
     )
+    copilot_session_store = CopilotSessionStore()
+    # WSL users launch some agents through pwsh.exe, which stores its
+    # session state under the Windows %USERPROFILE%. Bridge that here so
+    # both roots feed the same Sessions screen and Setup diagnostics.
+    windows_host: WindowsHostInfo = detect_windows_host(env=os.environ)
+    if windows_host.is_available and windows_host.session_state_dir is not None:
+        copilot_session_store.set_extra_roots(
+            [SessionStoreRoot(windows_host.session_state_dir, "windows")]
+        )
+    sessions_ctrl = SessionsController(copilot_session_store)
+    subtask_registry = SubTaskRegistry()
+    subagent_reader = SubAgentReader(copilot_session_store)
+    activity_reader = CopilotActivityReader(store=copilot_session_store)
+    session_resolver = InuseLockResolver(copilot_session_store)
     monitoring = MonitoringService(
         sync_agent_service,
+        session_resolver=session_resolver,
         thresholds=MonitoringThresholds(
             waiting_input_after_seconds=max(15, resolved_config.general.discovery_interval_sec * 2),
             idle_after_seconds=resolved_config.general.idle_threshold_sec,
@@ -487,20 +504,6 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         agents=sync_store,
         session_contexts=sync_store,
     )
-    copilot_session_store = CopilotSessionStore()
-    # WSL users launch some agents through pwsh.exe, which stores its
-    # session state under the Windows %USERPROFILE%. Bridge that here so
-    # both roots feed the same Sessions screen and Setup diagnostics.
-    windows_host: WindowsHostInfo = detect_windows_host(env=os.environ)
-    if windows_host.is_available and windows_host.session_state_dir is not None:
-        copilot_session_store.set_extra_roots(
-            [SessionStoreRoot(windows_host.session_state_dir, "windows")]
-        )
-    sessions_ctrl = SessionsController(copilot_session_store)
-    subtask_registry = SubTaskRegistry()
-    subagent_reader = SubAgentReader(copilot_session_store)
-    activity_reader = CopilotActivityReader(store=copilot_session_store)
-    session_resolver = InuseLockResolver(copilot_session_store)
     dashboard = DashboardController(
         store,
         subtask_registry=subtask_registry,
@@ -540,6 +543,8 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
             agent_store=sync_store,
             worktree_sync=sync_worktree_service,
             subtask_registry=subtask_registry,
+            subagent_reader=subagent_reader,
+            session_resolver=session_resolver,
             dead_grace_period_sec=resolved_config.general.dead_grace_period_sec,
         ),
         sync_store=sync_store,
@@ -554,7 +559,9 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
         attention=attention,
         operations=operations,
         fleet=fleet,
+        tmux=tmux_adapter,
         pane_stream=pane_stream_adapter,
+        session_resolver=session_resolver,
         notifier=detect_os_notifier(),
     )
 

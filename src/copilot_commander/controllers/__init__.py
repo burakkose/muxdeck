@@ -71,9 +71,13 @@ from copilot_commander.controllers.sessions_controller import (
 )
 from copilot_commander.controllers.worktree_controller import (
     WorktreeActionView,
+    WorktreeChangeView,
+    WorktreeCommitView,
     WorktreeConflictView,
     WorktreeController,
     WorktreeDetailView,
+    WorktreeProvenanceKind,
+    WorktreeProvenanceView,
     WorktreeStartAgentIntent,
     WorktreeSummaryView,
 )
@@ -137,9 +141,13 @@ __all__ = [
     "SessionsState",
     "SubAgentReaderPort",
     "WorktreeActionView",
+    "WorktreeChangeView",
+    "WorktreeCommitView",
     "WorktreeConflictView",
     "WorktreeController",
     "WorktreeDetailView",
+    "WorktreeProvenanceKind",
+    "WorktreeProvenanceView",
     "WorktreeStartAgentIntent",
     "WorktreeSummaryView",
 ]

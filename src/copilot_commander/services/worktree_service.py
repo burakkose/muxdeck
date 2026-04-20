@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Protocol
 
 from copilot_commander.adapters.git_adapter import (
+    GitCommitSummary,
     GitRepositorySnapshot,
     GitWorktreeCreateOutcome,
     GitWorktreeCreateRequest,
@@ -32,6 +33,14 @@ class WorktreeGitPort(Protocol):
     def list_worktrees(self, cwd: str | Path, /) -> tuple[GitWorktreeInfo, ...]: ...
 
     def inspect_repository(self, cwd: str | Path, /) -> GitRepositorySnapshot: ...
+
+    def list_recent_commits(
+        self,
+        cwd: str | Path,
+        /,
+        *,
+        limit: int = 5,
+    ) -> tuple[GitCommitSummary, ...]: ...
 
     def create_worktree(
         self,
@@ -153,6 +162,12 @@ class WorktreeSyncReport:
     worktrees_removed: int
     worktrees_total: int
     errors: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeGitDetails:
+    snapshot: GitRepositorySnapshot
+    recent_commits: tuple[GitCommitSummary, ...]
 
 
 class WorktreeService:
@@ -312,9 +327,18 @@ class WorktreeService:
                 msg = f"worktree {existing.path} still has cached session context"
                 raise DomainValidationError(msg)
         outcome = self._git.remove_worktree(target_path, force=force)
-        # Remove the worktree from the DB so the list stays in sync
         if existing is not None:
             self._worktrees.delete_worktree(existing.id)
+        try:
+            remaining_worktrees = self._git.list_worktrees(repo_root)
+        except Exception as exc:
+            _log.debug(
+                "worktree remove: failed to refresh git worktree list for %s: %s",
+                repo_root,
+                exc,
+            )
+        else:
+            self._reconcile_worktrees_with_git(repo_root, remaining_worktrees)
         conflicts = self.detect_orphan_conflicts(repo_root)
         return WorktreeRemoveResult(path=target_path, git_outcome=outcome, conflicts=conflicts)
 
@@ -339,11 +363,7 @@ class WorktreeService:
             )
         else:
             pruned_paths = tuple(sorted(before_paths - after_paths, key=str))
-            # Remove pruned worktrees from the DB so the list stays in sync
-            for pruned_path in pruned_paths:
-                db_wt = self._worktrees.get_worktree_by_path(str(pruned_path))
-                if db_wt is not None:
-                    self._worktrees.delete_worktree(db_wt.id)
+            self._reconcile_worktrees_with_git(repo_root, outcome.worktrees)
         conflicts = self.detect_orphan_conflicts(repo_root)
         return WorktreePruneReport(
             repo_root=repo_root,
@@ -444,6 +464,22 @@ class WorktreeService:
             )
         )
 
+    def inspect_git_details(
+        self,
+        path_or_id: str | Path,
+        /,
+        *,
+        commit_limit: int = 5,
+    ) -> WorktreeGitDetails:
+        worktree = self._resolve_worktree(path_or_id)
+        if worktree is None:
+            msg = f"unknown worktree: {path_or_id}"
+            raise PersistenceError(msg)
+        return WorktreeGitDetails(
+            snapshot=self._git.inspect_repository(worktree.path),
+            recent_commits=self._git.list_recent_commits(worktree.path, limit=commit_limit),
+        )
+
     def sync_worktrees_from_git(
         self,
         repo_roots: Sequence[Path],
@@ -539,6 +575,14 @@ class WorktreeService:
                 self._worktrees.delete_worktree(db_wt.id)
                 removed += 1
         return removed
+
+    def _reconcile_worktrees_with_git(
+        self,
+        repo_root: Path,
+        git_worktrees: Sequence[GitWorktreeInfo],
+    ) -> int:
+        git_paths = {str(worktree.path) for worktree in git_worktrees if not worktree.is_bare}
+        return self._reconcile_stale_worktrees(str(repo_root), git_paths)
 
     def _build_agent_worktree_map(self) -> dict[Path, str]:
         """Build a map from worktree path to agent ID from live agents."""
@@ -726,6 +770,7 @@ class WorktreeService:
 __all__ = [
     "WorktreeAttachResult",
     "WorktreeCreateResult",
+    "WorktreeGitDetails",
     "WorktreeNamingPlan",
     "WorktreeOrphanConflict",
     "WorktreePruneReport",
