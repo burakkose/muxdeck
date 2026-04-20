@@ -14,6 +14,8 @@ a thin controller that wires the adapter, reader, and widget together.
 
 from __future__ import annotations
 
+from collections import deque
+
 from rich.ansi import AnsiDecoder
 from rich.text import Text
 from textual.widgets import RichLog
@@ -86,6 +88,14 @@ class LivePaneViewer(RichLog):
         self.border_title = "Pane Viewer"
         self._decoder = AnsiDecoder()
         self._buffer = RingLineBuffer(max_lines)
+        # Parallel deque of pre-decoded Rich ``Text`` lines aligned to
+        # ``self._buffer``. Re-rendering the viewer (e.g. when a tmux
+        # snapshot corrects the tail) used to call ``AnsiDecoder.decode``
+        # over every buffered line, which on a full 2000-line buffer
+        # translates to a multi-hundred-millisecond hitch on the UI
+        # thread. By caching decoded lines we replay them straight into
+        # ``RichLog.write`` without re-parsing ANSI.
+        self._decoded: deque[Text] = deque(maxlen=max_lines)
         self._has_content = False
 
     @property
@@ -143,6 +153,7 @@ class LivePaneViewer(RichLog):
             if not text:
                 return
             self._buffer.append_text(text)
+            self._decoded.append(payload)
             self._write_styled(payload)
             self._has_content = True
             return
@@ -174,6 +185,11 @@ class LivePaneViewer(RichLog):
         if self.matches_snapshot_tail(payload):
             return
         self._buffer.replace_tail_text(text)
+        # Invalidate the decoded cache; the buffer's tail content has
+        # changed so the cached Text deque must be rebuilt from scratch
+        # in ``_rerender_from_buffer``. We force the rebuild by making
+        # the lengths disagree with the buffer.
+        self._decoded.clear()
         after = self._buffer.lines()
         self._has_content = len(after) > 0
         self._rerender_from_buffer()
@@ -191,6 +207,7 @@ class LivePaneViewer(RichLog):
     def clear_buffer(self) -> None:
         """Drop all rendered content and reset the ring buffer."""
         self._buffer = RingLineBuffer(self._buffer.max_lines)
+        self._decoded = deque(maxlen=self._buffer.max_lines)
         self._decoder = AnsiDecoder()
         self._has_content = False
         self.clear()
@@ -201,6 +218,7 @@ class LivePaneViewer(RichLog):
         # AnsiDecoder emits one Text per newline-separated line.  Feed
         # them in order; RichLog adds its own newline separation.
         for line in self._decoder.decode(payload.rstrip("\n")):
+            self._decoded.append(line)
             self._write_styled(line)
 
     @staticmethod
@@ -219,10 +237,21 @@ class LivePaneViewer(RichLog):
         follow_tail = self.is_vertical_scroll_end
         previous_scroll_y = self.scroll_y
         lines = self._buffer.lines()
-        self._decoder = AnsiDecoder()
+        # Re-decode only when the cached Text deque has drifted out of
+        # sync with the line buffer (e.g. after ``replace_tail_text``
+        # drops or replaces lines). The common case — a periodic snapshot
+        # that already matches the buffered tail — short-circuits in
+        # ``replace_tail`` before reaching here, so the slow rebuild
+        # stays off the hot path entirely.
+        if len(self._decoded) != len(lines):
+            self._decoder = AnsiDecoder()
+            self._decoded = deque(maxlen=self._buffer.max_lines)
+            for raw_line in lines:
+                for decoded in self._decoder.decode(raw_line):
+                    self._decoded.append(decoded)
         self.clear()
-        for raw_line in lines:
-            self._render_string(raw_line)
+        for cached in self._decoded:
+            self._write_styled(cached)
         if follow_tail:
             self.scroll_end(animate=False, immediate=True, force=True, x_axis=False)
             return
