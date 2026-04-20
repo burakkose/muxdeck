@@ -127,6 +127,7 @@ class SQLiteStoreTests(unittest.TestCase):
                 "0001_initial.sql",
                 "0002_add_tasks.sql",
                 "0003_add_replay_annotations.sql",
+                "0004_perf_indexes.sql",
             ),
         )
         self.assertEqual(self.store.journal_mode, "wal")
@@ -162,6 +163,7 @@ class SQLiteStoreTests(unittest.TestCase):
                 ("0001_initial.sql",),
                 ("0002_add_tasks.sql",),
                 ("0003_add_replay_annotations.sql",),
+                ("0004_perf_indexes.sql",),
             ],
         )
         self.assertEqual(journal_mode, ("wal",))

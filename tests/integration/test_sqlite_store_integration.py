@@ -30,7 +30,12 @@ class SQLiteStoreIntegrationTests(unittest.TestCase):
             self.assertEqual(store.journal_mode, "wal")
             self.assertEqual(
                 store.applied_migrations(),
-                ("0001_initial.sql", "0002_add_tasks.sql", "0003_add_replay_annotations.sql"),
+                (
+                    "0001_initial.sql",
+                    "0002_add_tasks.sql",
+                    "0003_add_replay_annotations.sql",
+                    "0004_perf_indexes.sql",
+                ),
             )
 
         connection = sqlite3.connect(database_path)
@@ -57,7 +62,12 @@ class SQLiteStoreIntegrationTests(unittest.TestCase):
         self.assertEqual(journal_mode[0].lower(), "wal")
         self.assertEqual(
             migrations,
-            [("0001_initial.sql",), ("0002_add_tasks.sql",), ("0003_add_replay_annotations.sql",)],
+            [
+                ("0001_initial.sql",),
+                ("0002_add_tasks.sql",),
+                ("0003_add_replay_annotations.sql",),
+                ("0004_perf_indexes.sql",),
+            ],
         )
         expected_tables = {
             "migrations",

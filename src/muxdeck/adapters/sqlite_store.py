@@ -36,7 +36,32 @@ LogSource = Literal["tmux_capture", "stdout", "stderr", "system"]
 DEFAULT_DATABASE_FILE_NAME = _DEFAULT_DATABASE_FILE_NAME
 
 _MIGRATIONS_PACKAGE = "muxdeck.adapters.migrations"
-_PRAGMAS = ("PRAGMA foreign_keys = ON", "PRAGMA journal_mode = WAL")
+# Pragmas applied on every fresh connection. Order matters:
+#   * ``foreign_keys`` and ``journal_mode`` are connection-level toggles
+#     that must be set before any DML.
+#   * ``synchronous = NORMAL`` is safe with WAL and ~2-4x faster on
+#     write-heavy workloads (sync worker writes hundreds of rows per
+#     refresh on slow filesystems like ``/mnt/c``).
+#   * ``temp_store = MEMORY`` keeps temporary tables/sort buffers in
+#     RAM instead of spilling to ``/tmp`` (which on WSL is also slow).
+#   * ``cache_size = -65536`` reserves ~64 MiB of page cache per
+#     connection, vs the 2 MiB default — keeps hot session/log_chunks
+#     pages resident through a refresh cycle.
+#   * ``mmap_size`` enables read-only memory mapping for the database
+#     file. 256 MiB is far more than the database actually uses; SQLite
+#     only maps as much as needed.
+#   * ``busy_timeout`` lets the foreground/sync connections wait briefly
+#     instead of failing with SQLITE_BUSY when the WAL writer is mid-
+#     commit on the other thread.
+_PRAGMAS = (
+    "PRAGMA foreign_keys = ON",
+    "PRAGMA journal_mode = WAL",
+    "PRAGMA synchronous = NORMAL",
+    "PRAGMA temp_store = MEMORY",
+    "PRAGMA cache_size = -65536",
+    "PRAGMA mmap_size = 268435456",
+    "PRAGMA busy_timeout = 5000",
+)
 _CREATE_MIGRATIONS_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS migrations (
     version TEXT PRIMARY KEY,
