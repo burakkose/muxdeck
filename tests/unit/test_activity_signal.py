@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from copilot_commander.services.monitoring_service import _has_activity_signal
+from muxdeck.services.monitoring_service import _has_activity_signal
 
 
 @dataclass(frozen=True, slots=True)

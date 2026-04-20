@@ -5,18 +5,18 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 
-from copilot_commander.adapters.copilot_adapter import (
+from muxdeck.adapters.copilot_adapter import (
     CopilotAdapter,
     CopilotCommandDetection,
     CopilotSessionEvidence,
 )
-from copilot_commander.adapters.process_adapter import ProcessAdapter
-from copilot_commander.adapters.sqlite_store import SessionContextRecord
-from copilot_commander.adapters.tmux_adapter import TmuxPaneMetadata
-from copilot_commander.domain.models import Agent, Session
-from copilot_commander.domain.value_objects import CommandResult
-from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
-from copilot_commander.services.discovery_service import (
+from muxdeck.adapters.process_adapter import ProcessAdapter
+from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.adapters.tmux_adapter import TmuxPaneMetadata
+from muxdeck.domain.models import Agent, Session
+from muxdeck.domain.value_objects import CommandResult
+from muxdeck.parsers.copilot_output_parser import parse_copilot_output
+from muxdeck.services.discovery_service import (
     DiscoveryService,
     _has_session_signal,
 )

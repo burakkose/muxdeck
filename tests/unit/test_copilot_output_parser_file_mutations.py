@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from copilot_commander.parsers.copilot_output_parser import parse_copilot_output
+from muxdeck.parsers.copilot_output_parser import parse_copilot_output
 
 
 class FileMutationParserTests(unittest.TestCase):

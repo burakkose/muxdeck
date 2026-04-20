@@ -6,7 +6,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from copilot_commander.perf import log_summary, record, summarize, timed
+from muxdeck.perf import log_summary, record, summarize, timed
 
 
 class TimedContextManagerTests(unittest.TestCase):
@@ -64,10 +64,10 @@ class LoggingTests(unittest.TestCase):
 
     def test_timed_slow_span_skips_logging_by_default(self) -> None:
         with (
-            patch.dict(os.environ, {"COMMANDER_LOG": "0"}, clear=False),
-            patch("copilot_commander.perf._log.warning") as warning_log,
-            patch("copilot_commander.perf._log.info") as info_log,
-            patch("copilot_commander.perf.time.perf_counter", side_effect=(10.0, 10.2)),
+            patch.dict(os.environ, {"MUXDECK_LOG": "0"}, clear=False),
+            patch("muxdeck.perf._log.warning") as warning_log,
+            patch("muxdeck.perf._log.info") as info_log,
+            patch("muxdeck.perf.time.perf_counter", side_effect=(10.0, 10.2)),
             timed("test.slow"),
         ):
             pass
@@ -80,9 +80,9 @@ class LoggingTests(unittest.TestCase):
 
     def test_timed_slow_span_logs_when_command_logging_enabled(self) -> None:
         with (
-            patch.dict(os.environ, {"COMMANDER_LOG": "1"}, clear=False),
-            patch("copilot_commander.perf._log.warning") as warning_log,
-            patch("copilot_commander.perf.time.perf_counter", side_effect=(20.0, 20.2)),
+            patch.dict(os.environ, {"MUXDECK_LOG": "1"}, clear=False),
+            patch("muxdeck.perf._log.warning") as warning_log,
+            patch("muxdeck.perf.time.perf_counter", side_effect=(20.0, 20.2)),
             timed("test.slow.enabled"),
         ):
             pass
@@ -97,8 +97,8 @@ class LoggingTests(unittest.TestCase):
         record("test.summary", 25.0)
 
         with (
-            patch.dict(os.environ, {"COMMANDER_LOG": "0"}, clear=False),
-            patch("copilot_commander.perf._log.warning") as warning_log,
+            patch.dict(os.environ, {"MUXDECK_LOG": "0"}, clear=False),
+            patch("muxdeck.perf._log.warning") as warning_log,
         ):
             log_summary(reset=True)
 

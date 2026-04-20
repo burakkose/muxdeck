@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from copilot_commander.widgets.dashboard import _strip_ansi
+from muxdeck.widgets.dashboard import _strip_ansi
 
 
 class TestCsiSequences:

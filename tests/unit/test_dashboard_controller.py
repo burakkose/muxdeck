@@ -13,17 +13,17 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.adapters.copilot_activity_reader import AgentActivity, TranscriptLine
-from copilot_commander.adapters.copilot_session_resolver import CopilotSessionResolution
-from copilot_commander.adapters.sqlite_store import SessionContextRecord
-from copilot_commander.controllers.dashboard_controller import (
+from muxdeck.adapters.copilot_activity_reader import AgentActivity, TranscriptLine
+from muxdeck.adapters.copilot_session_resolver import CopilotSessionResolution
+from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.controllers.dashboard_controller import (
     DashboardController,
     DashboardFilterState,
     DashboardSort,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.events import Event, LogChunk
-from copilot_commander.domain.models import Agent, Session, Worktree
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.events import Event, LogChunk
+from muxdeck.domain.models import Agent, Session, Worktree
 
 
 class InMemoryDashboardStore:

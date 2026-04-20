@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from copilot_commander.adapters.copilot_session_store import (
+from muxdeck.adapters.copilot_session_store import (
     CopilotSessionStore,
     SessionStoreRoot,
 )
@@ -117,7 +117,7 @@ def test_incremental_cache_reuses_unchanged_sessions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Second scan should skip the full parse when nothing changed."""
-    from copilot_commander.adapters import copilot_session_store as module
+    from muxdeck.adapters import copilot_session_store as module
 
     root = tmp_path / "state"
     root.mkdir()

@@ -8,8 +8,8 @@ import unittest
 from textual.app import App, ComposeResult
 from textual.widgets import Input
 
-from copilot_commander.screens.window_input import MoveWindowResult, MoveWindowScreen
-from copilot_commander.services.action_service import WindowChoice
+from muxdeck.screens.window_input import MoveWindowResult, MoveWindowScreen
+from muxdeck.services.action_service import WindowChoice
 
 
 class _Harness(App[None]):

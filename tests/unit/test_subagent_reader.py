@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from copilot_commander.adapters.copilot_session_store import SessionStoreRoot
-from copilot_commander.adapters.subagent_reader import SubAgentReader
-from copilot_commander.domain.subagents import SubAgentSnapshot, SubAgentTree
+from muxdeck.adapters.copilot_session_store import SessionStoreRoot
+from muxdeck.adapters.subagent_reader import SubAgentReader
+from muxdeck.domain.subagents import SubAgentSnapshot, SubAgentTree
 
 
 @dataclass

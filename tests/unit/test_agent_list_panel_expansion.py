@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from copilot_commander.controllers.dashboard_controller import (
+from muxdeck.controllers.dashboard_controller import (
     DashboardAgentListItemView,
     DashboardSubAgentTreeView,
     DashboardSubAgentView,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.widgets.dashboard import AgentListPanel
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.widgets.dashboard import AgentListPanel
 
 
 def _agent(agent_id: str, name: str = "Agent") -> DashboardAgentListItemView:

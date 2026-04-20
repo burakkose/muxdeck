@@ -13,13 +13,13 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.adapters.copilot_adapter import CopilotAdapter
-from copilot_commander.adapters.sqlite_store import SessionContextRecord
-from copilot_commander.adapters.tmux_adapter import TmuxPaneMetadata
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.models import Agent, Session
-from copilot_commander.domain.value_objects import CommandResult
-from copilot_commander.services.discovery_service import DiscoveryService
+from muxdeck.adapters.copilot_adapter import CopilotAdapter
+from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.adapters.tmux_adapter import TmuxPaneMetadata
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.models import Agent, Session
+from muxdeck.domain.value_objects import CommandResult
+from muxdeck.services.discovery_service import DiscoveryService
 
 
 class DummyRunner:

@@ -12,7 +12,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.controllers.dashboard_controller import _build_sparkline
+from muxdeck.controllers.dashboard_controller import _build_sparkline
 
 
 class BuildSparklineTests(unittest.TestCase):

@@ -12,11 +12,11 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.controllers.dashboard_controller import (
+from muxdeck.controllers.dashboard_controller import (
     _check_stale_output,
     _output_hashes,
 )
-from copilot_commander.domain.enums import AgentStatus
+from muxdeck.domain.enums import AgentStatus
 
 
 class CheckStaleOutputTests(unittest.TestCase):

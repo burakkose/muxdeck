@@ -8,8 +8,8 @@ from pathlib import Path
 import shutil
 import unittest
 
-from copilot_commander.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
-from copilot_commander.adapters.git_adapter import (
+from muxdeck.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
+from muxdeck.adapters.git_adapter import (
     GitCommitSummary,
     GitRepositorySnapshot,
     GitWorktreeCreateOutcome,
@@ -18,13 +18,13 @@ from copilot_commander.adapters.git_adapter import (
     GitWorktreePruneOutcome,
     GitWorktreeRemoveOutcome,
 )
-from copilot_commander.config import AppConfig, PathsConfig
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.models import Agent, Worktree
-from copilot_commander.domain.value_objects import CommandResult
-from copilot_commander.exceptions import DomainValidationError
-from copilot_commander.parsers.git_parser import AheadBehindCounts, GitStatusSummary
-from copilot_commander.services.worktree_service import WorktreeService
+from muxdeck.config import AppConfig, PathsConfig
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.models import Agent, Worktree
+from muxdeck.domain.value_objects import CommandResult
+from muxdeck.exceptions import DomainValidationError
+from muxdeck.parsers.git_parser import AheadBehindCounts, GitStatusSummary
+from muxdeck.services.worktree_service import WorktreeService
 
 
 class FakeGit:

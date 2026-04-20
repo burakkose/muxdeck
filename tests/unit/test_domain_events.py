@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 from typing import Literal, cast, get_type_hints
 import unittest
 
-from copilot_commander.domain.events import Event, LogChunk
-from copilot_commander.exceptions import DomainValidationError
+from muxdeck.domain.events import Event, LogChunk
+from muxdeck.exceptions import DomainValidationError
 
 
 class DomainEventTests(unittest.TestCase):

@@ -15,14 +15,14 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.adapters.copilot_adapter import CopilotAdapter
-from copilot_commander.adapters.sqlite_store import SQLiteStore
-from copilot_commander.config import AppConfig, PathsConfig
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.value_objects import CommandResult
-from copilot_commander.services.agent_service import AgentService
-from copilot_commander.services.discovery_service import DiscoveryPaneSnapshot, PaneDiscovery
-from copilot_commander.services.monitoring_service import (
+from muxdeck.adapters.copilot_adapter import CopilotAdapter
+from muxdeck.adapters.sqlite_store import SQLiteStore
+from muxdeck.config import AppConfig, PathsConfig
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.value_objects import CommandResult
+from muxdeck.services.agent_service import AgentService
+from muxdeck.services.discovery_service import DiscoveryPaneSnapshot, PaneDiscovery
+from muxdeck.services.monitoring_service import (
     MonitoringDiscovery,
     MonitoringService,
     MonitoringThresholds,
@@ -53,8 +53,8 @@ class MonitoringServiceIntegrationTests(unittest.TestCase):
             paths=PathsConfig(
                 state_dir=self.runtime_dir / "state",
                 workspace_root=self.runtime_dir / "worktrees",
-                database_path=self.runtime_dir / "state" / "commander.db",
-                fallback_database_path=self.runtime_dir / "legacy" / "commander.db",
+                database_path=self.runtime_dir / "state" / "muxdeck.db",
+                fallback_database_path=self.runtime_dir / "legacy" / "muxdeck.db",
             )
         )
         self.store = SQLiteStore.from_config(config)

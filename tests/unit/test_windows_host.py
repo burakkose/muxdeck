@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from copilot_commander.adapters.windows_host import (
+from muxdeck.adapters.windows_host import (
     CommandOutcome,
     detect_windows_host,
 )
@@ -149,7 +149,7 @@ def test_resolver_returns_error_when_cmd_unexpanded(tmp_path: Path) -> None:
     ],
 )
 def test_winpath_translation_is_deterministic(winpath: str, expected_prefix: str) -> None:
-    from copilot_commander.adapters.windows_host import _winpath_to_wsl
+    from muxdeck.adapters.windows_host import _winpath_to_wsl
 
     result = _winpath_to_wsl(winpath)
     assert result is not None

@@ -12,7 +12,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.screens.confirm_dialog import ConfirmScreen
+from muxdeck.screens.confirm_dialog import ConfirmScreen
 
 
 def test_confirm_screen_init() -> None:

@@ -6,8 +6,8 @@ from typing import Protocol, cast
 import pytest
 from textual.widgets import Input, Static
 
-from copilot_commander.app import CommanderApp, CommanderRuntime
-from copilot_commander.controllers import (
+from muxdeck.app import MuxdeckApp, MuxdeckRuntime
+from muxdeck.controllers import (
     DashboardAgentListItemView,
     DashboardFilterState,
     DashboardHealthSummary,
@@ -15,9 +15,9 @@ from copilot_commander.controllers import (
     DashboardSort,
     DashboardState,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.models import Session
-from copilot_commander.widgets.common import KeyHintFooter, TabBar
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.models import Session
+from muxdeck.widgets.common import KeyHintFooter, TabBar
 
 _TIMESTAMP = datetime(2025, 1, 1, 12, tzinfo=UTC)
 
@@ -104,9 +104,9 @@ class _FakeDashboardController:
         )
 
 
-def _build_runtime() -> CommanderRuntime:
+def _build_runtime() -> MuxdeckRuntime:
     return cast(
-        CommanderRuntime,
+        MuxdeckRuntime,
         type(
             "FakeRuntime",
             (),
@@ -143,7 +143,7 @@ def _render_plain(widget: _WidgetWithRender) -> str:
 
 @pytest.mark.asyncio
 async def test_ui_mode_toggles_update_classes_subtitle_tabbar_and_footer() -> None:
-    app = CommanderApp(_build_runtime())
+    app = MuxdeckApp(_build_runtime())
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -179,7 +179,7 @@ async def test_ui_mode_toggles_update_classes_subtitle_tabbar_and_footer() -> No
 
 @pytest.mark.asyncio
 async def test_system_commands_and_help_escape_flow() -> None:
-    app = CommanderApp(_build_runtime())
+    app = MuxdeckApp(_build_runtime())
 
     async with app.run_test() as pilot:
         await pilot.pause()

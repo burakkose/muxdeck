@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from copilot_commander.adapters.copilot_session_resolver import (
+from muxdeck.adapters.copilot_session_resolver import (
     CopilotSessionResolution,
     InuseLockResolver,
     ResolvedCopilotTarget,

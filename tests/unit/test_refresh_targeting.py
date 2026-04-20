@@ -9,8 +9,8 @@ from typing import cast
 
 import pytest
 
-from copilot_commander.app import CommanderApp, CommanderRuntime
-from copilot_commander.controllers import (
+from muxdeck.app import MuxdeckApp, MuxdeckRuntime
+from muxdeck.controllers import (
     DashboardAgentListItemView,
     DashboardFilterState,
     DashboardHealthSummary,
@@ -21,9 +21,9 @@ from copilot_commander.controllers import (
     WorktreeDetailView,
     WorktreeSummaryView,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.models import Session
-from copilot_commander.services.runtime_service import RuntimeSyncReport
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.models import Session
+from muxdeck.services.runtime_service import RuntimeSyncReport
 
 _TS = datetime(2025, 1, 1, 12, tzinfo=UTC)
 
@@ -192,7 +192,7 @@ def _build_runtime(
     replay: _TrackingReplayController | None = None,
     synchronizer: _FastSynchronizer | None = None,
 ) -> tuple[
-    CommanderRuntime,
+    MuxdeckRuntime,
     _TrackingDashboardController,
     _TrackingWorktreeController,
     _TrackingReplayController,
@@ -202,7 +202,7 @@ def _build_runtime(
     r = replay or _TrackingReplayController()
     s = synchronizer or _FastSynchronizer()
     runtime = cast(
-        CommanderRuntime,
+        MuxdeckRuntime,
         type(
             "FakeRuntime",
             (),
@@ -226,7 +226,7 @@ def _build_runtime(
 async def test_periodic_refresh_only_updates_dashboard() -> None:
     """Periodic timer should NOT call refresh_data on non-dashboard screens."""
     runtime, dashboard, worktrees, replay = _build_runtime()
-    app = CommanderApp(runtime)
+    app = MuxdeckApp(runtime)
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -249,7 +249,7 @@ async def test_periodic_refresh_only_updates_dashboard() -> None:
 async def test_manual_refresh_updates_current_screen() -> None:
     """Manual r key should refresh whatever screen is active."""
     runtime, dashboard, worktrees, replay = _build_runtime()
-    app = CommanderApp(runtime)
+    app = MuxdeckApp(runtime)
 
     async with app.run_test() as pilot:
         await pilot.pause()

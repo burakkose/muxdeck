@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`copilot_commander.adapters.pane_stream`.
+"""Unit tests for :mod:`muxdeck.adapters.pane_stream`.
 
 These tests never spawn a real tmux process — they exercise the
 adapter against a recording fake :class:`TmuxPaneStream` and the ring
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from copilot_commander.adapters.pane_stream import (
+from muxdeck.adapters.pane_stream import (
     KeyTranslation,
     PaneRingReader,
     PaneStreamAdapter,

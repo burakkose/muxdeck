@@ -5,9 +5,9 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime, timedelta
 
-from copilot_commander.domain.enums import TaskStatus
-from copilot_commander.domain.task_models import Task
-from copilot_commander.exceptions import DomainValidationError
+from muxdeck.domain.enums import TaskStatus
+from muxdeck.domain.task_models import Task
+from muxdeck.exceptions import DomainValidationError
 
 
 class TaskModelTests(unittest.TestCase):

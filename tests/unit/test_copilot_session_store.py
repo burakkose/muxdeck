@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from copilot_commander.adapters.copilot_session_store import (
+from muxdeck.adapters.copilot_session_store import (
     CopilotSessionStore,
     _parse_session_dir,
     _parse_workspace_yaml,

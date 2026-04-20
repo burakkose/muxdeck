@@ -8,15 +8,15 @@ from decimal import Decimal
 from typing import Literal, get_type_hints
 import unittest
 
-from copilot_commander import Agent as ExportedAgent
-from copilot_commander import Event as ExportedEvent
-from copilot_commander import LogChunk as ExportedLogChunk
-from copilot_commander import Session as ExportedSession
-from copilot_commander import Worktree as ExportedWorktree
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.events import Event, LogChunk
-from copilot_commander.domain.models import Agent, Session, Worktree
-from copilot_commander.exceptions import DomainValidationError
+from muxdeck import Agent as ExportedAgent
+from muxdeck import Event as ExportedEvent
+from muxdeck import LogChunk as ExportedLogChunk
+from muxdeck import Session as ExportedSession
+from muxdeck import Worktree as ExportedWorktree
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.events import Event, LogChunk
+from muxdeck.domain.models import Agent, Session, Worktree
+from muxdeck.exceptions import DomainValidationError
 
 
 class DomainModelTests(unittest.TestCase):

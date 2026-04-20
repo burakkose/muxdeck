@@ -13,12 +13,12 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.domain.events import Event, LogChunk
-from copilot_commander.services.replay_insights import (
+from muxdeck.domain.events import Event, LogChunk
+from muxdeck.services.replay_insights import (
     IDLE_GAP_THRESHOLD,
     compute_replay_insights,
 )
-from copilot_commander.services.replay_service import ReplayEntry
+from muxdeck.services.replay_service import ReplayEntry
 
 EventSeverity = Literal["debug", "info", "warning", "error"]
 

@@ -8,13 +8,13 @@ from pathlib import Path
 import shutil
 import unittest
 
-from copilot_commander.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
-from copilot_commander.config import AppConfig, PathsConfig
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.events import Event
-from copilot_commander.domain.models import Agent, Worktree
-from copilot_commander.services.replay_service import ReplayService
-from copilot_commander.services.session_service import SessionService
+from muxdeck.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
+from muxdeck.config import AppConfig, PathsConfig
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.events import Event
+from muxdeck.domain.models import Agent, Worktree
+from muxdeck.services.replay_service import ReplayService
+from muxdeck.services.session_service import SessionService
 
 
 class ReplayServiceTests(unittest.TestCase):

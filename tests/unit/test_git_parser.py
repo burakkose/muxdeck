@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from copilot_commander.parsers.git_parser import (
+from muxdeck.parsers.git_parser import (
     parse_ahead_behind,
     parse_git_status_porcelain,
     parse_git_worktree_list_porcelain,
@@ -55,7 +55,7 @@ class GitParserTests(unittest.TestCase):
         output = "\n".join(
             (
                 "## feat...origin/feat [ahead 1]",
-                " M src/copilot_commander/parsers/git_parser.py",
+                " M src/muxdeck/parsers/git_parser.py",
                 "R  old_name.py -> new_name.py",
                 "?? tests/unit/test_git_parser.py",
                 "!! .venv/",

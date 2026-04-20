@@ -15,15 +15,15 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.config import GeneralConfig
-from copilot_commander.controllers.dashboard_controller import (
+from muxdeck.config import GeneralConfig
+from muxdeck.controllers.dashboard_controller import (
     DashboardController,
     _check_runaway,
 )
-from copilot_commander.adapters.sqlite_store import SessionContextRecord
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.events import Event, LogChunk
-from copilot_commander.domain.models import Agent, Session, Worktree
+from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.events import Event, LogChunk
+from muxdeck.domain.models import Agent, Session, Worktree
 
 
 class InMemoryDashboardStore:
@@ -269,7 +269,7 @@ class GeneralConfigLimitTests(unittest.TestCase):
     def test_negative_runtime_rejected(self) -> None:
         import pytest
 
-        from copilot_commander.exceptions import ConfigValidationError
+        from muxdeck.exceptions import ConfigValidationError
 
         with pytest.raises(ConfigValidationError):
             GeneralConfig(max_runtime_minutes=-5)
@@ -277,7 +277,7 @@ class GeneralConfigLimitTests(unittest.TestCase):
     def test_zero_runtime_rejected(self) -> None:
         import pytest
 
-        from copilot_commander.exceptions import ConfigValidationError
+        from muxdeck.exceptions import ConfigValidationError
 
         with pytest.raises(ConfigValidationError):
             GeneralConfig(max_runtime_minutes=0)

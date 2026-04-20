@@ -17,9 +17,9 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 if TYPE_CHECKING:
-    from copilot_commander.app import CommanderRuntime
+    from muxdeck.app import MuxdeckRuntime
 
-from copilot_commander.controllers import (
+from muxdeck.controllers import (
     DashboardAgentListItemView,
     DashboardAlertView,
     DashboardHealthSummary,
@@ -28,10 +28,10 @@ from copilot_commander.controllers import (
     OperationsExecutionSummary,
     OperationsState,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.screens.confirm_dialog import ConfirmScreen
-from copilot_commander.screens.operations import OperationsScreen
-from copilot_commander.widgets.common import KeyHintFooter
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.screens.confirm_dialog import ConfirmScreen
+from muxdeck.screens.operations import OperationsScreen
+from muxdeck.widgets.common import KeyHintFooter
 
 _TS = datetime(2025, 1, 1, 12, tzinfo=UTC)
 
@@ -165,7 +165,7 @@ class _FakeOperationsController:
 class _OperationsApp(App[None]):
     def __init__(self, controller: _FakeOperationsController) -> None:
         super().__init__()
-        self._screen = OperationsScreen(cast("CommanderRuntime", _FakeRuntime()), controller)
+        self._screen = OperationsScreen(cast("MuxdeckRuntime", _FakeRuntime()), controller)
 
     def on_mount(self) -> None:
         self.push_screen(self._screen)

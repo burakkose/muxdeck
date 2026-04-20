@@ -10,14 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from copilot_commander.adapters.tmux_adapter import (
+from muxdeck.adapters.tmux_adapter import (
     DISPLAY_MESSAGE_FORMAT,
     LIST_PANES_FORMAT,
     TmuxAdapter,
     parse_tmux_socket_path,
 )
-from copilot_commander.domain.value_objects import CommandResult
-from copilot_commander.exceptions import CommandError, TmuxCommandError
+from muxdeck.domain.value_objects import CommandResult
+from muxdeck.exceptions import CommandError, TmuxCommandError
 
 
 def _command_result(

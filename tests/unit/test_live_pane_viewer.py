@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from rich.text import Text
 
-from copilot_commander.widgets.live_pane_viewer import LivePaneViewer
+from muxdeck.widgets.live_pane_viewer import LivePaneViewer
 
 
 class TestAppend:

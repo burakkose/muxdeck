@@ -7,8 +7,8 @@ import sqlite3
 import unittest
 from pathlib import Path
 
-from copilot_commander.adapters.sqlite_store import SQLiteStore
-from copilot_commander.config import AppConfig
+from muxdeck.adapters.sqlite_store import SQLiteStore
+from muxdeck.config import AppConfig
 
 
 class SQLiteStoreIntegrationTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class SQLiteStoreIntegrationTests(unittest.TestCase):
             shutil.rmtree(self.runtime_dir)
 
     def test_bootstraps_file_database_with_wal_foreign_keys_and_indexes(self) -> None:
-        database_path = self.runtime_dir / "commander.db"
+        database_path = self.runtime_dir / "muxdeck.db"
 
         with SQLiteStore(AppConfig.default(), database_path=database_path) as store:
             self.assertEqual(store.database_path, database_path.resolve())

@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from copilot_commander.adapters.copilot_session_store import CopilotLocalSession
-from copilot_commander.controllers.sessions_controller import SessionsController
+from muxdeck.adapters.copilot_session_store import CopilotLocalSession
+from muxdeck.controllers.sessions_controller import SessionsController
 
 
 def _session(

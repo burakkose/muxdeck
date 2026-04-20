@@ -11,7 +11,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.domain.error_clustering import (
+from muxdeck.domain.error_clustering import (
     ErrorCluster,
     cluster_errors,
     normalize_error_message,

@@ -1,4 +1,4 @@
-"""Tests for :mod:`copilot_commander.screens.compose_mirror`."""
+"""Tests for :mod:`muxdeck.screens.compose_mirror`."""
 
 from __future__ import annotations
 
@@ -14,11 +14,11 @@ from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.widgets import TextArea
 
-from copilot_commander.adapters.pane_stream import PaneStreamAdapter
-from copilot_commander.app import CommanderRuntime
-from copilot_commander.screens.compose_mirror import ComposeWithMirrorScreen
-from copilot_commander.ui_preferences import UiPreferences
-from copilot_commander.widgets.live_pane_viewer import LivePaneViewer
+from muxdeck.adapters.pane_stream import PaneStreamAdapter
+from muxdeck.app import MuxdeckRuntime
+from muxdeck.screens.compose_mirror import ComposeWithMirrorScreen
+from muxdeck.ui_preferences import UiPreferences
+from muxdeck.widgets.live_pane_viewer import LivePaneViewer
 
 
 @dataclass
@@ -101,9 +101,9 @@ class _FakeActionService:
         message: str
 
 
-def _fake_runtime(actions: _FakeActionService, stream: PaneStreamAdapter) -> CommanderRuntime:
+def _fake_runtime(actions: _FakeActionService, stream: PaneStreamAdapter) -> MuxdeckRuntime:
     return cast(
-        CommanderRuntime,
+        MuxdeckRuntime,
         type(
             "FakeRuntime",
             (),
@@ -120,7 +120,7 @@ class _Harness(App[None]):
         return iter(())
 
 
-class _CommanderHarness(_Harness):
+class _MuxdeckHarness(_Harness):
     def __init__(self) -> None:
         super().__init__()
         self.ui_preferences = UiPreferences()
@@ -525,7 +525,7 @@ class ComposeWithMirrorScreenTests(unittest.TestCase):
             actions = _FakeActionService()
             runtime = _fake_runtime(actions, stream)
 
-            app = _CommanderHarness()
+            app = _MuxdeckHarness()
             async with app.run_test() as pilot:
                 screen = ComposeWithMirrorScreen(
                     runtime,

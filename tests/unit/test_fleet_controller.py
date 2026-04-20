@@ -13,12 +13,12 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.adapters.copilot_session_store import CopilotLocalSession
-from copilot_commander.adapters.sqlite_store import SessionContextRecord
-from copilot_commander.controllers.fleet_controller import FleetController, FleetFilterState
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.events import Event
-from copilot_commander.domain.models import Agent, Session, Worktree
+from muxdeck.adapters.copilot_session_store import CopilotLocalSession
+from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.controllers.fleet_controller import FleetController, FleetFilterState
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.events import Event
+from muxdeck.domain.models import Agent, Session, Worktree
 
 
 class InMemoryFleetStore:

@@ -4,7 +4,7 @@ Guidance for human and AI contributors working in this repository.
 
 ## Mission
 
-Build `copilot-commander` as a high-quality Python 3.14+ Textual TUI with strong architecture, strict typing, and reliable local/CLI/cloud-agent workflows.
+Build `muxdeck` as a high-quality Python 3.14+ Textual TUI with strong architecture, strict typing, and reliable local/CLI/cloud-agent workflows.
 
 ## Non-negotiable standards
 

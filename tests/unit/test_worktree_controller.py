@@ -13,9 +13,9 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
-from copilot_commander.adapters.sqlite_store import SessionContextRecord
-from copilot_commander.adapters.git_adapter import (
+from muxdeck.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
+from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.adapters.git_adapter import (
     GitCommitSummary,
     GitRepositorySnapshot,
     GitWorktreeCreateOutcome,
@@ -24,16 +24,16 @@ from copilot_commander.adapters.git_adapter import (
     GitWorktreePruneOutcome,
     GitWorktreeRemoveOutcome,
 )
-from copilot_commander.config import AppConfig, PathsConfig
-from copilot_commander.controllers.worktree_controller import (
+from muxdeck.config import AppConfig, PathsConfig
+from muxdeck.controllers.worktree_controller import (
     WorktreeController,
     WorktreeProvenanceKind,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.models import Agent, Session
-from copilot_commander.domain.value_objects import CommandResult
-from copilot_commander.parsers.git_parser import AheadBehindCounts, GitStatusEntry, GitStatusSummary
-from copilot_commander.services.worktree_service import WorktreeOrphanConflict, WorktreeService
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.models import Agent, Session
+from muxdeck.domain.value_objects import CommandResult
+from muxdeck.parsers.git_parser import AheadBehindCounts, GitStatusEntry, GitStatusSummary
+from muxdeck.services.worktree_service import WorktreeOrphanConflict, WorktreeService
 
 
 class FakeGit:

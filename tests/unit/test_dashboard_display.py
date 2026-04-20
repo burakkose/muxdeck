@@ -6,14 +6,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from copilot_commander.controllers import (
+from muxdeck.controllers import (
     DashboardAgentListItemView,
     DashboardHealthSummary,
     DashboardLogLineView,
     DashboardSelectedAgentView,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.widgets.dashboard import _format_idle
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.widgets.dashboard import _format_idle
 
 _TS = datetime(2025, 1, 1, tzinfo=UTC)
 
@@ -138,7 +138,7 @@ class TestAgentListTable:
     """Verify the compact table builds with 5 columns."""
 
     def test_table_has_five_columns(self):
-        from copilot_commander.widgets.dashboard import AgentListPanel
+        from muxdeck.widgets.dashboard import AgentListPanel
 
         panel = AgentListPanel(widget_id="test")
         panel._agents = (_agent(),)
@@ -148,7 +148,7 @@ class TestAgentListTable:
 
     def test_display_name_uses_process_name(self):
         """Agent name is the primary display name (unique in list)."""
-        from copilot_commander.widgets.dashboard import AgentListPanel
+        from muxdeck.widgets.dashboard import AgentListPanel
 
         agent = _agent(name="Planner", repo_name="tachyon", worktree_name="wt-tachyon")
         panel = AgentListPanel(widget_id="test")
@@ -160,7 +160,7 @@ class TestAgentListTable:
         assert "Planner" in str(row_cells[0])
 
     def test_list_shows_usage_badges_in_name_column(self):
-        from copilot_commander.widgets.dashboard import AgentListPanel
+        from muxdeck.widgets.dashboard import AgentListPanel
 
         agent = _agent(
             name="Planner",
@@ -178,7 +178,7 @@ class TestAgentListTable:
 
     def test_display_name_disambiguates_duplicates(self):
         """When names collide, worktree/repo suffix is added."""
-        from copilot_commander.widgets.dashboard import AgentListPanel
+        from muxdeck.widgets.dashboard import AgentListPanel
 
         a1 = _agent(name="node", repo_name="tachyon", worktree_name="wt-a")
         a2 = _agent(name="node", repo_name="tachyon", worktree_name="wt-b")
@@ -191,7 +191,7 @@ class TestAgentListTable:
         assert "wt-b" in str(cells[1])
 
     def test_display_name_uses_window_name_when_repo_and_worktree_match(self):
-        from copilot_commander.widgets.dashboard import AgentListPanel
+        from muxdeck.widgets.dashboard import AgentListPanel
 
         a1 = _agent(
             name="CosmosDB",
@@ -214,7 +214,7 @@ class TestAgentListTable:
         assert "Expired Transactions" in str(cells[1])
 
     def test_display_name_falls_back_to_process_name(self):
-        from copilot_commander.widgets.dashboard import AgentListPanel
+        from muxdeck.widgets.dashboard import AgentListPanel
 
         agent = _agent(name="python", repo_name=None, worktree_name=None)
         panel = AgentListPanel(widget_id="test")
@@ -226,7 +226,7 @@ class TestAgentListTable:
 
     def test_attention_agent_gets_attention_row_style(self):
         """Agents needing attention get a distinct row background."""
-        from copilot_commander.widgets.dashboard import AgentListPanel
+        from muxdeck.widgets.dashboard import AgentListPanel
 
         agent = _agent(needs_attention=True, attention_reason="idle for 300s")
         panel = AgentListPanel(widget_id="test")
@@ -240,8 +240,8 @@ class TestAgentListTable:
 
     def test_short_status_column_shows_status(self):
         """Status column (index 1) carries a colored dot keyed to operator status."""
-        from copilot_commander.theme import GREEN
-        from copilot_commander.widgets.dashboard import AgentListPanel
+        from muxdeck.theme import GREEN
+        from muxdeck.widgets.dashboard import AgentListPanel
 
         agent = _agent(status=AgentStatus.RUNNING)
         panel = AgentListPanel(widget_id="test")
@@ -254,8 +254,8 @@ class TestAgentListTable:
         assert GREEN in str(cell.style)
 
     def test_attention_running_agent_shows_review_status(self):
-        from copilot_commander.theme import ORANGE
-        from copilot_commander.widgets.dashboard import AgentListPanel
+        from muxdeck.theme import ORANGE
+        from muxdeck.widgets.dashboard import AgentListPanel
 
         agent = _agent(
             status=AgentStatus.RUNNING,
@@ -272,8 +272,8 @@ class TestAgentListTable:
         assert ORANGE in str(cell.style)
 
     def test_stuck_agent_shows_stuck_status(self):
-        from copilot_commander.theme import YELLOW
-        from copilot_commander.widgets.dashboard import AgentListPanel
+        from muxdeck.theme import YELLOW
+        from muxdeck.widgets.dashboard import AgentListPanel
 
         agent = _agent(status=AgentStatus.RUNNING, is_potentially_stuck=True)
         panel = AgentListPanel(widget_id="test")
@@ -286,7 +286,7 @@ class TestAgentListTable:
         assert YELLOW in str(cell.style)
 
     def test_list_surfaces_activity_and_status_columns(self):
-        from copilot_commander.widgets.dashboard import AgentListPanel
+        from muxdeck.widgets.dashboard import AgentListPanel
 
         agent = _agent(
             status=AgentStatus.WAITING_INPUT,
@@ -307,7 +307,7 @@ class TestAgentListTable:
 
 class TestDashboardPanels:
     def test_focus_panel_highlights_attention_and_session_summary(self):
-        from copilot_commander.widgets.dashboard import AgentDetailPanel
+        from muxdeck.widgets.dashboard import AgentDetailPanel
 
         selected = _selected_agent(
             _agent(
@@ -340,7 +340,7 @@ class TestDashboardPanels:
         assert "cost      $0.12" in rendered
 
     def test_activity_panel_renders_recent_markers(self):
-        from copilot_commander.widgets.dashboard import ActivityPanel
+        from muxdeck.widgets.dashboard import ActivityPanel
 
         selected = _selected_agent(
             _agent(
@@ -360,7 +360,7 @@ class TestDashboardPanels:
         assert "Needs input" in rendered
 
     def test_log_preview_panel_promotes_output_title_and_lines(self):
-        from copilot_commander.widgets.dashboard import LogPreviewPanel
+        from muxdeck.widgets.dashboard import LogPreviewPanel
 
         panel = LogPreviewPanel(id="output")
 
@@ -372,7 +372,7 @@ class TestDashboardPanels:
         assert "stderr line" in rendered
 
     def test_log_preview_panel_shows_launch_loading_state(self):
-        from copilot_commander.widgets.dashboard import LogPreviewPanel
+        from muxdeck.widgets.dashboard import LogPreviewPanel
 
         panel = LogPreviewPanel(id="output")
 
@@ -387,7 +387,7 @@ class TestDashboardPanels:
         assert "waiting for first output" in rendered
 
     def test_status_bar_shows_non_overlapping_attention_counts_and_focus(self):
-        from copilot_commander.widgets.dashboard import StatusBar
+        from muxdeck.widgets.dashboard import StatusBar
 
         bar = StatusBar(id="status")
         health = DashboardHealthSummary(
@@ -421,7 +421,7 @@ class TestDashboardPanels:
         assert "$0.12" in rendered
 
     def test_fleet_health_panel_renders_counts_and_selected_status(self):
-        from copilot_commander.widgets.dashboard import FleetHealthPanel
+        from muxdeck.widgets.dashboard import FleetHealthPanel
 
         panel = FleetHealthPanel(id="fleet")
         health = DashboardHealthSummary(
@@ -443,9 +443,9 @@ class TestDashboardPanels:
         assert "planner" in rendered
 
     def test_subagent_detail_renders_structured_block_for_background(self):
-        from copilot_commander.controllers import DashboardSubAgentView
-        from copilot_commander.domain.subagents import ReadAgentInteraction
-        from copilot_commander.widgets.dashboard import AgentDetailPanel
+        from muxdeck.controllers import DashboardSubAgentView
+        from muxdeck.domain.subagents import ReadAgentInteraction
+        from muxdeck.widgets.dashboard import AgentDetailPanel
 
         interactions = (
             ReadAgentInteraction(
@@ -495,8 +495,8 @@ class TestDashboardPanels:
         assert "launch ack" not in rendered.lower()
 
     def test_subagent_detail_falls_back_to_launch_ack_when_no_signals(self):
-        from copilot_commander.controllers import DashboardSubAgentView
-        from copilot_commander.widgets.dashboard import AgentDetailPanel
+        from muxdeck.controllers import DashboardSubAgentView
+        from muxdeck.widgets.dashboard import AgentDetailPanel
 
         view = DashboardSubAgentView(
             tool_call_id="call_new_launch",
@@ -520,8 +520,8 @@ class TestDashboardPanels:
         assert "interactions" not in rendered
 
     def test_subagent_detail_foreground_keeps_output_rendering(self):
-        from copilot_commander.controllers import DashboardSubAgentView
-        from copilot_commander.widgets.dashboard import AgentDetailPanel
+        from muxdeck.controllers import DashboardSubAgentView
+        from muxdeck.widgets.dashboard import AgentDetailPanel
 
         view = DashboardSubAgentView(
             tool_call_id="call_fg_1234",

@@ -12,11 +12,11 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.adapters.sqlite_store import SessionContextRecord
-from copilot_commander.controllers.agent_controller import AgentController
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.models import Agent, Session
-from copilot_commander.services.session_service import SessionBundle
+from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.controllers.agent_controller import AgentController
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.models import Agent, Session
+from muxdeck.services.session_service import SessionBundle
 
 
 class FakeAgentStore:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from copilot_commander.services.attention_service import (
+from muxdeck.services.attention_service import (
     AttentionInboxService,
     AttentionSignal,
 )

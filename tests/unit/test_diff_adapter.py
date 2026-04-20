@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from copilot_commander.adapters.diff_adapter import DiffAdapter, NullDiffAdapter
+from muxdeck.adapters.diff_adapter import DiffAdapter, NullDiffAdapter
 
 
 class DiffAdapterTests(unittest.TestCase):
@@ -17,7 +17,7 @@ class DiffAdapterTests(unittest.TestCase):
             args=["git"], returncode=0, stdout="diff --git a/x b/x\n+hi\n", stderr=""
         )
         with mock.patch(
-            "copilot_commander.adapters.diff_adapter.subprocess.run",
+            "muxdeck.adapters.diff_adapter.subprocess.run",
             return_value=completed,
         ) as run:
             text = adapter.diff_for_path(
@@ -43,7 +43,7 @@ class DiffAdapterTests(unittest.TestCase):
         adapter = DiffAdapter()
         completed = subprocess.CompletedProcess(args=["git"], returncode=0, stdout="", stderr="")
         with mock.patch(
-            "copilot_commander.adapters.diff_adapter.subprocess.run",
+            "muxdeck.adapters.diff_adapter.subprocess.run",
             return_value=completed,
         ) as run:
             adapter.diff_for_path(Path("/repo"), "src/foo.py", before=None, after=None)
@@ -60,7 +60,7 @@ class DiffAdapterTests(unittest.TestCase):
             args=["git"], returncode=128, stdout="", stderr="fatal: bad revision"
         )
         with mock.patch(
-            "copilot_commander.adapters.diff_adapter.subprocess.run",
+            "muxdeck.adapters.diff_adapter.subprocess.run",
             return_value=completed,
         ):
             text = adapter.diff_for_path(Path("/repo"), "src/foo.py", before="x", after="y")
@@ -70,7 +70,7 @@ class DiffAdapterTests(unittest.TestCase):
     def test_diff_for_path_returns_empty_string_on_oserror(self) -> None:
         adapter = DiffAdapter()
         with mock.patch(
-            "copilot_commander.adapters.diff_adapter.subprocess.run",
+            "muxdeck.adapters.diff_adapter.subprocess.run",
             side_effect=FileNotFoundError("git not found"),
         ):
             text = adapter.diff_for_path(Path("/repo"), "src/foo.py", before=None, after=None)
@@ -80,7 +80,7 @@ class DiffAdapterTests(unittest.TestCase):
     def test_diff_for_path_returns_empty_string_on_timeout(self) -> None:
         adapter = DiffAdapter()
         with mock.patch(
-            "copilot_commander.adapters.diff_adapter.subprocess.run",
+            "muxdeck.adapters.diff_adapter.subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd="git", timeout=5.0),
         ):
             text = adapter.diff_for_path(Path("/repo"), "src/foo.py", before=None, after=None)

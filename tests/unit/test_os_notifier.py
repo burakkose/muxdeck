@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from copilot_commander.adapters.os_notifier import (
+from muxdeck.adapters.os_notifier import (
     NotifySendNotifier,
     NullNotifier,
     TerminalBellNotifier,
@@ -31,7 +31,7 @@ class _RecordingRunner:
 
 def test_notify_send_notifier_issues_expected_argv() -> None:
     runner = _RecordingRunner()
-    notifier = NotifySendNotifier(runner=runner, app_name="commander-test")
+    notifier = NotifySendNotifier(runner=runner, app_name="muxdeck-test")
 
     notifier.notify("Agent failed", "exit code 1", "critical")
 
@@ -39,7 +39,7 @@ def test_notify_send_notifier_issues_expected_argv() -> None:
         (
             "notify-send",
             "--app-name",
-            "commander-test",
+            "muxdeck-test",
             "--urgency",
             "critical",
             "Agent failed",
@@ -167,7 +167,7 @@ def test_detect_os_notifier_null_when_disabled_env(tmp_path: Path) -> None:
         which=lambda _name: None,
         proc_version=proc,
         platform="darwin",
-        env={"COMMANDER_DISABLE_OS_NOTIFY": "1"},
+        env={"MUXDECK_DISABLE_OS_NOTIFY": "1"},
     )
     assert isinstance(notifier, NullNotifier)
 

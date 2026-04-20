@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from copilot_commander.adapters.copilot_session_store import (
+from muxdeck.adapters.copilot_session_store import (
     CopilotSessionStore,
     SessionStoreRoot,
 )

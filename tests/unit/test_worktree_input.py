@@ -5,8 +5,8 @@ from __future__ import annotations
 import dataclasses
 import inspect
 
-from copilot_commander.controllers import WorktreeStartAgentIntent
-from copilot_commander.screens.worktree_input import (
+from muxdeck.controllers import WorktreeStartAgentIntent
+from muxdeck.screens.worktree_input import (
     AttachWorktreeResult,
     AttachWorktreeScreen,
     CreateWorktreeResult,
@@ -14,7 +14,7 @@ from copilot_commander.screens.worktree_input import (
     LaunchAgentResult,
     LaunchAgentScreen,
 )
-from copilot_commander.services.action_service import ActionModelHint
+from muxdeck.services.action_service import ActionModelHint
 
 
 class TestCreateWorktreeResult:

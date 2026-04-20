@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from copilot_commander.controllers.dashboard_controller import (
+from muxdeck.controllers.dashboard_controller import (
     _MAX_RECENT_EVENTS,
     _extract_recent_events,
 )
-from copilot_commander.domain.events import LogChunk
+from muxdeck.domain.events import LogChunk
 
 
 def _log(content: str, *, sequence_no: int = 0) -> LogChunk:

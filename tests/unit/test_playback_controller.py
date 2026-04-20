@@ -13,7 +13,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.services.playback_controller import (
+from muxdeck.services.playback_controller import (
     SPEED_DOUBLE,
     SPEED_HALF,
     SPEED_MAX,

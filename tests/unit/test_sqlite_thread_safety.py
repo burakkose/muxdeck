@@ -7,9 +7,9 @@ from __future__ import annotations
 import threading
 from datetime import UTC, datetime
 
-from copilot_commander.adapters.sqlite_store import SQLiteStore
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.models import Agent
+from muxdeck.adapters.sqlite_store import SQLiteStore
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.models import Agent
 
 
 def test_cross_thread_write_and_read(tmp_path) -> None:

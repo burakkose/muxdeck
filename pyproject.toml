@@ -3,12 +3,12 @@ requires = ["setuptools>=80", "wheel>=0.45"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "copilot-commander"
+name = "muxdeck"
 version = "0.1.0"
 description = "Production-quality local TUI control plane for GitHub Copilot CLI agents in tmux."
 readme = "README.md"
 requires-python = ">=3.14"
-authors = [{ name = "copilot-commander contributors" }]
+authors = [{ name = "muxdeck contributors" }]
 keywords = ["copilot", "python", "textual", "tui"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -38,21 +38,21 @@ dev = [
 ]
 
 [project.scripts]
-copilot-commander = "copilot_commander.__main__:main"
+muxdeck = "muxdeck.__main__:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["copilot_commander", "copilot_commander.*"]
+include = ["muxdeck", "muxdeck.*"]
 
 [tool.setuptools.package-data]
-copilot_commander = ["py.typed", "adapters/migrations/*.sql"]
+muxdeck = ["py.typed", "adapters/migrations/*.sql"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
-addopts = "-ra --strict-config --strict-markers --cov=copilot_commander --cov-report=term-missing --cov-report=xml"
+addopts = "-ra --strict-config --strict-markers --cov=muxdeck --cov-report=term-missing --cov-report=xml"
 testpaths = ["tests"]
 markers = [
   "integration: marks tests that exercise cross-module or external integrations",
@@ -62,10 +62,10 @@ xfail_strict = true
 
 [tool.coverage.run]
 branch = true
-source = ["copilot_commander"]
+source = ["muxdeck"]
 
 [tool.coverage.paths]
-source = ["src/copilot_commander", "*/site-packages/copilot_commander"]
+source = ["src/muxdeck", "*/site-packages/muxdeck"]
 
 [tool.coverage.report]
 show_missing = true
@@ -104,7 +104,7 @@ select = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["copilot_commander"]
+known-first-party = ["muxdeck"]
 
 [tool.ruff.format]
 quote-style = "double"

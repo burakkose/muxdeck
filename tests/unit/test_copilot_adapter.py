@@ -7,13 +7,13 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from copilot_commander.adapters.copilot_adapter import (
+from muxdeck.adapters.copilot_adapter import (
     CopilotAdapter,
     CopilotCommandError,
     CopilotLaunchParameters,
 )
-from copilot_commander.domain.value_objects import CommandResult
-from copilot_commander.exceptions import CommandError
+from muxdeck.domain.value_objects import CommandResult
+from muxdeck.exceptions import CommandError
 
 
 class FakeRunner:

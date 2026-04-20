@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 
-from copilot_commander.screens.message_input import (
+from muxdeck.screens.message_input import (
     MessageResult,
     SendMessageScreen,
 )

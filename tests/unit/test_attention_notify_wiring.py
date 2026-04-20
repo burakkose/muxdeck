@@ -6,16 +6,16 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Literal, cast
 
-from copilot_commander.app import CommanderApp, CommanderRuntime
-from copilot_commander.controllers.attention_controller import AttentionController
-from copilot_commander.controllers.dashboard_controller import (
+from muxdeck.app import MuxdeckApp, MuxdeckRuntime
+from muxdeck.controllers.attention_controller import AttentionController
+from muxdeck.controllers.dashboard_controller import (
     DashboardAlertView,
     DashboardFilterState,
     DashboardHealthSummary,
     DashboardSort,
     DashboardState,
 )
-from copilot_commander.services.attention_service import AttentionInboxService
+from muxdeck.services.attention_service import AttentionInboxService
 
 
 class _FakeDashboardController:
@@ -101,9 +101,9 @@ def _alert(
 
 def _make_runtime(
     *, attention: AttentionController | None, notifier: _RecordingNotifier | None
-) -> CommanderRuntime:
+) -> MuxdeckRuntime:
     return cast(
-        CommanderRuntime,
+        MuxdeckRuntime,
         type(
             "FakeRuntime",
             (),
@@ -126,7 +126,7 @@ def _make_runtime(
 def test_dispatch_attention_notifications_calls_notifier_with_mapped_urgency() -> None:
     attention = AttentionController(_FakeDashboardController(), AttentionInboxService())
     notifier = _RecordingNotifier()
-    app = CommanderApp(_make_runtime(attention=attention, notifier=notifier))
+    app = MuxdeckApp(_make_runtime(attention=attention, notifier=notifier))
 
     state = _state_with_alerts(
         _alert("agent-1:failed", "error", title="agent-1 failed", message="exit 1"),
@@ -148,7 +148,7 @@ def test_dispatch_attention_notifications_calls_notifier_with_mapped_urgency() -
 def test_dispatch_attention_notifications_does_not_renotify_same_ids() -> None:
     attention = AttentionController(_FakeDashboardController(), AttentionInboxService())
     notifier = _RecordingNotifier()
-    app = CommanderApp(_make_runtime(attention=attention, notifier=notifier))
+    app = MuxdeckApp(_make_runtime(attention=attention, notifier=notifier))
 
     state = _state_with_alerts(
         _alert("agent-1:failed", "error"),
@@ -161,7 +161,7 @@ def test_dispatch_attention_notifications_does_not_renotify_same_ids() -> None:
 
 def test_dispatch_attention_is_noop_without_attention_controller() -> None:
     notifier = _RecordingNotifier()
-    app = CommanderApp(_make_runtime(attention=None, notifier=notifier))
+    app = MuxdeckApp(_make_runtime(attention=None, notifier=notifier))
     app._dispatch_attention_notifications(_empty_state())
     assert notifier.calls == []
 
@@ -169,13 +169,13 @@ def test_dispatch_attention_is_noop_without_attention_controller() -> None:
 def test_dispatch_attention_does_nothing_when_state_is_none() -> None:
     attention = AttentionController(_FakeDashboardController(), AttentionInboxService())
     notifier = _RecordingNotifier()
-    app = CommanderApp(_make_runtime(attention=attention, notifier=notifier))
+    app = MuxdeckApp(_make_runtime(attention=attention, notifier=notifier))
     app._dispatch_attention_notifications(None)
     assert notifier.calls == []
 
 
 def test_set_tab_badge_updates_and_clears() -> None:
-    app = CommanderApp(_make_runtime(attention=None, notifier=None))
+    app = MuxdeckApp(_make_runtime(attention=None, notifier=None))
     app.set_tab_badge("attention", 2)
     assert app.tab_badges == {"attention": 2}
     app.set_tab_badge("attention", 0)

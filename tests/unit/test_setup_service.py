@@ -9,9 +9,9 @@ import unittest
 from datetime import UTC, datetime
 from pathlib import Path
 
-from copilot_commander.exceptions import TmuxCommandError
-from copilot_commander.parsers.tmux_parser import TmuxListPanesParseResult, TmuxPaneRecord
-from copilot_commander.services.setup_service import SetupDoctorService
+from muxdeck.exceptions import TmuxCommandError
+from muxdeck.parsers.tmux_parser import TmuxListPanesParseResult, TmuxPaneRecord
+from muxdeck.services.setup_service import SetupDoctorService
 
 
 class _FakeTmux:
@@ -185,7 +185,7 @@ class SetupDoctorWindowsHostTests(unittest.TestCase):
         )
 
     def test_non_wsl_adds_no_windows_checks(self) -> None:
-        from copilot_commander.adapters.windows_host import WindowsHostInfo
+        from muxdeck.adapters.windows_host import WindowsHostInfo
 
         service = self._build_service(windows_host=WindowsHostInfo(is_wsl=False))
         report = service.build_report()
@@ -196,7 +196,7 @@ class SetupDoctorWindowsHostTests(unittest.TestCase):
         self.assertIsNone(report.windows_session_count)
 
     def test_wsl_with_available_host_reports_ok_and_count(self) -> None:
-        from copilot_commander.adapters.windows_host import WindowsHostInfo
+        from muxdeck.adapters.windows_host import WindowsHostInfo
 
         target = self.temp_root / "session-state"
         target.mkdir(parents=True)
@@ -219,7 +219,7 @@ class SetupDoctorWindowsHostTests(unittest.TestCase):
         self.assertEqual(report.windows_session_count, 3)
 
     def test_wsl_without_resolved_dir_surfaces_warning(self) -> None:
-        from copilot_commander.adapters.windows_host import WindowsHostInfo
+        from muxdeck.adapters.windows_host import WindowsHostInfo
 
         info = WindowsHostInfo(
             is_wsl=True,

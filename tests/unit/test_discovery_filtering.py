@@ -9,12 +9,12 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock
 
-from copilot_commander.adapters.copilot_adapter import (
+from muxdeck.adapters.copilot_adapter import (
     CopilotCommandDetection,
     CopilotOutputParseResult,
     CopilotSessionEvidence,
 )
-from copilot_commander.services.discovery_service import (
+from muxdeck.services.discovery_service import (
     DiscoveryPaneSnapshot,
     _has_session_signal,
     _has_strong_session_signal,
@@ -166,8 +166,8 @@ class TestShellPaneClassification(unittest.TestCase):
 
 class TestSelfPaneFiltering(unittest.TestCase):
     def test_ignore_pane_ids_filters_self(self):
-        from copilot_commander.adapters.tmux_adapter import TmuxPaneMetadata
-        from copilot_commander.services.discovery_service import DiscoveryService
+        from muxdeck.adapters.tmux_adapter import TmuxPaneMetadata
+        from muxdeck.services.discovery_service import DiscoveryService
 
         pane0 = TmuxPaneMetadata(
             pane_id="%0",

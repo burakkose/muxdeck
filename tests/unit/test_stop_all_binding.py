@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from copilot_commander.bindings import (
+from muxdeck.bindings import (
     DASHBOARD_BINDINGS,
     DASHBOARD_HINTS,
     WORKTREE_BINDINGS,
     WORKTREE_HINTS,
 )
-from copilot_commander.controllers.dashboard_controller import DashboardAgentListItemView
-from copilot_commander.controllers.worktree_controller import WorktreeStartAgentIntent
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.services.action_service import ActionResult
+from muxdeck.controllers.dashboard_controller import DashboardAgentListItemView
+from muxdeck.controllers.worktree_controller import WorktreeStartAgentIntent
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.services.action_service import ActionResult
 
 # -------------------------------------------------------------------
 # Helpers

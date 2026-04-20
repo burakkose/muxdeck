@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from copilot_commander.controllers.attention_controller import (
+from muxdeck.controllers.attention_controller import (
     AttentionController,
     AttentionFilterState,
 )
-from copilot_commander.controllers.dashboard_controller import (
+from muxdeck.controllers.dashboard_controller import (
     DashboardAgentListItemView,
     DashboardFilterState,
     DashboardHealthSummary,
@@ -16,9 +16,9 @@ from copilot_commander.controllers.dashboard_controller import (
     DashboardSort,
     DashboardState,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.services.attention_service import AttentionInboxService
-from copilot_commander.services.operator_status_service import describe_operator_status
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.services.attention_service import AttentionInboxService
+from muxdeck.services.operator_status_service import describe_operator_status
 
 _TS = datetime(2025, 1, 1, 12, tzinfo=UTC)
 

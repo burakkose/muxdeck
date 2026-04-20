@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from copilot_commander.services.action_service import TmuxActionService
+from muxdeck.services.action_service import TmuxActionService
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

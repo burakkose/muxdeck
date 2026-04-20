@@ -12,7 +12,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.domain.replay_query import (
+from muxdeck.domain.replay_query import (
     EMPTY_QUERY,
     ReplayQuery,
     build_chip_filter_text,

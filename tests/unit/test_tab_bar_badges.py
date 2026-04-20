@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from copilot_commander.widgets.common import TabBar
+from muxdeck.widgets.common import TabBar
 
 
 def _render_plain(bar: TabBar) -> str:

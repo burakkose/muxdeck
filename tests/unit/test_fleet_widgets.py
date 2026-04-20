@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from copilot_commander.controllers.fleet_controller import (
+from muxdeck.controllers.fleet_controller import (
     FleetAgentSummaryView,
     FleetFilterState,
     FleetHealthSummary,
@@ -18,8 +18,8 @@ from copilot_commander.controllers.fleet_controller import (
     FleetState,
     FleetStoryLaneView,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.widgets.fleet import (
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.widgets.fleet import (
     FleetCommandDeckPanel,
     FleetHistoryPanel,
     FleetInboxPanel,

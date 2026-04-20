@@ -8,8 +8,8 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-from copilot_commander.adapters.process_adapter import ProcessAdapter
-from copilot_commander.exceptions import CommandError
+from muxdeck.adapters.process_adapter import ProcessAdapter
+from muxdeck.exceptions import CommandError
 
 
 class ProcessAdapterTests(unittest.TestCase):

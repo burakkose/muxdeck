@@ -1,4 +1,4 @@
-# copilot-commander
+# muxdeck
 
 A local Textual operator console for discovering and monitoring GitHub Copilot CLI panes in tmux.
 
@@ -18,7 +18,7 @@ Use Python 3.14 or newer, and run all project commands from the activated `.venv
 
 ```bash
 source .venv/bin/activate
-python -m copilot_commander
+python -m muxdeck
 ```
 
 Run the operator console from a tmux window when possible. If your panes live on another tmux socket, use the Setup screen to select that server.
@@ -116,13 +116,13 @@ python -m ruff check .
 python -m ruff format --check .
 python -m mypy .
 PYTHONPATH=src python -m pytest tests/ -q --tb=short
-copilot-commander
+muxdeck
 ```
 
 Run `python -m pre_commit run --all-files` before opening a pull request to catch formatting and repository-hygiene issues locally. The pre-push hook runs `mypy` and `pytest` so new worktrees stay aligned with CI.
 
 ## Layout
 
-- `src/copilot_commander/`: application package
+- `src/muxdeck/`: application package
 - `tests/unit/`: fast unit coverage
 - `tests/integration/`: integration-marked tests

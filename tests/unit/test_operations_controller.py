@@ -16,7 +16,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.controllers import (
+from muxdeck.controllers import (
     AgentActionResult,
     AgentIntentView,
     AgentTargetView,
@@ -30,9 +30,9 @@ from copilot_commander.controllers import (
     OperationsAction,
     OperationsController,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.exceptions import PersistenceError
-from copilot_commander.services import OperationAuditService
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.exceptions import PersistenceError
+from muxdeck.services import OperationAuditService
 
 _TS = datetime(2025, 1, 1, 12, tzinfo=UTC)
 

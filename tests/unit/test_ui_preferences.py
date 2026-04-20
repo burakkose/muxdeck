@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from textual.widgets import Static
 
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.ui_preferences import (
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.ui_preferences import (
     UiContrast,
     UiDecorations,
     UiDensity,
@@ -11,7 +11,7 @@ from copilot_commander.ui_preferences import (
     UiPreferences,
     resolve_ui_preferences,
 )
-from copilot_commander.widgets.common import (
+from muxdeck.widgets.common import (
     item_separator,
     pipe_separator,
     status_glyph_char,

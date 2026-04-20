@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
-from copilot_commander.app import _get_tmux_safe_driver
+from muxdeck.app import _get_tmux_safe_driver
 
 
 class TestTmuxSafeDriver:

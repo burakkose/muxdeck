@@ -14,7 +14,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from textual.binding import Binding
 
-from copilot_commander.bindings import (
+from muxdeck.bindings import (
     DASHBOARD_BINDINGS,
     SESSIONS_BINDINGS,
     WORKTREE_BINDINGS,

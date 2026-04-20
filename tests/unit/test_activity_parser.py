@@ -5,11 +5,11 @@ from __future__ import annotations
 import unittest
 from decimal import Decimal
 
-from copilot_commander.parsers.copilot_output_parser import (
+from muxdeck.parsers.copilot_output_parser import (
     CopilotOutputParseResult,
     parse_copilot_output,
 )
-from copilot_commander.services.monitoring_service import _extract_latest_activity
+from muxdeck.services.monitoring_service import _extract_latest_activity
 
 
 class ActivityParserFileReadTests(unittest.TestCase):

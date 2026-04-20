@@ -7,8 +7,8 @@ from decimal import Decimal
 from pathlib import Path
 import unittest
 
-from copilot_commander.domain.enums import AgentStatus, EvidenceKind
-from copilot_commander.domain.value_objects import (
+from muxdeck.domain.enums import AgentStatus, EvidenceKind
+from muxdeck.domain.value_objects import (
     AgentId,
     CommandResult,
     CostBreakdown,
@@ -16,7 +16,7 @@ from copilot_commander.domain.value_objects import (
     TokenPricing,
     TokenUsage,
 )
-from copilot_commander.exceptions import DomainValidationError
+from muxdeck.exceptions import DomainValidationError
 
 
 class ValueObjectTests(unittest.TestCase):

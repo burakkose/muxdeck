@@ -6,8 +6,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from copilot_commander.adapters.copilot_activity_reader import CopilotActivityReader
-from copilot_commander.adapters.copilot_session_store import SessionStoreRoot
+from muxdeck.adapters.copilot_activity_reader import CopilotActivityReader
+from muxdeck.adapters.copilot_session_store import SessionStoreRoot
 
 
 @dataclass

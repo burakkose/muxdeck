@@ -4,7 +4,7 @@ import unittest
 from decimal import Decimal
 from typing import Protocol, cast
 
-from copilot_commander.parsers.copilot_output_parser import (
+from muxdeck.parsers.copilot_output_parser import (
     CopilotOutputParseResult,
     parse_copilot_output,
 )

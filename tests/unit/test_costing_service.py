@@ -10,13 +10,13 @@ import json
 import shutil
 import unittest
 
-from copilot_commander.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
-from copilot_commander.adapters.copilot_adapter import CopilotAdapter
-from copilot_commander.config import AppConfig, CostingConfig, PathsConfig
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.models import Agent, Session
-from copilot_commander.domain.value_objects import CommandResult
-from copilot_commander.services.costing_service import CostingService
+from muxdeck.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
+from muxdeck.adapters.copilot_adapter import CopilotAdapter
+from muxdeck.config import AppConfig, CostingConfig, PathsConfig
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.models import Agent, Session
+from muxdeck.domain.value_objects import CommandResult
+from muxdeck.services.costing_service import CostingService
 
 
 class CostingServiceTests(unittest.TestCase):

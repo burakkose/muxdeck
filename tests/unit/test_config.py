@@ -7,9 +7,9 @@ from pathlib import Path
 import shutil
 import unittest
 
-from copilot_commander.config import AppConfig, CostingConfig, load_config
-from copilot_commander.constants import DEFAULT_WORKSPACE_ROOT
-from copilot_commander.exceptions import ConfigValidationError
+from muxdeck.config import AppConfig, CostingConfig, load_config
+from muxdeck.constants import DEFAULT_WORKSPACE_ROOT
+from muxdeck.exceptions import ConfigValidationError
 
 
 class ConfigTests(unittest.TestCase):
@@ -33,19 +33,19 @@ class ConfigTests(unittest.TestCase):
 
         self.assertEqual(
             config.config_file,
-            (self.runtime_dir / "config-home/copilot-commander/config.toml").resolve(),
+            (self.runtime_dir / "config-home/muxdeck/config.toml").resolve(),
         )
         self.assertEqual(
             config.paths.state_dir,
-            (self.runtime_dir / "state-home/copilot-commander").resolve(),
+            (self.runtime_dir / "state-home/muxdeck").resolve(),
         )
         self.assertEqual(
             config.paths.database_path,
-            (self.runtime_dir / "state-home/copilot-commander/commander.db").resolve(),
+            (self.runtime_dir / "state-home/muxdeck/muxdeck.db").resolve(),
         )
         self.assertEqual(
             config.paths.fallback_database_path,
-            (self.runtime_dir / "home/.copilot-commander/commander.db").resolve(),
+            (self.runtime_dir / "home/.muxdeck/muxdeck.db").resolve(),
         )
         self.assertEqual(
             config.paths.workspace_root,
@@ -83,8 +83,8 @@ default_base_branch = "develop"
 [paths]
 state_dir = "./state"
 workspace_root = "./worktrees"
-database_path = "./state/data/commander.sqlite3"
-fallback_database_path = "./legacy/commander.sqlite3"
+database_path = "./state/data/muxdeck.sqlite3"
+fallback_database_path = "./legacy/muxdeck.sqlite3"
 
 [naming]
 branch_prefix = "feat/"
@@ -110,11 +110,11 @@ socket_path = "./tmux/custom.sock"
         self.assertEqual(config.paths.workspace_root, (config_dir / "worktrees").resolve())
         self.assertEqual(
             config.paths.database_path,
-            (config_dir / "state/data/commander.sqlite3").resolve(),
+            (config_dir / "state/data/muxdeck.sqlite3").resolve(),
         )
         self.assertEqual(
             config.paths.fallback_database_path,
-            (config_dir / "legacy/commander.sqlite3").resolve(),
+            (config_dir / "legacy/muxdeck.sqlite3").resolve(),
         )
         self.assertEqual(config.naming.branch_prefix, "feat/")
         self.assertEqual(config.naming.worktree_name(repo="muxdeck", slug="abc"), "muxdeck-abc")
@@ -185,11 +185,11 @@ unexpected = 1
         )
         self.assertEqual(
             config.paths.database_path,
-            (self.runtime_dir / "home/.local/state/copilot-commander/commander.db").resolve(),
+            (self.runtime_dir / "home/.local/state/muxdeck/muxdeck.db").resolve(),
         )
         self.assertEqual(
             config.paths.fallback_database_path,
-            (self.runtime_dir / "home/.copilot-commander/commander.db").resolve(),
+            (self.runtime_dir / "home/.muxdeck/muxdeck.db").resolve(),
         )
 
 

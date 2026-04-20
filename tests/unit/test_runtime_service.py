@@ -13,21 +13,21 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.adapters.copilot_adapter import CopilotCommandDetection
-from copilot_commander.adapters.copilot_session_resolver import CopilotSessionResolution
-from copilot_commander.adapters.sqlite_store import SessionContextRecord
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.models import Agent
-from copilot_commander.domain.subagents import SubAgentSnapshot, SubAgentTree
-from copilot_commander.exceptions import TmuxCommandError
-from copilot_commander.services.discovery_service import (
+from muxdeck.adapters.copilot_adapter import CopilotCommandDetection
+from muxdeck.adapters.copilot_session_resolver import CopilotSessionResolution
+from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.models import Agent
+from muxdeck.domain.subagents import SubAgentSnapshot, SubAgentTree
+from muxdeck.exceptions import TmuxCommandError
+from muxdeck.services.discovery_service import (
     DiscoveryPaneSnapshot,
     PaneDiscovery,
     PaneDiscoveryReport,
 )
-from copilot_commander.services.monitoring_service import MonitoringDiscovery, MonitoringReport
-from copilot_commander.services.runtime_service import RuntimeSynchronizer
-from copilot_commander.services.subtask_registry import SubTaskRegistry
+from muxdeck.services.monitoring_service import MonitoringDiscovery, MonitoringReport
+from muxdeck.services.runtime_service import RuntimeSynchronizer
+from muxdeck.services.subtask_registry import SubTaskRegistry
 
 
 class FakeDiscovery:

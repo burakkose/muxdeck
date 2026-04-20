@@ -22,21 +22,21 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from copilot_commander.adapters.copilot_adapter import CopilotAdapter
-from copilot_commander.adapters.sqlite_store import SessionContextRecord
-from copilot_commander.controllers.dashboard_controller import DashboardController
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.events import Event, LogChunk
-from copilot_commander.domain.models import Agent, Session, Worktree
-from copilot_commander.domain.value_objects import CommandResult
-from copilot_commander.services.agent_service import AgentFactInput
-from copilot_commander.services.discovery_service import DiscoveryPaneSnapshot, PaneDiscovery
-from copilot_commander.services.monitoring_service import (
+from muxdeck.adapters.copilot_adapter import CopilotAdapter
+from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.controllers.dashboard_controller import DashboardController
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.events import Event, LogChunk
+from muxdeck.domain.models import Agent, Session, Worktree
+from muxdeck.domain.value_objects import CommandResult
+from muxdeck.services.agent_service import AgentFactInput
+from muxdeck.services.discovery_service import DiscoveryPaneSnapshot, PaneDiscovery
+from muxdeck.services.monitoring_service import (
     MonitoringDiscovery,
     MonitoringLocalSessionStore,
     MonitoringService,
 )
-from copilot_commander.widgets.dashboard import (
+from muxdeck.widgets.dashboard import (
     AgentDetailPanel,
     AgentListPanel,
     AlertPanel,

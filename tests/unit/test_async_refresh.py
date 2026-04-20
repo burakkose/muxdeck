@@ -8,8 +8,8 @@ from typing import Any, cast
 
 import pytest
 
-from copilot_commander.app import CommanderApp, CommanderRuntime
-from copilot_commander.controllers import (
+from muxdeck.app import MuxdeckApp, MuxdeckRuntime
+from muxdeck.controllers import (
     DashboardAgentListItemView,
     DashboardFilterState,
     DashboardHealthSummary,
@@ -20,10 +20,10 @@ from copilot_commander.controllers import (
     WorktreeDetailView,
     WorktreeSummaryView,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.models import Session
-from copilot_commander.services.runtime_service import RuntimeSyncReport
-from copilot_commander.widgets.common import KeyHintFooter
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.models import Session
+from muxdeck.services.runtime_service import RuntimeSyncReport
+from muxdeck.widgets.common import KeyHintFooter
 
 _TIMESTAMP = datetime(2025, 1, 1, 12, tzinfo=UTC)
 
@@ -189,9 +189,9 @@ class FakeAgentController:
 def _build_fake_runtime(
     *,
     synchronizer: FakeSynchronizer | None = None,
-) -> CommanderRuntime:
+) -> MuxdeckRuntime:
     return cast(
-        CommanderRuntime,
+        MuxdeckRuntime,
         type(
             "FakeRuntime",
             (),
@@ -214,7 +214,7 @@ def _build_fake_runtime(
 async def test_sync_runs_in_worker_thread() -> None:
     """Sync refresh happens off the main thread so the UI stays responsive."""
     synchronizer = FakeSynchronizer()
-    app = CommanderApp(_build_fake_runtime(synchronizer=synchronizer))
+    app = MuxdeckApp(_build_fake_runtime(synchronizer=synchronizer))
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -226,7 +226,7 @@ async def test_sync_runs_in_worker_thread() -> None:
 async def test_concurrent_refresh_is_guarded() -> None:
     """Second refresh while sync is in flight is deferred, not concurrent."""
     synchronizer = FakeSynchronizer(block=True)
-    app = CommanderApp(_build_fake_runtime(synchronizer=synchronizer))
+    app = MuxdeckApp(_build_fake_runtime(synchronizer=synchronizer))
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -251,7 +251,7 @@ async def test_concurrent_refresh_is_guarded() -> None:
 @pytest.mark.asyncio
 async def test_no_synchronizer_still_refreshes_widgets() -> None:
     """When runtime has no synchronizer, widget refresh still happens."""
-    app = CommanderApp(_build_fake_runtime(synchronizer=None))
+    app = MuxdeckApp(_build_fake_runtime(synchronizer=None))
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -264,7 +264,7 @@ async def test_dashboard_first_load_marks_widgets_loading_when_state_unavailable
     runtime = _build_fake_runtime(synchronizer=None)
     runtime_any = cast(Any, runtime)
     runtime_any.dashboard = FailingDashboardController()
-    app = CommanderApp(runtime)
+    app = MuxdeckApp(runtime)
 
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -293,7 +293,7 @@ async def test_sync_error_clears_in_progress_flag() -> None:
 
     synchronizer = ErrorSynchronizer()
     runtime = cast(
-        CommanderRuntime,
+        MuxdeckRuntime,
         type(
             "FakeRuntime",
             (),
@@ -310,7 +310,7 @@ async def test_sync_error_clears_in_progress_flag() -> None:
             },
         )(),
     )
-    app = CommanderApp(runtime)
+    app = MuxdeckApp(runtime)
 
     async with app.run_test() as pilot:
         await pilot.pause()

@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from copilot_commander.adapters.process_adapter import ProcessAdapter
-from copilot_commander.adapters.tmux_adapter import TmuxAdapter
+from muxdeck.adapters.process_adapter import ProcessAdapter
+from muxdeck.adapters.tmux_adapter import TmuxAdapter
 
 
 class TmuxAdapterIntegrationTests(unittest.TestCase):

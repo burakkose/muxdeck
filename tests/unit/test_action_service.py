@@ -8,15 +8,15 @@ from datetime import UTC, datetime
 
 import pytest
 
-from copilot_commander.adapters.copilot_adapter import CopilotLaunchParameters
-from copilot_commander.adapters.tmux_adapter import TmuxPaneMetadata, TmuxWindowInfo
-from copilot_commander.controllers.agent_controller import (
+from muxdeck.adapters.copilot_adapter import CopilotLaunchParameters
+from muxdeck.adapters.tmux_adapter import TmuxPaneMetadata, TmuxWindowInfo
+from muxdeck.controllers.agent_controller import (
     AgentIntentView,
     AgentTargetView,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.value_objects import CommandResult
-from copilot_commander.services.action_service import (
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.value_objects import CommandResult
+from muxdeck.services.action_service import (
     ActionModelHint,
     ActionResult,
     TmuxActionService,

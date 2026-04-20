@@ -6,12 +6,12 @@ import shutil
 import unittest
 from pathlib import Path
 
-from copilot_commander.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
-from copilot_commander.adapters.sqlite_replay_annotations import (
+from muxdeck.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
+from muxdeck.adapters.sqlite_replay_annotations import (
     SqliteReplayAnnotationsRepository,
 )
-from copilot_commander.config import AppConfig, PathsConfig
-from copilot_commander.domain.replay_annotations import ReplayAnnotation
+from muxdeck.config import AppConfig, PathsConfig
+from muxdeck.domain.replay_annotations import ReplayAnnotation
 
 
 class SqliteReplayAnnotationsRepositoryTests(unittest.TestCase):

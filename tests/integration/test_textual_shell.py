@@ -10,9 +10,9 @@ from typing import Any, Literal, cast
 import pytest
 from textual.widgets import Input
 
-from copilot_commander.adapters.pane_stream import PaneStreamAdapter
-from copilot_commander.app import CommanderApp, CommanderRuntime
-from copilot_commander.controllers import (
+from muxdeck.adapters.pane_stream import PaneStreamAdapter
+from muxdeck.app import MuxdeckApp, MuxdeckRuntime
+from muxdeck.controllers import (
     DashboardAgentListItemView,
     DashboardAlertView,
     DashboardFilterState,
@@ -39,11 +39,11 @@ from copilot_commander.controllers import (
     WorktreeStartAgentIntent,
     WorktreeSummaryView,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.models import Session
-from copilot_commander.services import SetupCheck, SetupDoctorReport, TmuxSocketOption
-from copilot_commander.services.action_service import WindowChoice
-from copilot_commander.widgets.live_pane_viewer import LivePaneViewer
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.models import Session
+from muxdeck.services import SetupCheck, SetupDoctorReport, TmuxSocketOption
+from muxdeck.services.action_service import WindowChoice
+from muxdeck.widgets.live_pane_viewer import LivePaneViewer
 
 
 class FakeConfig:
@@ -1255,7 +1255,7 @@ def rendered_text(widget: object) -> str:
 @pytest.mark.asyncio
 async def test_textual_shell_navigation_and_updates() -> None:
     runtime = FakeRuntime()
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
     try:
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -1381,7 +1381,7 @@ async def test_textual_shell_navigation_and_updates() -> None:
 
             app.action_show_help()
             await pilot.pause()
-            assert "Copilot Commander" in rendered_text(app.screen.query_one("#help-content"))
+            assert "Muxdeck" in rendered_text(app.screen.query_one("#help-content"))
 
             app.action_show_setup()
             await pilot.pause()
@@ -1393,7 +1393,7 @@ async def test_textual_shell_navigation_and_updates() -> None:
 @pytest.mark.asyncio
 async def test_dashboard_live_viewer_and_move_window_use_single_pane_flow() -> None:
     runtime = FakeRuntime()
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
 
     try:
         async with app.run_test() as pilot:
@@ -1446,7 +1446,7 @@ async def test_dashboard_live_viewer_prefers_nested_tmux_target_when_available()
         },
     )()
     runtime.session_resolver = resolver
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
 
     try:
         async with app.run_test() as pilot:
@@ -1466,7 +1466,7 @@ async def test_dashboard_live_viewer_prefers_nested_tmux_target_when_available()
 async def test_worktrees_launch_uses_default_model_hint_when_actions_lack_helper() -> None:
     runtime = FakeRuntime()
     cast(Any, runtime).actions = object()
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
 
     try:
         async with app.run_test() as pilot:
@@ -1490,7 +1490,7 @@ async def test_worktrees_launch_uses_default_model_hint_when_actions_lack_helper
 @pytest.mark.asyncio
 async def test_sessions_live_viewer_uses_mirror_only_screen() -> None:
     runtime = FakeRuntime()
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
 
     try:
         async with app.run_test() as pilot:
@@ -1527,7 +1527,7 @@ async def test_sessions_live_viewer_prefers_nested_tmux_target_when_available() 
         },
     )()
     runtime.session_resolver = resolver
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
 
     try:
         async with app.run_test() as pilot:
@@ -1548,7 +1548,7 @@ async def test_sessions_live_viewer_prefers_nested_tmux_target_when_available() 
 @pytest.mark.asyncio
 async def test_sessions_screen_open_replay_uses_selected_session() -> None:
     runtime = FakeRuntime()
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
 
     try:
         async with app.run_test() as pilot:
@@ -1575,7 +1575,7 @@ async def test_copy_details_shortcuts_copy_current_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = FakeRuntime()
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
     copied: list[str] = []
     monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
 
@@ -1631,7 +1631,7 @@ async def test_sessions_screen_uses_sync_store_for_worker_load() -> None:
     runtime = FakeRuntime()
     runtime.store = ThreadBoundFakeStore()
     runtime.sync_store = FakeStore()
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
 
     try:
         async with app.run_test() as pilot:
@@ -1704,7 +1704,7 @@ async def test_sessions_screen_coalesces_refresh_requests_while_loading() -> Non
     runtime = FakeRuntime()
     controller = BlockingSessionsController(runtime.sessions_ctrl)
     runtime.sessions_ctrl = cast(Any, controller)
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
 
     try:
         async with app.run_test() as pilot:
@@ -1740,7 +1740,7 @@ async def test_sessions_screen_coalesces_refresh_requests_while_loading() -> Non
 @pytest.mark.asyncio
 async def test_replay_and_sessions_skip_duplicate_initial_show_refresh() -> None:
     runtime = FakeRuntime()
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
 
     try:
         async with app.run_test() as pilot:
@@ -1786,7 +1786,7 @@ async def test_replay_and_sessions_skip_duplicate_initial_show_refresh() -> None
 @pytest.mark.asyncio
 async def test_worktrees_screen_can_create_and_select_existing_worktrees() -> None:
     runtime = FakeRuntime()
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
     try:
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -1825,7 +1825,7 @@ async def test_worktrees_screen_can_create_and_select_existing_worktrees() -> No
 @pytest.mark.asyncio
 async def test_worktrees_screen_refreshes_after_prune_and_delete() -> None:
     runtime = FakeRuntime()
-    app = CommanderApp(cast(CommanderRuntime, runtime))
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
     try:
         async with app.run_test() as pilot:
             await pilot.pause()

@@ -17,9 +17,9 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 if TYPE_CHECKING:
-    from copilot_commander.app import CommanderRuntime
+    from muxdeck.app import MuxdeckRuntime
 
-from copilot_commander.controllers.fleet_controller import (
+from muxdeck.controllers.fleet_controller import (
     FleetAgentSummaryView,
     FleetController,
     FleetFilterState,
@@ -35,9 +35,9 @@ from copilot_commander.controllers.fleet_controller import (
     FleetState,
     FleetStoryLaneView,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.screens.fleet import FleetScreen
-from copilot_commander.widgets.fleet import FleetStoryLanesPanel
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.screens.fleet import FleetScreen
+from muxdeck.widgets.fleet import FleetStoryLanesPanel
 
 _TS = datetime(2025, 2, 1, 12, tzinfo=UTC)
 
@@ -266,7 +266,7 @@ class _FleetApp(App[None]):
     ) -> None:
         super().__init__()
         self._screen = FleetScreen(
-            cast("CommanderRuntime", _FakeRuntime()),
+            cast("MuxdeckRuntime", _FakeRuntime()),
             controller=cast("FleetController", controller),
             worker_controller=cast("FleetController", worker_controller),
         )

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.services.operator_status_service import (
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.services.operator_status_service import (
     OperatorStatusKind,
     describe_operator_status,
 )

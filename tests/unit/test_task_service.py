@@ -5,10 +5,10 @@ from __future__ import annotations
 import unittest
 from datetime import UTC, datetime, timedelta
 
-from copilot_commander.domain.enums import TaskPriority, TaskStatus
-from copilot_commander.domain.task_models import Task
-from copilot_commander.exceptions import DomainValidationError, PersistenceError
-from copilot_commander.services.task_service import TaskService
+from muxdeck.domain.enums import TaskPriority, TaskStatus
+from muxdeck.domain.task_models import Task
+from muxdeck.exceptions import DomainValidationError, PersistenceError
+from muxdeck.services.task_service import TaskService
 
 
 class _FakeTaskStore:

@@ -14,7 +14,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.adapters.git_adapter import (
+from muxdeck.adapters.git_adapter import (
     GitRepositorySnapshot,
     GitWorktreeCreateOutcome,
     GitWorktreeCreateRequest,
@@ -22,10 +22,10 @@ from copilot_commander.adapters.git_adapter import (
     GitWorktreePruneOutcome,
     GitWorktreeRemoveOutcome,
 )
-from copilot_commander.adapters.sqlite_store import SessionContextRecord
-from copilot_commander.config import AppConfig
-from copilot_commander.domain.models import Agent, Worktree
-from copilot_commander.services.worktree_service import (
+from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.config import AppConfig
+from muxdeck.domain.models import Agent, Worktree
+from muxdeck.services.worktree_service import (
     WorktreeService,
 )
 

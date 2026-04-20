@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from typing import cast
 
-from copilot_commander.parsers.tmux_parser import parse_tmux_list_panes_output
+from muxdeck.parsers.tmux_parser import parse_tmux_list_panes_output
 
 
 class TmuxParserTests(unittest.TestCase):

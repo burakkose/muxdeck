@@ -7,9 +7,9 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from copilot_commander.adapters.git_adapter import GitAdapter, GitWorktreeCreateRequest
-from copilot_commander.domain.value_objects import CommandResult
-from copilot_commander.exceptions import CommandError, GitCommandError
+from muxdeck.adapters.git_adapter import GitAdapter, GitWorktreeCreateRequest
+from muxdeck.domain.value_objects import CommandResult
+from muxdeck.exceptions import CommandError, GitCommandError
 
 
 class FakeRunner:

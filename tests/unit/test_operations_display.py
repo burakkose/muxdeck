@@ -13,11 +13,11 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.controllers import OperationsAction, OperationsActionPreview
-from copilot_commander.controllers.dashboard_controller import DashboardAgentListItemView
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.services.operations_service import OperationAuditEntry
-from copilot_commander.widgets.operations import (
+from muxdeck.controllers import OperationsAction, OperationsActionPreview
+from muxdeck.controllers.dashboard_controller import DashboardAgentListItemView
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.services.operations_service import OperationAuditEntry
+from muxdeck.widgets.operations import (
     BulkActionPreviewPanel,
     OperationsAgentListPanel,
     OperationsHistoryPanel,

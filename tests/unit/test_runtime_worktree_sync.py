@@ -16,17 +16,17 @@ if str(SRC_ROOT) not in sys.path:
 
 from typing import Never
 
-from copilot_commander.adapters.copilot_adapter import CopilotCommandDetection
-from copilot_commander.services.discovery_service import (
+from muxdeck.adapters.copilot_adapter import CopilotCommandDetection
+from muxdeck.services.discovery_service import (
     DiscoveryPaneSnapshot,
     PaneDiscovery,
     PaneDiscoveryReport,
 )
-from copilot_commander.services.monitoring_service import (
+from muxdeck.services.monitoring_service import (
     MonitoringDiscovery,
     MonitoringReport,
 )
-from copilot_commander.services.runtime_service import RuntimeSynchronizer
+from muxdeck.services.runtime_service import RuntimeSynchronizer
 
 
 class FakeDiscovery:

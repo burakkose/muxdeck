@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from copilot_commander import theme
+from muxdeck import theme
 
 
 def test_ayu_backgrounds_are_hex_strings() -> None:
@@ -68,7 +68,7 @@ def test_ayu_mirage_core_palette_matches_expected() -> None:
 
 
 def test_status_constants_cover_all_statuses() -> None:
-    from copilot_commander.domain.enums import AgentStatus
+    from muxdeck.domain.enums import AgentStatus
 
     expected = {
         AgentStatus.RUNNING: theme.STATUS_RUNNING,

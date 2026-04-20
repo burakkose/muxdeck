@@ -9,13 +9,13 @@ import shutil
 import sqlite3
 import unittest
 
-from copilot_commander.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
-from copilot_commander.config import AppConfig, PathsConfig
-from copilot_commander.domain.enums import AgentStatus, TaskPriority, TaskStatus
-from copilot_commander.domain.events import Event, LogChunk
-from copilot_commander.domain.models import Agent, Session, Worktree
-from copilot_commander.domain.task_models import Task
-from copilot_commander.exceptions import PersistenceError
+from muxdeck.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
+from muxdeck.config import AppConfig, PathsConfig
+from muxdeck.domain.enums import AgentStatus, TaskPriority, TaskStatus
+from muxdeck.domain.events import Event, LogChunk
+from muxdeck.domain.models import Agent, Session, Worktree
+from muxdeck.domain.task_models import Task
+from muxdeck.exceptions import PersistenceError
 
 
 class SQLiteStoreTests(unittest.TestCase):
@@ -58,7 +58,7 @@ class SQLiteStoreTests(unittest.TestCase):
             worktree_path="/repo/worktrees/task",
             branch="task/sqlite-store",
             task_title="SQLite store",
-            task_summary="Persist commander state",
+            task_summary="Persist muxdeck state",
             copilot_session_id="copilot-123",
             pid=4321,
             status=AgentStatus.RUNNING,
@@ -105,7 +105,7 @@ class SQLiteStoreTests(unittest.TestCase):
         return Task(
             id="task-123",
             title="SQLite store task",
-            summary="Persist commander state",
+            summary="Persist muxdeck state",
             description="Create a first-class task record",
             repo_root="/repo",
             priority=TaskPriority.HIGH,

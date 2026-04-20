@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from copilot_commander.controllers.sessions_controller import SessionDetailView
-from copilot_commander.widgets.sessions import SessionActionBar, SessionDetailPanel
+from muxdeck.controllers.sessions_controller import SessionDetailView
+from muxdeck.widgets.sessions import SessionActionBar, SessionDetailPanel
 
 
 class _WidgetWithRender(Protocol):

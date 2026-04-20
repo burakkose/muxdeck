@@ -1,4 +1,4 @@
-# Copilot repository instructions for `copilot-commander`
+# Copilot repository instructions for `muxdeck`
 
 This repository is being developed toward **Python 3.14+** and a **Textual-based TUI**. Optimize for correctness, determinism, and maintainability over speed. If packaging metadata temporarily lags behind this direction, do not change unrelated ownership files just to reconcile it; instead, write clean forward-compatible code where feasible and note the mismatch.
 

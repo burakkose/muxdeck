@@ -14,18 +14,18 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from copilot_commander.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
-from copilot_commander.adapters.sqlite_replay_annotations import (
+from muxdeck.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
+from muxdeck.adapters.sqlite_replay_annotations import (
     SqliteReplayAnnotationsRepository,
 )
-from copilot_commander.config import AppConfig, PathsConfig
-from copilot_commander.controllers.replay_controller import ReplayController
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.domain.events import Event
-from copilot_commander.domain.models import Agent, Worktree
-from copilot_commander.services.annotations_service import AnnotationsService
-from copilot_commander.services.replay_service import ReplayService
-from copilot_commander.services.session_service import SessionService
+from muxdeck.config import AppConfig, PathsConfig
+from muxdeck.controllers.replay_controller import ReplayController
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.domain.events import Event
+from muxdeck.domain.models import Agent, Worktree
+from muxdeck.services.annotations_service import AnnotationsService
+from muxdeck.services.replay_service import ReplayService
+from muxdeck.services.session_service import SessionService
 
 
 class ReplayControllerTests(unittest.TestCase):
@@ -294,8 +294,8 @@ class ReplayControllerTests(unittest.TestCase):
             self.assertIsNone(entry.agent_label)
 
     def test_load_multi_state_populates_agent_label_and_agent_ids(self) -> None:
-        from copilot_commander.domain.enums import AgentStatus
-        from copilot_commander.domain.models import Agent
+        from muxdeck.domain.enums import AgentStatus
+        from muxdeck.domain.models import Agent
 
         self.store.upsert_agent(
             Agent(
@@ -373,7 +373,7 @@ class ReplayControllerTests(unittest.TestCase):
     def test_apply_playback_updates_selected_index_and_view(self) -> None:
         from datetime import timedelta
 
-        from copilot_commander.services.playback_controller import (
+        from muxdeck.services.playback_controller import (
             SPEED_DOUBLE,
             PlaybackState,
         )

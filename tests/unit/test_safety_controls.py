@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from copilot_commander.controllers.agent_controller import (
+from muxdeck.controllers.agent_controller import (
     AgentIntentView,
     AgentTargetView,
 )
-from copilot_commander.domain.enums import AgentStatus
-from copilot_commander.services.action_service import (
+from muxdeck.domain.enums import AgentStatus
+from muxdeck.services.action_service import (
     ActionResult,
     TmuxActionService,
 )
