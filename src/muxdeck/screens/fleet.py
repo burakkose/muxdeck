@@ -149,6 +149,7 @@ class FleetScreen(ShellScreen):
         self.run_worker(_load, thread=True, exclusive=True, name=_WORKER_NAME)
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        super().on_worker_state_changed(event)
         if event.worker.name != _WORKER_NAME:
             return
         if event.state == WorkerState.ERROR:

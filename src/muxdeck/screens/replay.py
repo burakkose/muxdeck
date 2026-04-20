@@ -213,6 +213,7 @@ class ReplayScreen(ShellScreen):
         self.run_worker(_load, thread=True, exclusive=True, name="replay_load")
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        super().on_worker_state_changed(event)
         if event.worker.name != "replay_load":
             return
         if event.state == WorkerState.ERROR:

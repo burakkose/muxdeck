@@ -26,6 +26,9 @@ class ShellScreen(Screen[None]):
         super().__init__()
         self.runtime = runtime
         self._status = "ready"
+        # Count of active workers spawned by this screen so we can show a
+        # reactive "● working" indicator without polling.
+        self._active_workers: int = 0
 
     def compose(self) -> ComposeResult:
         yield TabBar(
@@ -154,3 +157,30 @@ class ShellScreen(Screen[None]):
         for widget in widgets:
             with contextlib.suppress(Exception):
                 widget.loading = False  # type: ignore[attr-defined]
+
+    # ── reactive busy indicator ───────────────────────────────────────
+    # Track worker activity from a single seam so subclasses don't have
+    # to manage the footer indicator themselves. Subclasses that override
+    # ``on_worker_state_changed`` MUST call ``super().on_worker_state_changed(event)``
+    # so this counter stays accurate.
+
+    def on_worker_state_changed(self, event: events.Event) -> None:
+        # Imported lazily to avoid a hard dep on textual.worker at import.
+        from textual.worker import WorkerState
+
+        state = getattr(getattr(event, "worker", None), "state", None)
+        if state is WorkerState.RUNNING:
+            self._active_workers += 1
+        elif state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
+            if self._active_workers > 0:
+                self._active_workers -= 1
+        else:
+            return
+        self._sync_busy_indicator()
+
+    def _sync_busy_indicator(self) -> None:
+        if not self.is_mounted:
+            return
+        with contextlib.suppress(Exception):
+            footer = self.query_one(KeyHintFooter)
+            footer.busy = self._active_workers > 0

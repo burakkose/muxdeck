@@ -247,6 +247,7 @@ class WorktreesScreen(ShellScreen):
         self.run_worker(_load, thread=True, exclusive=True, name=_DETAIL_WORKER_NAME)
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        super().on_worker_state_changed(event)
         name = event.worker.name
         if name == _DETAIL_WORKER_NAME:
             if event.state != WorkerState.SUCCESS:

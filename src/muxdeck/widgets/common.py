@@ -291,6 +291,7 @@ class KeyHintFooter(Static):
     status = reactive("ready")
     hints: reactive[tuple[KeyHint, ...]] = reactive(())
     focus_label = reactive("")
+    busy = reactive(False)
 
     def __init__(
         self,
@@ -307,7 +308,12 @@ class KeyHintFooter(Static):
         preferences = resolve_ui_preferences(self)
         separator = pipe_separator(preferences)
         footer = Text()
-        footer.append(f" {self.status}", style=FG3)
+        if self.busy:
+            footer.append(" ● working", style=f"bold {ORANGE}")
+            footer.append(separator, style=FG4)
+            footer.append(self.status, style=FG3)
+        else:
+            footer.append(f" {self.status}", style=FG3)
         if self.focus_label:
             footer.append(separator, style=FG4)
             footer.append("focus ", style=FG4)
