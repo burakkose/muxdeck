@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal, Protocol
@@ -27,6 +28,11 @@ _ACTIVE_AGENT_STATUSES = {
     AgentStatus.STARTING,
     AgentStatus.DISCOVERED,
     AgentStatus.UNKNOWN,
+}
+
+_ERROR_AGENT_STATUSES = {
+    AgentStatus.ERROR,
+    AgentStatus.DEAD,
 }
 
 
@@ -110,6 +116,9 @@ class FleetRepoGroupView:
     token_total: int
     estimated_cost_usd: Decimal | None
     agents: tuple[FleetAgentSummaryView, ...]
+    open_session_count: int = 0
+    local_session_count: int = 0
+    unclosed_local_session_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +149,31 @@ class FleetRecentActivityView:
     title: str
     detail: str
     severity: FleetSeverity
+    repo_key: str | None = None
+    repo_label: str | None = None
+    story_key: str | None = None
+    story_label: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FleetLocalSessionView:
+    session_id: str
+    repo_key: str
+    repo_label: str
+    repo_root: str | None
+    summary: str
+    branch: str
+    worktree_name: str
+    origin: str
+    updated_at: datetime | None
+    last_event_at: datetime | None
+    last_event_type: str | None
+    checkpoint_count: int
+    is_cleanly_closed: bool
+    is_orphan: bool
+    linked_agent_id: str | None
+    linked_agent_name: str | None
+    token_total: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +200,43 @@ class FleetResourceView:
 
 
 @dataclass(frozen=True, slots=True)
+class FleetStoryLaneView:
+    story_key: str
+    story_label: str
+    repo_keys: tuple[str, ...]
+    repo_labels: tuple[str, ...]
+    agent_ids: tuple[str, ...]
+    session_ids: tuple[str, ...]
+    local_session_ids: tuple[str, ...]
+    live_agent_count: int
+    waiting_agent_count: int
+    attention_count: int
+    blocked_count: int
+    open_session_count: int
+    local_session_count: int
+    orphan_local_session_count: int
+    inbox_count: int
+    latest_update_at: datetime
+    next_action: str
+
+
+@dataclass(frozen=True, slots=True)
+class FleetInboxItemView:
+    story_key: str
+    story_label: str
+    repo_label: str
+    source_kind: str
+    source_label: str
+    reason: str
+    occurred_at: datetime
+    severity: FleetSeverity
+    suggested_action: str
+    agent_id: str | None = None
+    session_id: str | None = None
+    local_session_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class FleetState:
     generated_at: datetime
     filters: FleetFilterState
@@ -178,6 +249,9 @@ class FleetState:
     search_hits: tuple[FleetSearchHitView, ...]
     search_helpers: tuple[FleetSearchHelperView, ...]
     resources: tuple[FleetResourceView, ...]
+    local_sessions: tuple[FleetLocalSessionView, ...] = ()
+    story_lanes: tuple[FleetStoryLaneView, ...] = ()
+    response_inbox: tuple[FleetInboxItemView, ...] = ()
 
 
 @dataclass(slots=True)
@@ -191,6 +265,30 @@ class _AgentContext:
     repo_label: str
     repo_root: str | None
     worktree: Worktree | None
+
+
+@dataclass(frozen=True, slots=True)
+class _StoryIdentity:
+    key: str
+    label: str
+
+
+@dataclass(slots=True)
+class _StoryAggregate:
+    label: str
+    repo_keys: set[str] = field(default_factory=set)
+    repo_labels: set[str] = field(default_factory=set)
+    agent_ids: set[str] = field(default_factory=set)
+    session_ids: set[str] = field(default_factory=set)
+    local_session_ids: set[str] = field(default_factory=set)
+    live_agent_count: int = 0
+    waiting_agent_count: int = 0
+    attention_count: int = 0
+    blocked_count: int = 0
+    open_session_count: int = 0
+    local_session_count: int = 0
+    orphan_local_session_count: int = 0
+    latest_update_at: datetime = field(default_factory=lambda: datetime.min.replace(tzinfo=UTC))
 
 
 class FleetController:
@@ -239,43 +337,130 @@ class FleetController:
             )
             for agent in agents
         )
+        repo_lookup = {context.agent.id: context for context in agent_contexts}
+        session_repos = {
+            session.id: _repo_identity_for_session(
+                session,
+                contexts.get(session.id),
+                repo_lookup,
+            )
+            for session in sessions
+        }
+        session_search_blobs = {
+            session.id: _search_blob_for_session(session, contexts.get(session.id))
+            for session in sessions
+        }
+        worktree_repo_keys = {
+            worktree.id: _repo_identity(repo_root=worktree.repo_root)[0] for worktree in worktrees
+        }
+        event_repo_keys = {
+            event.id: _repo_key_for_event(event, session_repos, repo_lookup) for event in events
+        }
         agent_views = tuple(self._build_agent_view(item) for item in agent_contexts)
-        visible_agents = self._filter_agents(agent_views, applied_filters)
-        groups = self._build_groups(
-            visible_agents=visible_agents,
-            all_worktrees=worktrees,
-            sessions=sessions,
-            contexts=contexts,
+        local_session_views = self._build_local_session_views(
             local_sessions=local_sessions,
-            linked_local_session_ids=_linked_local_session_ids(sessions, agents),
-            repo_lookup={context.agent.id: context for context in agent_contexts},
+            agents=agents,
+            sessions=sessions,
+            repo_lookup=repo_lookup,
         )
-        orphan_local_sessions = _orphan_local_sessions(local_sessions, sessions, agents)
+        visible_local_sessions = self._filter_local_sessions(local_session_views, applied_filters)
+        visible_agents = self._filter_agents(agent_views, applied_filters)
+        visible_repo_keys = self._visible_repo_keys(
+            filters=applied_filters,
+            all_agents=agent_views,
+            visible_agents=visible_agents,
+            worktrees=worktrees,
+            sessions=sessions,
+            session_repos=session_repos,
+            session_search_blobs=session_search_blobs,
+            worktree_repo_keys=worktree_repo_keys,
+            local_sessions=visible_local_sessions,
+        )
+        scoped_agents = tuple(
+            agent for agent in visible_agents if agent.repo_key in visible_repo_keys
+        )
+        scoped_worktrees = tuple(
+            worktree
+            for worktree in worktrees
+            if worktree_repo_keys[worktree.id] in visible_repo_keys
+        )
+        scoped_sessions = tuple(
+            session for session in sessions if session_repos[session.id][0] in visible_repo_keys
+        )
+        scoped_events = tuple(
+            event for event in events if event_repo_keys[event.id] in visible_repo_keys
+        )
+        scoped_local_sessions = tuple(
+            session for session in visible_local_sessions if session.repo_key in visible_repo_keys
+        )
+        groups = self._build_groups(
+            visible_agents=scoped_agents,
+            all_worktrees=scoped_worktrees,
+            sessions=scoped_sessions,
+            session_repos=session_repos,
+            local_sessions=scoped_local_sessions,
+            visible_repo_keys=visible_repo_keys,
+        )
+        open_scoped_sessions = tuple(
+            session for session in scoped_sessions if session.ended_at is None
+        )
+        agent_story_map, session_story_map, local_story_map = self._build_story_maps(
+            agents=scoped_agents,
+            sessions=scoped_sessions,
+            session_repos=session_repos,
+            local_sessions=scoped_local_sessions,
+        )
+        response_inbox = self._build_response_inbox(
+            agents=scoped_agents,
+            sessions=open_scoped_sessions,
+            local_sessions=scoped_local_sessions,
+            session_repos=session_repos,
+            agent_story_map=agent_story_map,
+            session_story_map=session_story_map,
+            local_story_map=local_story_map,
+        )
+        story_lanes = self._build_story_lanes(
+            agents=scoped_agents,
+            sessions=open_scoped_sessions,
+            local_sessions=scoped_local_sessions,
+            session_repos=session_repos,
+            agent_story_map=agent_story_map,
+            session_story_map=session_story_map,
+            local_story_map=local_story_map,
+            response_inbox=response_inbox,
+        )
+        orphan_local_sessions = tuple(
+            session for session in scoped_local_sessions if session.is_orphan
+        )
         return FleetState(
             generated_at=now,
             filters=applied_filters,
             total_visible_agents=len(visible_agents),
             total_groups=len(groups),
             health=self._build_health(
-                agents=agent_views,
-                worktrees=worktrees,
+                agents=scoped_agents,
+                worktrees=scoped_worktrees,
                 orphan_local_sessions=orphan_local_sessions,
             ),
             groups=groups,
             history_metrics=self._build_history_metrics(
                 now=now,
-                agents=agent_views,
-                worktrees=worktrees,
-                sessions=sessions,
-                events=events,
+                agents=scoped_agents,
+                worktrees=scoped_worktrees,
+                sessions=scoped_sessions,
+                events=scoped_events,
                 orphan_local_sessions=orphan_local_sessions,
                 groups=groups,
             ),
             recent_activity=self._build_recent_activity(
-                events=events,
-                sessions=sessions,
-                agents=agents,
-                local_sessions=local_sessions,
+                events=scoped_events,
+                sessions=scoped_sessions,
+                local_sessions=scoped_local_sessions,
+                session_repos=session_repos,
+                repo_lookup=repo_lookup,
+                agent_story_map=agent_story_map,
+                session_story_map=session_story_map,
+                local_story_map=local_story_map,
                 limit=activity_limit,
             ),
             search_hits=self._build_search_hits(
@@ -284,22 +469,25 @@ class FleetController:
                 worktrees=worktrees,
                 sessions=sessions,
                 contexts=contexts,
-                local_sessions=local_sessions,
+                local_sessions=visible_local_sessions,
                 limit=search_limit,
             ),
             search_helpers=self._build_search_helpers(
-                agents=agent_views,
-                worktrees=worktrees,
+                agents=scoped_agents,
+                worktrees=scoped_worktrees,
                 orphan_local_sessions=orphan_local_sessions,
                 groups=groups,
             ),
             resources=self._build_resources(
-                agents=agent_views,
-                worktrees=worktrees,
-                local_sessions=local_sessions,
+                agents=scoped_agents,
+                worktrees=scoped_worktrees,
+                local_sessions=scoped_local_sessions,
                 orphan_local_sessions=orphan_local_sessions,
                 groups=groups,
             ),
+            local_sessions=scoped_local_sessions,
+            story_lanes=story_lanes,
+            response_inbox=response_inbox,
         )
 
     def _build_agent_context(
@@ -424,6 +612,104 @@ class FleetController:
             estimated_cost_usd=item.agent.estimated_cost_usd,
         )
 
+    def _build_local_session_views(
+        self,
+        *,
+        local_sessions: Sequence[CopilotLocalSession],
+        agents: Sequence[Agent],
+        sessions: Sequence[Session],
+        repo_lookup: dict[str, _AgentContext],
+    ) -> tuple[FleetLocalSessionView, ...]:
+        linked_ids = _linked_local_session_ids(sessions, agents)
+        agent_by_id = {agent.id: agent for agent in agents}
+        linked_agent_by_local_session_id: dict[str, Agent] = {}
+        for agent in agents:
+            if agent.copilot_session_id is not None:
+                linked_agent_by_local_session_id.setdefault(agent.copilot_session_id, agent)
+        for session in sessions:
+            if (
+                session.copilot_session_id is None
+                or session.copilot_session_id in linked_agent_by_local_session_id
+            ):
+                continue
+            linked_agent = agent_by_id.get(session.agent_id)
+            if linked_agent is not None:
+                linked_agent_by_local_session_id[session.copilot_session_id] = linked_agent
+
+        views = [
+            _local_session_view(
+                session,
+                linked_agent=linked_agent_by_local_session_id.get(session.session_id),
+                repo_lookup=repo_lookup,
+                is_orphan=session.session_id not in linked_ids,
+            )
+            for session in local_sessions
+        ]
+        return tuple(sorted(views, key=_fleet_local_session_sort_key, reverse=True))
+
+    def _visible_repo_keys(
+        self,
+        *,
+        filters: FleetFilterState,
+        all_agents: Sequence[FleetAgentSummaryView],
+        visible_agents: Sequence[FleetAgentSummaryView],
+        worktrees: Sequence[Worktree],
+        sessions: Sequence[Session],
+        session_repos: dict[str, tuple[str | None, str | None, str | None]],
+        session_search_blobs: dict[str, str],
+        worktree_repo_keys: dict[str, str],
+        local_sessions: Sequence[FleetLocalSessionView],
+    ) -> frozenset[str]:
+        query = filters.normalized_query()
+        repo_keys = {agent.repo_key for agent in visible_agents}
+        if query is not None:
+            for worktree in worktrees:
+                if query in _search_blob_for_worktree(worktree):
+                    repo_keys.add(worktree_repo_keys[worktree.id])
+            for session in sessions:
+                repo_key, _, _ = session_repos[session.id]
+                if repo_key is None or query not in session_search_blobs[session.id]:
+                    continue
+                repo_keys.add(repo_key)
+            for local_session in local_sessions:
+                if query in _search_blob_for_local_session(local_session):
+                    repo_keys.add(local_session.repo_key)
+        else:
+            for worktree in worktrees:
+                if worktree.is_dirty or worktree.locked:
+                    repo_keys.add(worktree_repo_keys[worktree.id])
+            if not filters.attention_only:
+                for session in sessions:
+                    if session.ended_at is not None:
+                        continue
+                    repo_key, _, _ = session_repos[session.id]
+                    if repo_key is not None:
+                        repo_keys.add(repo_key)
+            for local_session in local_sessions:
+                if local_session.is_orphan or not local_session.is_cleanly_closed:
+                    repo_keys.add(local_session.repo_key)
+
+        if not filters.attention_only:
+            return frozenset(repo_keys)
+        attention_repo_keys = {agent.repo_key for agent in all_agents if agent.needs_attention}
+        worktree_attention_repo_keys = {
+            worktree_repo_keys[worktree.id]
+            for worktree in worktrees
+            if worktree.is_dirty or worktree.locked
+        }
+        local_attention_repo_keys = {
+            session.repo_key
+            for session in local_sessions
+            if session.is_orphan or not session.is_cleanly_closed
+        }
+        return frozenset(
+            repo_key
+            for repo_key in repo_keys
+            if repo_key in attention_repo_keys
+            or repo_key in worktree_attention_repo_keys
+            or repo_key in local_attention_repo_keys
+        )
+
     def _filter_agents(
         self,
         agents: Sequence[FleetAgentSummaryView],
@@ -446,59 +732,342 @@ class FleetController:
             )
         )
 
+    def _filter_local_sessions(
+        self,
+        local_sessions: Sequence[FleetLocalSessionView],
+        filters: FleetFilterState,
+    ) -> tuple[FleetLocalSessionView, ...]:
+        if filters.include_completed:
+            return tuple(local_sessions)
+        return tuple(session for session in local_sessions if not session.is_cleanly_closed)
+
+    def _build_story_maps(
+        self,
+        *,
+        agents: Sequence[FleetAgentSummaryView],
+        sessions: Sequence[Session],
+        session_repos: dict[str, tuple[str | None, str | None, str | None]],
+        local_sessions: Sequence[FleetLocalSessionView],
+    ) -> tuple[
+        dict[str, _StoryIdentity],
+        dict[str, _StoryIdentity],
+        dict[str, _StoryIdentity],
+    ]:
+        agent_story_map = {
+            agent.agent_id: _story_identity(
+                title=agent.task_title,
+                repo_key=agent.repo_key,
+                repo_label=agent.repo_label,
+            )
+            for agent in agents
+        }
+        session_story_map: dict[str, _StoryIdentity] = {}
+        for session in sessions:
+            story = agent_story_map.get(session.agent_id)
+            if story is None:
+                repo_key, repo_label, _ = session_repos[session.id]
+                story = _story_identity(
+                    title=session.task_title,
+                    repo_key=repo_key or "repo:unknown",
+                    repo_label=repo_label or "unassigned",
+                )
+            session_story_map[session.id] = story
+        local_story_map: dict[str, _StoryIdentity] = {}
+        for local_session in local_sessions:
+            story = (
+                agent_story_map.get(local_session.linked_agent_id)
+                if local_session.linked_agent_id is not None
+                else None
+            )
+            if story is None:
+                story = _story_identity(
+                    title=local_session.summary,
+                    repo_key=local_session.repo_key,
+                    repo_label=local_session.repo_label,
+                )
+            local_story_map[local_session.session_id] = story
+        return (agent_story_map, session_story_map, local_story_map)
+
+    def _build_response_inbox(
+        self,
+        *,
+        agents: Sequence[FleetAgentSummaryView],
+        sessions: Sequence[Session],
+        local_sessions: Sequence[FleetLocalSessionView],
+        session_repos: dict[str, tuple[str | None, str | None, str | None]],
+        agent_story_map: dict[str, _StoryIdentity],
+        session_story_map: dict[str, _StoryIdentity],
+        local_story_map: dict[str, _StoryIdentity],
+    ) -> tuple[FleetInboxItemView, ...]:
+        active_agent_ids = {
+            agent.agent_id for agent in agents if agent.status in _ACTIVE_AGENT_STATUSES
+        }
+        items: list[FleetInboxItemView] = []
+        for agent in agents:
+            story = agent_story_map[agent.agent_id]
+            if agent.status is AgentStatus.WAITING_INPUT:
+                items.append(
+                    FleetInboxItemView(
+                        story_key=story.key,
+                        story_label=story.label,
+                        repo_label=agent.repo_label,
+                        source_kind="agent",
+                        source_label=agent.name,
+                        reason=agent.attention_summary or "waiting for your reply",
+                        occurred_at=agent.last_update_at,
+                        severity="warning",
+                        suggested_action="reply",
+                        agent_id=agent.agent_id,
+                    )
+                )
+                continue
+            if agent.status in _ERROR_AGENT_STATUSES | {AgentStatus.BLOCKED}:
+                items.append(
+                    FleetInboxItemView(
+                        story_key=story.key,
+                        story_label=story.label,
+                        repo_label=agent.repo_label,
+                        source_kind="agent",
+                        source_label=agent.name,
+                        reason=agent.attention_summary or agent.status.value.replace("_", " "),
+                        occurred_at=agent.last_update_at,
+                        severity="error",
+                        suggested_action="unblock",
+                        agent_id=agent.agent_id,
+                    )
+                )
+                continue
+            if agent.needs_attention and agent.attention_summary is not None:
+                items.append(
+                    FleetInboxItemView(
+                        story_key=story.key,
+                        story_label=story.label,
+                        repo_label=agent.repo_label,
+                        source_kind="agent",
+                        source_label=agent.name,
+                        reason=agent.attention_summary,
+                        occurred_at=agent.last_update_at,
+                        severity="warning",
+                        suggested_action="review",
+                        agent_id=agent.agent_id,
+                    )
+                )
+        for session in sessions:
+            if session.agent_id in active_agent_ids:
+                continue
+            story = session_story_map[session.id]
+            repo_key, repo_label, _ = session_repos[session.id]
+            del repo_key
+            items.append(
+                FleetInboxItemView(
+                    story_key=story.key,
+                    story_label=story.label,
+                    repo_label=repo_label or "unassigned",
+                    source_kind="session",
+                    source_label=session.task_title or session.copilot_session_id or session.id,
+                    reason="tracked session is open without a visible live agent",
+                    occurred_at=session.created_at,
+                    severity="warning",
+                    suggested_action="resume",
+                    session_id=session.id,
+                )
+            )
+        for local_session in local_sessions:
+            story = local_story_map[local_session.session_id]
+            occurred_at = local_session.updated_at or local_session.last_event_at
+            if occurred_at is None:
+                continue
+            if local_session.is_orphan:
+                items.append(
+                    FleetInboxItemView(
+                        story_key=story.key,
+                        story_label=story.label,
+                        repo_label=local_session.repo_label,
+                        source_kind="local",
+                        source_label=local_session.summary,
+                        reason="orphan local session can be resumed or archived",
+                        occurred_at=occurred_at,
+                        severity="warning",
+                        suggested_action="recover",
+                        local_session_id=local_session.session_id,
+                    )
+                )
+                continue
+            if not local_session.is_cleanly_closed and local_session.linked_agent_id is not None:
+                items.append(
+                    FleetInboxItemView(
+                        story_key=story.key,
+                        story_label=story.label,
+                        repo_label=local_session.repo_label,
+                        source_kind="local",
+                        source_label=local_session.summary,
+                        reason="linked local session is still open on disk",
+                        occurred_at=occurred_at,
+                        severity="info",
+                        suggested_action="continue",
+                        local_session_id=local_session.session_id,
+                    )
+                )
+        return tuple(sorted(items, key=_fleet_inbox_sort_key))
+
+    def _build_story_lanes(
+        self,
+        *,
+        agents: Sequence[FleetAgentSummaryView],
+        sessions: Sequence[Session],
+        local_sessions: Sequence[FleetLocalSessionView],
+        session_repos: dict[str, tuple[str | None, str | None, str | None]],
+        agent_story_map: dict[str, _StoryIdentity],
+        session_story_map: dict[str, _StoryIdentity],
+        local_story_map: dict[str, _StoryIdentity],
+        response_inbox: Sequence[FleetInboxItemView],
+    ) -> tuple[FleetStoryLaneView, ...]:
+        aggregates: dict[str, _StoryAggregate] = {}
+
+        def ensure_story(story: _StoryIdentity) -> _StoryAggregate:
+            return aggregates.setdefault(story.key, _StoryAggregate(label=story.label))
+
+        for agent in agents:
+            story = agent_story_map[agent.agent_id]
+            aggregate = ensure_story(story)
+            aggregate.repo_keys.add(agent.repo_key)
+            aggregate.repo_labels.add(agent.repo_label)
+            aggregate.agent_ids.add(agent.agent_id)
+            aggregate.live_agent_count += 1
+            aggregate.attention_count += int(agent.needs_attention)
+            aggregate.waiting_agent_count += int(agent.status is AgentStatus.WAITING_INPUT)
+            aggregate.blocked_count += int(
+                agent.status in _ERROR_AGENT_STATUSES | {AgentStatus.BLOCKED}
+            )
+            aggregate.latest_update_at = max(aggregate.latest_update_at, agent.last_update_at)
+
+        for session in sessions:
+            story = session_story_map[session.id]
+            aggregate = ensure_story(story)
+            repo_key, repo_label, _ = session_repos[session.id]
+            if repo_key is not None:
+                aggregate.repo_keys.add(repo_key)
+            if repo_label is not None:
+                aggregate.repo_labels.add(repo_label)
+            aggregate.session_ids.add(session.id)
+            aggregate.open_session_count += 1
+            aggregate.latest_update_at = max(aggregate.latest_update_at, session.created_at)
+
+        for local_session in local_sessions:
+            story = local_story_map[local_session.session_id]
+            aggregate = ensure_story(story)
+            aggregate.repo_keys.add(local_session.repo_key)
+            aggregate.repo_labels.add(local_session.repo_label)
+            aggregate.local_session_ids.add(local_session.session_id)
+            aggregate.local_session_count += 1
+            if local_session.is_orphan:
+                aggregate.orphan_local_session_count += 1
+            aggregate.latest_update_at = max(
+                aggregate.latest_update_at,
+                _coalesce_datetime(local_session.updated_at, local_session.last_event_at),
+            )
+
+        inbox_counts: dict[str, int] = defaultdict(int)
+        for item in response_inbox:
+            inbox_counts[item.story_key] += 1
+
+        story_lanes = [
+            FleetStoryLaneView(
+                story_key=story_key,
+                story_label=aggregate.label,
+                repo_keys=tuple(sorted(aggregate.repo_keys)),
+                repo_labels=tuple(sorted(aggregate.repo_labels)),
+                agent_ids=tuple(sorted(aggregate.agent_ids)),
+                session_ids=tuple(sorted(aggregate.session_ids)),
+                local_session_ids=tuple(sorted(aggregate.local_session_ids)),
+                live_agent_count=aggregate.live_agent_count,
+                waiting_agent_count=aggregate.waiting_agent_count,
+                attention_count=aggregate.attention_count,
+                blocked_count=aggregate.blocked_count,
+                open_session_count=aggregate.open_session_count,
+                local_session_count=aggregate.local_session_count,
+                orphan_local_session_count=aggregate.orphan_local_session_count,
+                inbox_count=inbox_counts.get(story_key, 0),
+                latest_update_at=aggregate.latest_update_at,
+                next_action=_story_next_action(aggregate, inbox_counts.get(story_key, 0)),
+            )
+            for story_key, aggregate in aggregates.items()
+        ]
+        return tuple(sorted(story_lanes, key=_fleet_story_sort_key))
+
     def _build_groups(
         self,
         *,
         visible_agents: Sequence[FleetAgentSummaryView],
         all_worktrees: Sequence[Worktree],
         sessions: Sequence[Session],
-        contexts: dict[str, SessionContextRecord | None],
-        local_sessions: Sequence[CopilotLocalSession],
-        linked_local_session_ids: frozenset[str],
-        repo_lookup: dict[str, _AgentContext],
+        session_repos: dict[str, tuple[str | None, str | None, str | None]],
+        local_sessions: Sequence[FleetLocalSessionView],
+        visible_repo_keys: frozenset[str],
     ) -> tuple[FleetRepoGroupView, ...]:
-        visible_repo_keys = {agent.repo_key for agent in visible_agents}
         grouped_agents: dict[str, list[FleetAgentSummaryView]] = defaultdict(list)
+        repo_labels: dict[str, str] = {}
+        repo_roots: dict[str, str | None] = {}
+
+        def remember_repo(repo_key: str, repo_label: str, repo_root: str | None) -> None:
+            repo_labels.setdefault(repo_key, repo_label)
+            repo_roots.setdefault(repo_key, repo_root)
+
         for agent in visible_agents:
+            if visible_repo_keys and agent.repo_key not in visible_repo_keys:
+                continue
             grouped_agents[agent.repo_key].append(agent)
+            remember_repo(agent.repo_key, agent.repo_label, agent.repo_root)
 
         worktree_counts: dict[str, list[Worktree]] = defaultdict(list)
         for worktree in all_worktrees:
-            worktree_repo_key, _ = _repo_identity(repo_root=worktree.repo_root)
+            worktree_repo_key, worktree_repo_label = _repo_identity(repo_root=worktree.repo_root)
             if visible_repo_keys and worktree_repo_key not in visible_repo_keys:
                 continue
             worktree_counts[worktree_repo_key].append(worktree)
+            remember_repo(worktree_repo_key, worktree_repo_label, worktree.repo_root)
 
         session_counts: dict[str, set[str]] = defaultdict(set)
+        open_session_counts: dict[str, int] = defaultdict(int)
         for session in sessions:
-            context = contexts.get(session.id)
-            repo_key: str | None = None
-            if context is not None and context.repo_root is not None:
-                repo_key, _ = _repo_identity(repo_root=context.repo_root)
-            elif session.agent_id in repo_lookup:
-                repo_key = repo_lookup[session.agent_id].repo_key
+            repo_key, repo_label, repo_root = session_repos[session.id]
             if repo_key is None:
                 continue
             if visible_repo_keys and repo_key not in visible_repo_keys:
                 continue
             session_counts[repo_key].add(session.id)
+            if session.ended_at is None:
+                open_session_counts[repo_key] += 1
+            if repo_label is not None:
+                remember_repo(repo_key, repo_label, repo_root)
 
+        local_session_counts: dict[str, int] = defaultdict(int)
+        unclosed_local_counts: dict[str, int] = defaultdict(int)
         orphan_local_counts: dict[str, int] = defaultdict(int)
         for local_session in local_sessions:
-            if local_session.session_id in linked_local_session_ids:
-                continue
-            repo_key, _ = _repo_identity(
-                repo_root=(
-                    str(local_session.git_root) if local_session.git_root is not None else None
-                ),
-                repository=local_session.repository,
-            )
+            repo_key = local_session.repo_key
             if visible_repo_keys and repo_key not in visible_repo_keys:
                 continue
-            orphan_local_counts[repo_key] += 1
+            local_session_counts[repo_key] += 1
+            if not local_session.is_cleanly_closed:
+                unclosed_local_counts[repo_key] += 1
+            if local_session.is_orphan:
+                orphan_local_counts[repo_key] += 1
+            remember_repo(repo_key, local_session.repo_label, local_session.repo_root)
 
         group_views: list[FleetRepoGroupView] = []
-        for repo_key, agents in grouped_agents.items():
+        candidate_repo_keys = (
+            set(visible_repo_keys)
+            if visible_repo_keys
+            else (
+                set(grouped_agents)
+                | set(worktree_counts)
+                | set(session_counts)
+                | set(local_session_counts)
+            )
+        )
+        for repo_key in candidate_repo_keys:
+            agents = grouped_agents.get(repo_key, [])
             repo_worktrees = tuple(worktree_counts.get(repo_key, ()))
             costs = [
                 agent.estimated_cost_usd for agent in agents if agent.estimated_cost_usd is not None
@@ -506,10 +1075,8 @@ class FleetController:
             group_views.append(
                 FleetRepoGroupView(
                     repo_key=repo_key,
-                    repo_label=agents[0].repo_label,
-                    repo_root=next(
-                        (agent.repo_root for agent in agents if agent.repo_root is not None), None
-                    ),
+                    repo_label=repo_labels.get(repo_key, "unknown"),
+                    repo_root=repo_roots.get(repo_key),
                     agent_count=len(agents),
                     active_count=sum(
                         1 for agent in agents if agent.status in _ACTIVE_AGENT_STATUSES
@@ -533,13 +1100,16 @@ class FleetController:
                             ),
                         )
                     ),
+                    open_session_count=open_session_counts.get(repo_key, 0),
+                    local_session_count=local_session_counts.get(repo_key, 0),
+                    unclosed_local_session_count=unclosed_local_counts.get(repo_key, 0),
                 )
             )
         return tuple(
             sorted(
                 group_views,
                 key=lambda item: (
-                    -item.attention_count,
+                    -_group_attention_score(item),
                     -item.agent_count,
                     item.repo_label.lower(),
                 ),
@@ -551,7 +1121,7 @@ class FleetController:
         *,
         agents: Sequence[FleetAgentSummaryView],
         worktrees: Sequence[Worktree],
-        orphan_local_sessions: Sequence[CopilotLocalSession],
+        orphan_local_sessions: Sequence[FleetLocalSessionView],
     ) -> FleetHealthSummary:
         active_agents = sum(1 for agent in agents if agent.status in _ACTIVE_AGENT_STATUSES)
         attention_agents = sum(1 for agent in agents if agent.needs_attention)
@@ -593,7 +1163,7 @@ class FleetController:
         worktrees: Sequence[Worktree],
         sessions: Sequence[Session],
         events: Sequence[Event],
-        orphan_local_sessions: Sequence[CopilotLocalSession],
+        orphan_local_sessions: Sequence[FleetLocalSessionView],
         groups: Sequence[FleetRepoGroupView],
     ) -> tuple[FleetHistoryMetricView, ...]:
         cutoff = now - timedelta(hours=24)
@@ -627,13 +1197,36 @@ class FleetController:
         *,
         events: Sequence[Event],
         sessions: Sequence[Session],
-        agents: Sequence[Agent],
-        local_sessions: Sequence[CopilotLocalSession],
+        local_sessions: Sequence[FleetLocalSessionView],
+        session_repos: dict[str, tuple[str | None, str | None, str | None]],
+        repo_lookup: dict[str, _AgentContext],
+        agent_story_map: dict[str, _StoryIdentity],
+        session_story_map: dict[str, _StoryIdentity],
+        local_story_map: dict[str, _StoryIdentity],
         limit: int,
     ) -> tuple[FleetRecentActivityView, ...]:
-        agent_names = {agent.id: agent.name for agent in agents}
+        agent_names = {context.agent.id: context.agent.name for context in repo_lookup.values()}
+        session_lookup = {session.id: session for session in sessions}
         items: list[FleetRecentActivityView] = []
         for event in events:
+            repo_key: str | None = None
+            repo_label: str | None = None
+            story_key: str | None = None
+            story_label: str | None = None
+            if event.agent_id is not None and event.agent_id in repo_lookup:
+                repo_context = repo_lookup[event.agent_id]
+                repo_key = repo_context.repo_key
+                repo_label = repo_context.repo_label
+                story = agent_story_map.get(event.agent_id)
+                if story is not None:
+                    story_key = story.key
+                    story_label = story.label
+            elif event.session_id is not None and event.session_id in session_lookup:
+                repo_key, repo_label, _ = session_repos[event.session_id]
+                story = session_story_map.get(event.session_id)
+                if story is not None:
+                    story_key = story.key
+                    story_label = story.label
             items.append(
                 FleetRecentActivityView(
                     occurred_at=event.occurred_at,
@@ -642,15 +1235,25 @@ class FleetController:
                         event.agent_id or "", event.agent_id or event.session_id or "-"
                     ),
                     severity=_event_severity(event.severity),
+                    repo_key=repo_key,
+                    repo_label=repo_label,
+                    story_key=story_key,
+                    story_label=story_label,
                 )
             )
         for session in sessions:
+            repo_key, repo_label, _ = session_repos[session.id]
+            story = session_story_map.get(session.id)
             items.append(
                 FleetRecentActivityView(
                     occurred_at=session.created_at,
                     title="session started",
                     detail=session.task_title or session.copilot_session_id or session.id,
                     severity="info",
+                    repo_key=repo_key,
+                    repo_label=repo_label,
+                    story_key=story.key if story is not None else None,
+                    story_label=story.label if story is not None else None,
                 )
             )
             if session.ended_at is not None:
@@ -660,17 +1263,27 @@ class FleetController:
                         title="session ended",
                         detail=session.exit_reason or session.id,
                         severity="warning",
+                        repo_key=repo_key,
+                        repo_label=repo_label,
+                        story_key=story.key if story is not None else None,
+                        story_label=story.label if story is not None else None,
                     )
                 )
         for local_session in local_sessions:
-            if local_session.updated_at is None:
+            occurred_at = local_session.updated_at or local_session.last_event_at
+            if occurred_at is None:
                 continue
+            story = local_story_map.get(local_session.session_id)
             items.append(
                 FleetRecentActivityView(
-                    occurred_at=local_session.updated_at,
+                    occurred_at=occurred_at,
                     title="local session updated",
-                    detail=local_session.summary or local_session.session_id,
+                    detail=local_session.summary,
                     severity="info" if local_session.is_cleanly_closed else "warning",
+                    repo_key=local_session.repo_key,
+                    repo_label=local_session.repo_label,
+                    story_key=story.key if story is not None else None,
+                    story_label=story.label if story is not None else None,
                 )
             )
         return tuple(sorted(items, key=lambda item: item.occurred_at, reverse=True)[:limit])
@@ -683,7 +1296,7 @@ class FleetController:
         worktrees: Sequence[Worktree],
         sessions: Sequence[Session],
         contexts: dict[str, SessionContextRecord | None],
-        local_sessions: Sequence[CopilotLocalSession],
+        local_sessions: Sequence[FleetLocalSessionView],
         limit: int,
     ) -> tuple[FleetSearchHitView, ...]:
         if query is None:
@@ -733,8 +1346,11 @@ class FleetController:
                 hits.append(
                     FleetSearchHitView(
                         kind="local",
-                        title=local_session.summary or local_session.session_id,
-                        detail=f"{local_session.repository or '-'} · {local_session.branch or '-'}",
+                        title=local_session.summary,
+                        detail=(
+                            f"{local_session.repo_label} · {local_session.branch} · "
+                            f"{'orphan' if local_session.is_orphan else local_session.origin}"
+                        ),
                     )
                 )
         return tuple(hits[:limit])
@@ -744,7 +1360,7 @@ class FleetController:
         *,
         agents: Sequence[FleetAgentSummaryView],
         worktrees: Sequence[Worktree],
-        orphan_local_sessions: Sequence[CopilotLocalSession],
+        orphan_local_sessions: Sequence[FleetLocalSessionView],
         groups: Sequence[FleetRepoGroupView],
     ) -> tuple[FleetSearchHelperView, ...]:
         helpers: list[FleetSearchHelperView] = []
@@ -804,8 +1420,8 @@ class FleetController:
         *,
         agents: Sequence[FleetAgentSummaryView],
         worktrees: Sequence[Worktree],
-        local_sessions: Sequence[CopilotLocalSession],
-        orphan_local_sessions: Sequence[CopilotLocalSession],
+        local_sessions: Sequence[FleetLocalSessionView],
+        orphan_local_sessions: Sequence[FleetLocalSessionView],
         groups: Sequence[FleetRepoGroupView],
     ) -> tuple[FleetResourceView, ...]:
         dirty_worktree_count = sum(1 for worktree in worktrees if worktree.is_dirty)
@@ -817,7 +1433,7 @@ class FleetController:
             FleetResourceView(
                 label="repos",
                 value=str(len(groups)),
-                detail="active repo groupings in this view",
+                detail="visible repo buckets",
                 tone="healthy",
             ),
             FleetResourceView(
@@ -831,9 +1447,7 @@ class FleetController:
             FleetResourceView(
                 label="runtime",
                 value=str(len(agents)),
-                detail=(
-                    f"{session_link_count} session links · {active_status_count} active statuses"
-                ),
+                detail=f"{session_link_count} linked · {active_status_count} active",
                 tone="healthy",
             ),
             FleetResourceView(
@@ -880,6 +1494,20 @@ def _orphan_local_sessions(
     return tuple(session for session in local_sessions if session.session_id not in linked_ids)
 
 
+def _repo_identity_for_session(
+    session: Session,
+    context: SessionContextRecord | None,
+    repo_lookup: dict[str, _AgentContext],
+) -> tuple[str | None, str | None, str | None]:
+    if context is not None and context.repo_root is not None:
+        repo_key, repo_label = _repo_identity(repo_root=context.repo_root)
+        return (repo_key, repo_label, context.repo_root)
+    repo_context = repo_lookup.get(session.agent_id)
+    if repo_context is not None:
+        return (repo_context.repo_key, repo_context.repo_label, repo_context.repo_root)
+    return (None, None, None)
+
+
 def _repo_identity(
     *,
     repo_root: str | None = None,
@@ -892,7 +1520,7 @@ def _repo_identity(
         return (f"root:{git_root}", _path_name(git_root))
     if repository:
         return (f"repo:{repository}", repository)
-    return ("repo:unknown", "unknown")
+    return ("repo:unknown", "unassigned")
 
 
 def _path_name(path: str | None) -> str:
@@ -968,21 +1596,37 @@ def _search_blob_for_session(session: Session, context: SessionContextRecord | N
     )
 
 
-def _search_blob_for_local_session(session: CopilotLocalSession) -> str:
+def _search_blob_for_local_session(session: FleetLocalSessionView) -> str:
     return " ".join(
         part.lower()
         for part in (
             session.session_id,
-            session.summary or "",
-            session.repository or "",
-            session.branch or "",
-            str(session.cwd) if session.cwd is not None else "",
-            str(session.git_root) if session.git_root is not None else "",
+            session.summary,
+            session.repo_label,
+            session.repo_root or "",
+            session.branch,
+            session.worktree_name,
+            session.linked_agent_name or "",
             session.last_event_type or "",
+            session.origin,
+            "orphan" if session.is_orphan else "linked",
             "completed" if session.is_cleanly_closed else "unclosed",
         )
         if part
     )
+
+
+def _repo_key_for_event(
+    event: Event,
+    session_repos: dict[str, tuple[str | None, str | None, str | None]],
+    repo_lookup: dict[str, _AgentContext],
+) -> str | None:
+    if event.agent_id is not None and event.agent_id in repo_lookup:
+        return repo_lookup[event.agent_id].repo_key
+    if event.session_id is not None and event.session_id in session_repos:
+        repo_key, _, _ = session_repos[event.session_id]
+        return repo_key
+    return None
 
 
 def _event_severity(value: str) -> FleetSeverity:
@@ -993,16 +1637,154 @@ def _event_severity(value: str) -> FleetSeverity:
     return "info"
 
 
+def _coalesce_datetime(*values: datetime | None) -> datetime:
+    for value in values:
+        if value is not None:
+            return value
+    return datetime.min.replace(tzinfo=UTC)
+
+
+def _fleet_local_session_sort_key(session: FleetLocalSessionView) -> tuple[datetime, str]:
+    return (
+        _coalesce_datetime(session.updated_at, session.last_event_at),
+        session.session_id,
+    )
+
+
+def _local_session_view(
+    session: CopilotLocalSession,
+    *,
+    linked_agent: Agent | None,
+    repo_lookup: dict[str, _AgentContext],
+    is_orphan: bool,
+) -> FleetLocalSessionView:
+    repo_root = str(session.git_root) if session.git_root is not None else None
+    repo_key, repo_label = _repo_identity(
+        repo_root=repo_root,
+        repository=session.repository,
+    )
+    if repo_key == "repo:unknown" and linked_agent is not None:
+        linked_repo = repo_lookup.get(linked_agent.id)
+        if linked_repo is not None:
+            repo_key = linked_repo.repo_key
+            repo_label = linked_repo.repo_label
+            repo_root = linked_repo.repo_root
+    token_total = session.usage.total_tokens if session.usage is not None else None
+    return FleetLocalSessionView(
+        session_id=session.session_id,
+        repo_key=repo_key,
+        repo_label=repo_label,
+        repo_root=repo_root,
+        summary=session.summary or session.session_id,
+        branch=session.branch or "-",
+        worktree_name=_path_name(str(session.cwd) if session.cwd is not None else None),
+        origin=session.origin,
+        updated_at=session.updated_at,
+        last_event_at=session.last_event_at,
+        last_event_type=session.last_event_type,
+        checkpoint_count=session.checkpoint_count,
+        is_cleanly_closed=session.is_cleanly_closed,
+        is_orphan=is_orphan,
+        linked_agent_id=linked_agent.id if linked_agent is not None else None,
+        linked_agent_name=linked_agent.name if linked_agent is not None else None,
+        token_total=token_total,
+    )
+
+
+def _group_attention_score(group: FleetRepoGroupView) -> int:
+    return (
+        group.attention_count
+        + group.dirty_worktree_count
+        + group.locked_worktree_count
+        + group.orphan_local_session_count
+        + group.unclosed_local_session_count
+    )
+
+
+def _normalized_story_key(label: str) -> str:
+    collapsed = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+    return collapsed or "story"
+
+
+def _meaningful_story_title(value: str | None) -> str | None:
+    if value is None:
+        return None
+    label = value.strip()
+    if not label or label == "(no task title)":
+        return None
+    if re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", label):
+        return None
+    return label
+
+
+def _story_identity(*, title: str | None, repo_key: str, repo_label: str) -> _StoryIdentity:
+    story_title = _meaningful_story_title(title)
+    if story_title is not None:
+        return _StoryIdentity(
+            key=f"story:{_normalized_story_key(story_title)}",
+            label=story_title,
+        )
+    return _StoryIdentity(
+        key=f"repo-story:{repo_key}",
+        label=f"{repo_label} focus",
+    )
+
+
+def _story_next_action(aggregate: _StoryAggregate, inbox_count: int) -> str:
+    if aggregate.waiting_agent_count:
+        return "reply"
+    if aggregate.blocked_count:
+        return "unblock"
+    if aggregate.orphan_local_session_count:
+        return "recover"
+    if aggregate.open_session_count and aggregate.live_agent_count == 0:
+        return "resume"
+    if inbox_count:
+        return "review"
+    return "monitor"
+
+
+def _fleet_story_sort_key(story: FleetStoryLaneView) -> tuple[int, float, str]:
+    return (
+        -(
+            story.waiting_agent_count * 5
+            + story.blocked_count * 4
+            + story.attention_count * 3
+            + story.orphan_local_session_count * 3
+            + min(story.open_session_count, 3) * 2
+            + story.inbox_count
+        ),
+        -story.latest_update_at.timestamp(),
+        story.story_label.lower(),
+    )
+
+
+def _fleet_inbox_sort_key(item: FleetInboxItemView) -> tuple[int, float, str]:
+    severity_rank = {
+        "error": 0,
+        "warning": 1,
+        "info": 2,
+    }
+    return (
+        severity_rank[item.severity],
+        -item.occurred_at.timestamp(),
+        item.story_label.lower(),
+    )
+
+
 __all__ = [
     "FleetAgentSummaryView",
     "FleetController",
     "FleetFilterState",
     "FleetHealthSummary",
     "FleetHistoryMetricView",
+    "FleetInboxItemView",
+    "FleetLocalSessionView",
     "FleetRecentActivityView",
     "FleetRepoGroupView",
     "FleetResourceView",
     "FleetSearchHelperView",
     "FleetSearchHitView",
     "FleetState",
+    "FleetStoryLaneView",
 ]

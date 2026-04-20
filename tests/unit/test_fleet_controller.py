@@ -251,6 +251,15 @@ class FleetControllerTests(unittest.TestCase):
             [metric.label for metric in state.history_metrics],
             ["repos", "24h sessions", "24h events", "tokens"],
         )
+        history_by_label = {metric.label: metric for metric in state.history_metrics}
+        self.assertEqual(history_by_label["repos"].detail, "1 dirty · 1 worktrees")
+        self.assertEqual(history_by_label["24h sessions"].value, "1")
+        self.assertEqual(history_by_label["24h events"].value, "1")
+        resources_by_label = {resource.label: resource for resource in state.resources}
+        self.assertEqual(resources_by_label["repos"].value, "1")
+        self.assertEqual(resources_by_label["worktrees"].value, "1")
+        self.assertEqual(resources_by_label["runtime"].value, "1")
+        self.assertEqual(resources_by_label["local sessions"].value, "2")
 
     def test_build_state_attention_only_hides_healthy_agents(self) -> None:
         observed_at = datetime(2025, 2, 1, 12, tzinfo=UTC)
@@ -295,6 +304,263 @@ class FleetControllerTests(unittest.TestCase):
 
         self.assertEqual(state.total_visible_agents, 1)
         self.assertEqual(state.groups[0].agents[0].name, "Planner")
+
+    def test_build_state_surfaces_orphan_local_repo_without_visible_agents(self) -> None:
+        observed_at = datetime(2025, 2, 1, 12, tzinfo=UTC)
+        store = InMemoryFleetStore()
+        local_store = FakeLocalSessionStore(
+            (
+                CopilotLocalSession(
+                    session_id="orphan-local",
+                    cwd=Path("/repo-z/worktrees/orphan"),
+                    git_root=Path("/repo-z"),
+                    repository="repo-z",
+                    branch="task/orphan",
+                    summary="Investigate orphan session",
+                    created_at=observed_at - timedelta(hours=1),
+                    updated_at=observed_at,
+                    last_event_type="tool.execution_complete",
+                    last_event_at=observed_at,
+                    is_cleanly_closed=False,
+                ),
+            )
+        )
+
+        controller = FleetController(store, local_sessions=local_store, clock=lambda: observed_at)
+
+        state = controller.build_state(filters=FleetFilterState(include_completed=False))
+
+        self.assertEqual(state.total_visible_agents, 0)
+        self.assertEqual(state.total_groups, 1)
+        self.assertEqual(state.groups[0].repo_label, "repo-z")
+        self.assertEqual(state.groups[0].agent_count, 0)
+        self.assertEqual(state.groups[0].local_session_count, 1)
+        self.assertEqual(state.groups[0].orphan_local_session_count, 1)
+        self.assertTrue(state.local_sessions[0].is_orphan)
+        self.assertEqual(state.local_sessions[0].repo_label, "repo-z")
+
+    def test_build_state_attention_only_keeps_local_session_drift_groups(self) -> None:
+        observed_at = datetime(2025, 2, 1, 12, tzinfo=UTC)
+        store = InMemoryFleetStore()
+        local_store = FakeLocalSessionStore(
+            (
+                CopilotLocalSession(
+                    session_id="orphan-local",
+                    cwd=Path("/repo-z/worktrees/orphan"),
+                    git_root=Path("/repo-z"),
+                    repository="repo-z",
+                    branch="task/orphan",
+                    summary="Investigate orphan session",
+                    created_at=observed_at - timedelta(hours=1),
+                    updated_at=observed_at,
+                    last_event_type="tool.execution_complete",
+                    last_event_at=observed_at,
+                    is_cleanly_closed=False,
+                ),
+            )
+        )
+
+        controller = FleetController(store, local_sessions=local_store, clock=lambda: observed_at)
+
+        state = controller.build_state(filters=FleetFilterState(attention_only=True))
+
+        self.assertEqual(state.total_groups, 1)
+        self.assertEqual(state.groups[0].repo_label, "repo-z")
+
+    def test_build_state_hide_done_hides_closed_local_sessions(self) -> None:
+        observed_at = datetime(2025, 2, 1, 12, tzinfo=UTC)
+        store = InMemoryFleetStore()
+        local_store = FakeLocalSessionStore(
+            (
+                CopilotLocalSession(
+                    session_id="open-local",
+                    cwd=Path("/repo-z/worktrees/open"),
+                    git_root=Path("/repo-z"),
+                    repository="repo-z",
+                    branch="task/open",
+                    summary="Investigate active local session",
+                    created_at=observed_at - timedelta(hours=1),
+                    updated_at=observed_at,
+                    last_event_type="tool.execution_complete",
+                    last_event_at=observed_at,
+                    is_cleanly_closed=False,
+                ),
+                CopilotLocalSession(
+                    session_id="closed-local",
+                    cwd=Path("/repo-z/worktrees/closed"),
+                    git_root=Path("/repo-z"),
+                    repository="repo-z",
+                    branch="task/closed",
+                    summary="Finished local session",
+                    created_at=observed_at - timedelta(days=1),
+                    updated_at=observed_at - timedelta(days=1),
+                    last_event_type="session.shutdown",
+                    last_event_at=observed_at - timedelta(days=1),
+                    is_cleanly_closed=True,
+                ),
+            )
+        )
+
+        controller = FleetController(store, local_sessions=local_store, clock=lambda: observed_at)
+
+        state = controller.build_state(filters=FleetFilterState(include_completed=False))
+
+        self.assertEqual(state.total_groups, 1)
+        self.assertEqual(len(state.local_sessions), 1)
+        self.assertEqual(state.local_sessions[0].session_id, "open-local")
+        self.assertEqual(state.groups[0].local_session_count, 1)
+        self.assertEqual(state.groups[0].orphan_local_session_count, 1)
+
+    def test_build_state_query_matches_session_context_fields(self) -> None:
+        observed_at = datetime(2025, 2, 1, 12, tzinfo=UTC)
+        store = InMemoryFleetStore()
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Planner",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo-a/worktrees/planner",
+            repo_root="/repo-a",
+            worktree_path="/repo-a/worktrees/planner",
+            branch="task/planner",
+            task_title="Plan fleet search surface",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at - timedelta(hours=1),
+            last_seen_at=observed_at,
+            idle_seconds=5,
+        )
+        store.sessions["session-1"] = Session(
+            id="session-1",
+            agent_id="agent-1",
+            copilot_session_id="copilot-1",
+            task_title="Track session context",
+            created_at=observed_at - timedelta(minutes=30),
+        )
+        store.contexts["session-1"] = SessionContextRecord(
+            session_id="session-1",
+            agent_id="agent-1",
+            worktree_id="wt-1",
+            worktree_path="/repo-a/worktrees/context-only",
+            repo_root="/repo-a",
+            branch="feature/context-only",
+            updated_at=observed_at,
+        )
+        controller = FleetController(store, clock=lambda: observed_at)
+
+        state = controller.build_state(filters=FleetFilterState(text_query="context-only"))
+
+        self.assertEqual(state.total_groups, 1)
+        self.assertEqual(state.groups[0].repo_label, "repo-a")
+        self.assertEqual(state.groups[0].open_session_count, 1)
+        self.assertEqual(len(state.search_hits), 1)
+        self.assertEqual(state.search_hits[0].kind, "session")
+        self.assertIn("feature/context-only", state.search_hits[0].detail)
+        self.assertIn("/repo-a/worktrees/context-only", state.search_hits[0].detail)
+
+    def test_build_state_groups_agent_and_local_session_into_same_story_lane(self) -> None:
+        observed_at = datetime(2025, 2, 1, 12, tzinfo=UTC)
+        store = InMemoryFleetStore()
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Planner",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo-a/worktrees/planner",
+            repo_root="/repo-a",
+            worktree_path="/repo-a/worktrees/planner",
+            branch="task/planner",
+            task_title="Story lane focus",
+            status=AgentStatus.WAITING_INPUT,
+            started_at=observed_at - timedelta(hours=1),
+            last_seen_at=observed_at,
+            idle_seconds=120,
+            needs_attention=True,
+            attention_reason="waiting for operator reply",
+        )
+        store.sessions["session-1"] = Session(
+            id="session-1",
+            agent_id="agent-1",
+            copilot_session_id="copilot-1",
+            task_title="Story lane focus",
+            created_at=observed_at - timedelta(minutes=30),
+        )
+        local_store = FakeLocalSessionStore(
+            (
+                CopilotLocalSession(
+                    session_id="local-1",
+                    cwd=Path("/repo-a/worktrees/orphan"),
+                    git_root=Path("/repo-a"),
+                    repository="repo-a",
+                    branch="task/planner",
+                    summary="Story lane focus",
+                    created_at=observed_at - timedelta(minutes=40),
+                    updated_at=observed_at - timedelta(minutes=5),
+                    last_event_type="tool.execution_complete",
+                    last_event_at=observed_at - timedelta(minutes=5),
+                    is_cleanly_closed=False,
+                ),
+            )
+        )
+
+        controller = FleetController(store, local_sessions=local_store, clock=lambda: observed_at)
+
+        state = controller.build_state()
+
+        self.assertEqual(len(state.story_lanes), 1)
+        story = state.story_lanes[0]
+        self.assertEqual(story.story_label, "Story lane focus")
+        self.assertEqual(story.live_agent_count, 1)
+        self.assertEqual(story.waiting_agent_count, 1)
+        self.assertEqual(story.open_session_count, 1)
+        self.assertEqual(story.local_session_count, 1)
+        self.assertEqual(story.orphan_local_session_count, 1)
+        self.assertEqual(story.inbox_count, 2)
+        self.assertEqual(story.next_action, "reply")
+        self.assertEqual(
+            [item.suggested_action for item in state.response_inbox],
+            ["reply", "recover"],
+        )
+        self.assertTrue(all(item.story_key == story.story_key for item in state.response_inbox))
+
+    def test_build_state_surfaces_resume_inbox_for_open_session_without_live_agent(self) -> None:
+        observed_at = datetime(2025, 2, 1, 12, tzinfo=UTC)
+        store = InMemoryFleetStore()
+        store.sessions["session-1"] = Session(
+            id="session-1",
+            agent_id="agent-1",
+            copilot_session_id="copilot-1",
+            task_title="Resume abandoned work",
+            created_at=observed_at - timedelta(minutes=20),
+        )
+        store.contexts["session-1"] = SessionContextRecord(
+            session_id="session-1",
+            agent_id="agent-1",
+            worktree_id="wt-1",
+            worktree_path="/repo-a/worktrees/resume",
+            repo_root="/repo-a",
+            branch="task/resume",
+            updated_at=observed_at,
+        )
+
+        controller = FleetController(store, clock=lambda: observed_at)
+
+        state = controller.build_state()
+
+        self.assertEqual(len(state.story_lanes), 1)
+        story = state.story_lanes[0]
+        self.assertEqual(story.story_label, "Resume abandoned work")
+        self.assertEqual(story.live_agent_count, 0)
+        self.assertEqual(story.open_session_count, 1)
+        self.assertEqual(story.inbox_count, 1)
+        self.assertEqual(story.next_action, "resume")
+        self.assertEqual(len(state.response_inbox), 1)
+        self.assertEqual(state.response_inbox[0].suggested_action, "resume")
+        self.assertEqual(
+            state.response_inbox[0].reason,
+            "tracked session is open without a visible live agent",
+        )
 
 
 if __name__ == "__main__":

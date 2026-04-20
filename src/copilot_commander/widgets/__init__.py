@@ -14,10 +14,12 @@ from copilot_commander.widgets.dashboard import (
     StatusBar,
 )
 from copilot_commander.widgets.fleet import (
-    FleetGroupsPanel,
+    FleetCommandDeckPanel,
     FleetHistoryPanel,
-    FleetResourcesPanel,
+    FleetInboxPanel,
+    FleetLocalSessionsPanel,
     FleetSearchPanel,
+    FleetStoryLanesPanel,
     FleetSummaryBar,
 )
 from copilot_commander.widgets.operations import (
@@ -51,11 +53,13 @@ __all__ = [
     "BulkActionPreviewPanel",
     "ConflictPanel",
     "DoctorDetailPanel",
-    "FleetGroupsPanel",
+    "FleetCommandDeckPanel",
     "FleetHealthPanel",
     "FleetHistoryPanel",
-    "FleetResourcesPanel",
+    "FleetInboxPanel",
+    "FleetLocalSessionsPanel",
     "FleetSearchPanel",
+    "FleetStoryLanesPanel",
     "FleetSummaryBar",
     "KeyHintFooter",
     "OperationsAgentListPanel",

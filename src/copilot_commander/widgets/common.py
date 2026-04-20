@@ -16,12 +16,19 @@ from copilot_commander.theme import (
     BLUE_DIM,
     FG,
     FG1,
+    FG2,
     FG3,
     FG4,
     GREEN,
     ORANGE,
     RED,
     YELLOW,
+)
+from copilot_commander.ui_preferences import (
+    UiDecorations,
+    UiGlyphs,
+    UiPreferences,
+    resolve_ui_preferences,
 )
 
 # Keys that perform actions on agents / the fleet. Rendered with
@@ -31,8 +38,11 @@ ACTION_HINT_KEYS: frozenset[str] = frozenset(
     {
         "i",
         "c",
+        "ctrl+p",
         "m",
         "v",
+        "w",
+        "f",
         "p",
         "l",
         "S",
@@ -48,7 +58,7 @@ ACTION_HINT_KEYS: frozenset[str] = frozenset(
 
 # ── status glyphs ───────────────────────────────────────────────────
 
-_STATUS_GLYPHS: Final[dict[AgentStatus, tuple[str, str]]] = {
+_RICH_STATUS_GLYPHS: Final[dict[AgentStatus, tuple[str, str]]] = {
     AgentStatus.RUNNING: ("●", GREEN),
     AgentStatus.IDLE: ("◐", YELLOW),
     AgentStatus.WAITING_INPUT: ("▲", ORANGE),
@@ -61,25 +71,130 @@ _STATUS_GLYPHS: Final[dict[AgentStatus, tuple[str, str]]] = {
     AgentStatus.UNKNOWN: ("?", FG3),
 }
 
+_ASCII_STATUS_GLYPHS: Final[dict[AgentStatus, tuple[str, str]]] = {
+    AgentStatus.RUNNING: ("o", GREEN),
+    AgentStatus.IDLE: ("~", YELLOW),
+    AgentStatus.WAITING_INPUT: ("!", ORANGE),
+    AgentStatus.BLOCKED: ("#", ORANGE),
+    AgentStatus.ERROR: ("x", RED),
+    AgentStatus.DEAD: ("x", YELLOW),
+    AgentStatus.COMPLETED: ("v", FG4),
+    AgentStatus.DISCOVERED: ("o", BLUE),
+    AgentStatus.STARTING: (".", AQUA),
+    AgentStatus.UNKNOWN: ("?", FG3),
+}
 
-def status_glyph(status: AgentStatus, *, selected: bool = False) -> Text:
+_RICH_UI_GLYPHS: Final[dict[str, str]] = {
+    "brand": "◆",
+    "badge": "⬤",
+    "separator": "│",
+    "tab-key-separator": "·",
+    "item-separator": "·",
+    "selected": "▎",
+    "expanded": "▾",
+    "collapsed": "▸",
+    "subagent": "↳",
+    "bullet": "•",
+    "section-lead": " ── ",
+    "section-fill": " ──────────────────────────────────────",
+    "connector-mid": "├─",
+    "connector-last": "└─",
+    "detail-arrow": "»",
+    "progress-play": "▶",
+    "progress-pause": "⏸",
+    "progress-position": "●",
+    "progress-marker": "│",
+    "progress-fill": "─",
+    "background-task": "⚡",
+    "annotation": "✎",
+}
+
+_ASCII_UI_GLYPHS: Final[dict[str, str]] = {
+    "brand": "*",
+    "badge": "*",
+    "separator": "|",
+    "tab-key-separator": ":",
+    "item-separator": "/",
+    "selected": ">",
+    "expanded": "v",
+    "collapsed": ">",
+    "subagent": "->",
+    "bullet": "-",
+    "section-lead": " -- ",
+    "section-fill": " --------------------------------------",
+    "connector-mid": "|-",
+    "connector-last": "`-",
+    "detail-arrow": ">",
+    "progress-play": ">",
+    "progress-pause": "||",
+    "progress-position": "*",
+    "progress-marker": "|",
+    "progress-fill": "-",
+    "background-task": "!",
+    "annotation": "*",
+}
+
+_REDUCED_UI_OVERRIDES: Final[dict[str, str]] = {
+    "brand": "",
+    "badge": "*",
+    "separator": "|",
+    "tab-key-separator": ":",
+    "item-separator": "/",
+    "bullet": "-",
+    "section-lead": " ",
+    "section-fill": "",
+}
+
+
+def ui_symbol(name: str, *, preferences: UiPreferences | None = None) -> str:
+    prefs = UiPreferences() if preferences is None else preferences
+    glyphs = _ASCII_UI_GLYPHS if prefs.glyphs is UiGlyphs.ASCII else _RICH_UI_GLYPHS
+    symbol = glyphs[name]
+    if prefs.decorations is UiDecorations.REDUCED:
+        return _REDUCED_UI_OVERRIDES.get(name, symbol)
+    return symbol
+
+
+def pipe_separator(preferences: UiPreferences | None = None) -> str:
+    return f" {ui_symbol('separator', preferences=preferences)} "
+
+
+def item_separator(preferences: UiPreferences | None = None) -> str:
+    return f" {ui_symbol('item-separator', preferences=preferences)} "
+
+
+def _status_glyph_lookup(preferences: UiPreferences | None) -> dict[AgentStatus, tuple[str, str]]:
+    prefs = UiPreferences() if preferences is None else preferences
+    if prefs.glyphs is UiGlyphs.ASCII:
+        return _ASCII_STATUS_GLYPHS
+    return _RICH_STATUS_GLYPHS
+
+
+def status_glyph(
+    status: AgentStatus,
+    *,
+    selected: bool = False,
+    preferences: UiPreferences | None = None,
+) -> Text:
     """Return a single-char Rich Text glyph for the given agent status."""
-    char, color = _STATUS_GLYPHS.get(status, ("?", FG3))
+    char, color = _status_glyph_lookup(preferences).get(status, ("?", FG3))
     style = f"bold {color}"
     if selected:
         style = f"bold {BLUE}"
     return Text(char, style=style)
 
 
-def status_glyph_char(status: AgentStatus) -> str:
+def status_glyph_char(status: AgentStatus, *, preferences: UiPreferences | None = None) -> str:
     """Return the raw character for a status (for plain-text contexts)."""
-    char, _ = _STATUS_GLYPHS.get(status, ("?", FG3))
+    char, _ = _status_glyph_lookup(preferences).get(status, ("?", FG3))
     return char
 
 
-def status_glyph_parts(status: AgentStatus) -> tuple[str, str]:
+def status_glyph_parts(
+    status: AgentStatus, *, preferences: UiPreferences | None = None
+) -> tuple[str, str]:
     """Return (char, color) for a status — for inline text building."""
-    return _STATUS_GLYPHS.get(status, ("?", FG3))
+    return _status_glyph_lookup(preferences).get(status, ("?", FG3))
 
 
 # ── formatting helpers ──────────────────────────────────────────────
@@ -115,10 +230,10 @@ _TAB_ITEMS: Final[tuple[tuple[str, str], ...]] = (
     ("4", "sessions"),
     ("5", "setup"),
     ("6", "attention"),
+    ("7", "operations"),
+    ("8", "fleet"),
     ("?", "help"),
 )
-
-_BADGE_GLYPH: Final[str] = "⬤"
 
 
 class TabBar(Static):
@@ -142,19 +257,30 @@ class TabBar(Static):
         self.badges = dict(badges)
 
     def render(self) -> Text:
+        preferences = resolve_ui_preferences(self)
+        separator = pipe_separator(preferences)
+        key_separator = ui_symbol("tab-key-separator", preferences=preferences)
+        badge_glyph = ui_symbol("badge", preferences=preferences)
         bar = Text()
-        bar.append(" ◆ ", style=f"bold {BLUE}")
+        brand = ui_symbol("brand", preferences=preferences)
+        if brand:
+            bar.append(f" {brand} ", style=f"bold {BLUE}")
         bar.append("commander ", style=f"bold {FG}")
-        bar.append("│ ", style=FG4)
+        bar.append(separator, style=FG4)
         for key, label in _TAB_ITEMS:
             is_active = label.lower() == self.active_tab.lower()
             badge_count = int(self.badges.get(label, 0))
             if is_active:
                 bar.append(f" {label} ", style=f"bold {FG} on {BLUE_DIM}")
             else:
-                bar.append(f" {key}·{label} ", style=FG4)
+                bar.append(f" {key}{key_separator}{label} ", style=FG4)
             if badge_count > 0:
-                bar.append(f"{_BADGE_GLYPH}{badge_count} ", style=f"bold {RED}")
+                bar.append(f"{badge_glyph}{badge_count} ", style=f"bold {RED}")
+        mode_badges = preferences.mode_badges()
+        if mode_badges:
+            bar.append(separator, style=FG4)
+            bar.append("modes ", style=FG4)
+            bar.append(item_separator(preferences).join(mode_badges), style=FG3)
         return bar
 
 
@@ -164,6 +290,7 @@ class TabBar(Static):
 class KeyHintFooter(Static):
     status = reactive("ready")
     hints: reactive[tuple[KeyHint, ...]] = reactive(())
+    focus_label = reactive("")
 
     def __init__(
         self,
@@ -177,9 +304,20 @@ class KeyHintFooter(Static):
         self.status = status
 
     def render(self) -> Text:
+        preferences = resolve_ui_preferences(self)
+        separator = pipe_separator(preferences)
         footer = Text()
         footer.append(f" {self.status}", style=FG3)
-        footer.append("  │", style=FG4)
+        if self.focus_label:
+            footer.append(separator, style=FG4)
+            footer.append("focus ", style=FG4)
+            footer.append(self.focus_label, style=f"bold {FG1}")
+        mode_badges = preferences.mode_badges()
+        if mode_badges:
+            footer.append(separator, style=FG4)
+            footer.append("modes ", style=FG4)
+            footer.append(item_separator(preferences).join(mode_badges), style=FG2)
+        footer.append(separator.rstrip(), style=FG4)
         for hint in self.hints:
             if hint.key in ACTION_HINT_KEYS:
                 footer.append(f"  {hint.key}", style=f"bold {ORANGE}")
@@ -196,8 +334,11 @@ __all__ = [
     "format_bool",
     "format_short_timestamp",
     "format_timestamp",
+    "item_separator",
     "join_lines",
+    "pipe_separator",
     "status_glyph",
     "status_glyph_char",
     "status_glyph_parts",
+    "ui_symbol",
 ]
