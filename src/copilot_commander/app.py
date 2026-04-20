@@ -5,7 +5,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from textual.app import App
 from textual.driver import Driver
@@ -75,6 +75,8 @@ from copilot_commander.services import (
 )
 from copilot_commander.services.action_service import TmuxActionService
 from copilot_commander.services.attention_service import AttentionNotification
+from copilot_commander.services.monitoring_service import MonitoringLocalSessionStore
+from copilot_commander.services.runtime_service import RuntimeSubAgentReaderPort
 from copilot_commander.services.subtask_registry import SubTaskRegistry
 from copilot_commander.widgets.common import TabBar
 
@@ -468,6 +470,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
     monitoring = MonitoringService(
         sync_agent_service,
         session_resolver=session_resolver,
+        local_session_store=cast(MonitoringLocalSessionStore, copilot_session_store),
         thresholds=MonitoringThresholds(
             waiting_input_after_seconds=max(15, resolved_config.general.discovery_interval_sec * 2),
             idle_after_seconds=resolved_config.general.idle_threshold_sec,
@@ -543,7 +546,7 @@ def build_runtime(config: AppConfig | None = None) -> CommanderRuntime:
             agent_store=sync_store,
             worktree_sync=sync_worktree_service,
             subtask_registry=subtask_registry,
-            subagent_reader=subagent_reader,
+            subagent_reader=cast(RuntimeSubAgentReaderPort, subagent_reader),
             session_resolver=session_resolver,
             dead_grace_period_sec=resolved_config.general.dead_grace_period_sec,
         ),

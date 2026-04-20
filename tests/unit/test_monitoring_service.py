@@ -24,6 +24,7 @@ from copilot_commander.services.agent_service import AgentFactInput
 from copilot_commander.services.discovery_service import DiscoveryPaneSnapshot, PaneDiscovery
 from copilot_commander.services.monitoring_service import (
     MonitoringDiscovery,
+    MonitoringLocalSessionStore,
     MonitoringService,
     MonitoringThresholds,
     StatusHeuristicInput,
@@ -65,6 +66,29 @@ class FakeSessionResolver:
 
     def resolve_for_pid(self, pane_pid: int | None, /) -> str | None:
         return self.resolve(pane_pid).session_id
+
+
+@dataclass(slots=True)
+class FakeLocalSessionUsage:
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+
+@dataclass(slots=True)
+class FakeLocalSession:
+    session_id: str
+    usage: FakeLocalSessionUsage | None = None
+
+
+@dataclass(slots=True)
+class FakeLocalSessionStore:
+    sessions: tuple[FakeLocalSession, ...]
+    discover_calls: int = 0
+
+    def discover(self, *, force: bool = False) -> tuple[FakeLocalSession, ...]:
+        del force
+        self.discover_calls += 1
+        return self.sessions
 
 
 class MonitoringServiceTests(unittest.TestCase):
@@ -330,6 +354,100 @@ class MonitoringServiceTests(unittest.TestCase):
         assert facts.status is AgentStatus.WAITING_INPUT
         assert facts.token_input == 8
         assert facts.capture_text == "Copilot session id: copilot-123"
+
+    def test_monitor_discoveries_falls_back_to_cached_local_session_usage(self) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        recorder = FakeRecorder(recorded=[])
+        local_sessions = FakeLocalSessionStore(
+            sessions=(
+                FakeLocalSession(
+                    session_id="copilot-123",
+                    usage=FakeLocalSessionUsage(input_tokens=21, output_tokens=34),
+                ),
+            )
+        )
+        service = MonitoringService(
+            recorder,
+            local_session_store=cast(MonitoringLocalSessionStore, local_sessions),
+            clock=lambda: now,
+        )
+        copilot = CopilotAdapter(DummyRunner())
+        evidence = copilot.interpret_output("Copilot session id: copilot-123\nworking tree clean")
+        discovery = PaneDiscovery(
+            snapshot=DiscoveryPaneSnapshot(
+                pane_id="%3",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@3",
+                tmux_window_name="agents",
+                pane_current_path="/repo/worktrees/task",
+                pane_current_command="copilot chat",
+                pane_pid=321,
+                repo_root="/repo",
+                branch="task/demo",
+            ),
+            discovered_at=now,
+            classification="unmanaged_probable_agent",
+            reasons=("command:copilot_binary",),
+            command_detection=copilot.detect_command("copilot chat"),
+            captured_output="Copilot session id: copilot-123",
+            session_evidence=evidence,
+        )
+
+        service.monitor_discoveries(cast("Sequence[MonitoringDiscovery]", (discovery,)))
+
+        assert local_sessions.discover_calls == 1
+        facts = recorder.recorded[0]
+        assert facts.copilot_session_id == "copilot-123"
+        assert facts.token_input == 21
+        assert facts.token_output == 34
+        assert facts.token_total == 55
+
+    def test_monitor_discoveries_prefers_live_usage_over_cached_local_session_usage(self) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        recorder = FakeRecorder(recorded=[])
+        local_sessions = FakeLocalSessionStore(
+            sessions=(
+                FakeLocalSession(
+                    session_id="copilot-123",
+                    usage=FakeLocalSessionUsage(input_tokens=99, output_tokens=1),
+                ),
+            )
+        )
+        service = MonitoringService(
+            recorder,
+            local_session_store=cast(MonitoringLocalSessionStore, local_sessions),
+            clock=lambda: now,
+        )
+        copilot = CopilotAdapter(DummyRunner())
+        evidence = copilot.interpret_output(
+            "Copilot session id: copilot-123\ninput_tokens: 8\noutput_tokens: 13\n"
+        )
+        discovery = PaneDiscovery(
+            snapshot=DiscoveryPaneSnapshot(
+                pane_id="%3",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@3",
+                tmux_window_name="agents",
+                pane_current_path="/repo/worktrees/task",
+                pane_current_command="copilot chat",
+                pane_pid=321,
+                repo_root="/repo",
+                branch="task/demo",
+            ),
+            discovered_at=now,
+            classification="unmanaged_probable_agent",
+            reasons=("command:copilot_binary",),
+            command_detection=copilot.detect_command("copilot chat"),
+            captured_output="Copilot session id: copilot-123",
+            session_evidence=evidence,
+        )
+
+        service.monitor_discoveries(cast("Sequence[MonitoringDiscovery]", (discovery,)))
+
+        facts = recorder.recorded[0]
+        assert facts.token_input == 8
+        assert facts.token_output == 13
+        assert facts.token_total == 21
 
     def test_monitor_discoveries_uses_resolver_when_capture_has_multiple_session_ids(self) -> None:
         now = datetime(2025, 1, 1, 12, tzinfo=UTC)

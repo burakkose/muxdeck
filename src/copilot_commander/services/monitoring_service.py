@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -94,6 +94,24 @@ class MonitoringEvidence(Protocol):
     parse_result: MonitoringParseResult
 
 
+@runtime_checkable
+class MonitoringLocalSessionUsage(Protocol):
+    input_tokens: int | None
+    output_tokens: int | None
+
+
+@runtime_checkable
+class MonitoringLocalSession(Protocol):
+    session_id: str
+    usage: MonitoringLocalSessionUsage | None
+
+
+@runtime_checkable
+class MonitoringLocalSessionStore(Protocol):
+    def discover(self, *, force: bool = False) -> Sequence[MonitoringLocalSession]:
+        """Return cached or freshly scanned local Copilot sessions."""
+
+
 @dataclass(frozen=True, slots=True)
 class MonitoringThresholds:
     waiting_input_after_seconds: int = 30
@@ -183,11 +201,13 @@ class MonitoringService:
         agent_recorder: MonitoringAgentRecorder,
         *,
         session_resolver: MonitoringSessionResolver | None = None,
+        local_session_store: MonitoringLocalSessionStore | None = None,
         thresholds: MonitoringThresholds | None = None,
         clock: Clock = utc_now,
     ) -> None:
         self._agent_recorder = agent_recorder
         self._session_resolver = session_resolver
+        self._local_session_store = local_session_store
         self._thresholds = MonitoringThresholds() if thresholds is None else thresholds
         self._clock = clock
 
@@ -201,6 +221,7 @@ class MonitoringService:
     ) -> MonitoringReport:
         monitored_at = ensure_aware_datetime(self._clock(), field_name="value")
         results: list[MonitoringResult] = []
+        local_usage_by_session_id = self._build_local_usage_index()
         for discovery in discoveries:
             classification = discovery.classification
             if classification == "non_agent_pane":
@@ -239,6 +260,7 @@ class MonitoringService:
                 monitored_at=monitored_at,
                 evaluation=evaluation,
                 existing_agent=existing_agent,
+                local_usage_by_session_id=local_usage_by_session_id,
             )
             persisted = self._agent_recorder.persist_agent_facts(facts)
             results.append(
@@ -258,6 +280,7 @@ class MonitoringService:
         monitored_at: datetime,
         evaluation: StatusHeuristicResult,
         existing_agent: Agent | None,
+        local_usage_by_session_id: Mapping[str, MonitoringLocalSessionUsage],
     ) -> AgentFactInput:
         snapshot = discovery.snapshot
         session_evidence = discovery.session_evidence
@@ -277,6 +300,21 @@ class MonitoringService:
             session_evidence=session_evidence,
             existing_agent=existing_agent,
         )
+        token_input = latest_usage.input_tokens if latest_usage is not None else None
+        token_output = latest_usage.output_tokens if latest_usage is not None else None
+        token_total = latest_usage.total_tokens if latest_usage is not None else None
+        if token_total is None and (token_input is not None or token_output is not None):
+            token_total = (token_input or 0) + (token_output or 0)
+        if latest_usage is None and copilot_session_id is not None:
+            local_usage = local_usage_by_session_id.get(copilot_session_id)
+            if local_usage is not None:
+                # The persisted agent snapshot only tracks prompt/completion
+                # tokens today, so the dashboard can reuse these fields without
+                # paying an extra filesystem read during refresh.
+                token_input = local_usage.input_tokens
+                token_output = local_usage.output_tokens
+                if token_input is not None or token_output is not None:
+                    token_total = (token_input or 0) + (token_output or 0)
         latest_activity = (
             _extract_latest_activity(session_evidence.parse_result)
             if session_evidence is not None
@@ -315,9 +353,9 @@ class MonitoringService:
             idle_seconds=evaluation.idle_seconds,
             needs_attention=evaluation.needs_attention,
             attention_reason=evaluation.attention_reason,
-            token_input=latest_usage.input_tokens if latest_usage is not None else None,
-            token_output=latest_usage.output_tokens if latest_usage is not None else None,
-            token_total=latest_usage.total_tokens if latest_usage is not None else None,
+            token_input=token_input,
+            token_output=token_output,
+            token_total=token_total,
             estimated_cost_usd=estimated_cost,
             capture_text=discovery.captured_output,
             blocking_issue_kinds=(
@@ -325,6 +363,15 @@ class MonitoringService:
             ),
             error_messages=tuple(session_evidence.error_messages) if session_evidence else (),
         )
+
+    def _build_local_usage_index(self) -> dict[str, MonitoringLocalSessionUsage]:
+        if self._local_session_store is None:
+            return {}
+        return {
+            session.session_id: session.usage
+            for session in self._local_session_store.discover()
+            if session.usage is not None
+        }
 
     def _resolve_copilot_session_id(
         self,
