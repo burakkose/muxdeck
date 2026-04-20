@@ -48,8 +48,40 @@ def _normalize_optional_text(value: str | None) -> str | None:
     return normalized or None
 
 
+def _translate_windows_drive_path(path: str) -> str | None:
+    """Translate ``C:\\foo`` / ``C:/foo`` to ``/mnt/c/foo`` on POSIX hosts.
+
+    Git porcelain output from a repo that lives on a Windows-mounted
+    drive (e.g. WSL with ``/mnt/q`` ↔ Windows ``Q:``) can echo back
+    drive-letter paths verbatim when worktrees were registered from
+    the Windows side. ``Path("Q:/pm2").resolve()`` on POSIX silently
+    joins the literal text onto the current working directory, which
+    persists nonsense paths into the worktrees table and crashes any
+    later ``git`` invocation.
+
+    Returns the translated POSIX path string, or ``None`` if *path*
+    does not look like a Windows drive-letter path.
+    """
+    if len(path) < 2 or path[1] != ":":
+        return None
+    drive = path[0]
+    if not drive.isascii() or not drive.isalpha():
+        return None
+    if len(path) == 2:
+        return f"/mnt/{drive.lower()}"
+    separator = path[2]
+    if separator not in ("/", "\\"):
+        return None
+    remainder = path[3:].replace("\\", "/").lstrip("/")
+    return f"/mnt/{drive.lower()}/{remainder}" if remainder else f"/mnt/{drive.lower()}"
+
+
 def _normalize_path(path: PathLike) -> Path:
-    return Path(path).expanduser().resolve(strict=False)
+    raw = str(path)
+    translated = _translate_windows_drive_path(raw)
+    if translated is not None:
+        raw = translated
+    return Path(raw).expanduser().resolve(strict=False)
 
 
 def _path_contains(path: Path, candidate_root: Path) -> bool:

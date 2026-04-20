@@ -7,7 +7,11 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from muxdeck.adapters.git_adapter import GitAdapter, GitWorktreeCreateRequest
+from muxdeck.adapters.git_adapter import (
+    GitAdapter,
+    GitWorktreeCreateRequest,
+    _translate_windows_drive_path,
+)
 from muxdeck.domain.value_objects import CommandResult
 from muxdeck.exceptions import CommandError, GitCommandError
 
@@ -481,3 +485,47 @@ def _result(
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TranslateWindowsDrivePathTests(unittest.TestCase):
+    def test_translates_forward_slash_drive_path(self) -> None:
+        assert _translate_windows_drive_path("Q:/pm2") == "/mnt/q/pm2"
+
+    def test_translates_backslash_drive_path(self) -> None:
+        assert _translate_windows_drive_path("C:\\Users\\me\\repo") == "/mnt/c/Users/me/repo"
+
+    def test_translates_bare_drive_root(self) -> None:
+        assert _translate_windows_drive_path("D:/") == "/mnt/d"
+        assert _translate_windows_drive_path("D:") == "/mnt/d"
+
+    def test_lowercases_drive_letter(self) -> None:
+        assert _translate_windows_drive_path("E:/Foo/Bar") == "/mnt/e/Foo/Bar"
+
+    def test_passes_through_posix_path(self) -> None:
+        assert _translate_windows_drive_path("/mnt/q/pm2") is None
+        assert _translate_windows_drive_path("/home/user") is None
+
+    def test_passes_through_relative_path(self) -> None:
+        assert _translate_windows_drive_path("pm2") is None
+        assert _translate_windows_drive_path("./pm2") is None
+
+    def test_rejects_path_with_colon_but_no_separator(self) -> None:
+        # ``Q:foo`` is a Windows drive-relative path (rare, ambiguous on
+        # POSIX). We refuse to guess.
+        assert _translate_windows_drive_path("Q:foo") is None
+
+    def test_rejects_non_letter_drive_prefix(self) -> None:
+        assert _translate_windows_drive_path("1:/foo") is None
+        assert _translate_windows_drive_path(":/foo") is None
+
+
+class NormalizePathTests(unittest.TestCase):
+    def test_drive_letter_path_is_translated_before_resolve(self) -> None:
+        from muxdeck.adapters.git_adapter import _normalize_path
+
+        # On POSIX, ``Path("Q:/pm2").resolve()`` would join the literal
+        # text onto the cwd (e.g. ``/home/x/Q:/pm2``). The translator
+        # routes it through ``/mnt/<letter>/`` instead, which is what the
+        # rest of the adapter assumes.
+        assert _normalize_path("Q:/pm2") == Path("/mnt/q/pm2")
+        assert _normalize_path("C:\\Users\\me") == Path("/mnt/c/Users/me")

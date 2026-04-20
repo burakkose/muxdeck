@@ -207,6 +207,37 @@ class WorktreeControllerTests(unittest.TestCase):
         if self.runtime_dir.exists():
             shutil.rmtree(self.runtime_dir)
 
+    def test_get_worktree_detail_degrades_when_git_inspection_fails(self) -> None:
+        """If a worktree's git internals are unreadable from this host
+        (e.g. a Windows-side ``.git`` pointer file referencing a drive
+        path that does not resolve under WSL), the detail view must
+        still render with a degraded ``branch_status`` instead of
+        crashing the screen."""
+        from muxdeck.exceptions import GitCommandError
+
+        created = self.controller.create_worktree(
+            self.repo_root,
+            task_title="Replay state",
+            attach_agent_id="agent-1",
+        )
+        assert created.worktree is not None
+
+        def _raise(_cwd: str | Path, /) -> GitRepositorySnapshot:
+            raise GitCommandError(
+                command="git rev-parse --show-toplevel",
+                stderr="fatal: not a git repository",
+                exit_code=128,
+            )
+
+        self.git.inspect_repository = _raise  # type: ignore[method-assign]
+
+        detail = self.controller.get_worktree_detail(created.worktree.summary.worktree_id)
+
+        assert detail.branch_status is not None
+        self.assertIn("unreadable", detail.branch_status)
+        self.assertEqual(detail.status_entries, ())
+        self.assertEqual(detail.recent_commits, ())
+
     def test_create_list_and_start_agent_intent(self) -> None:
         created = self.controller.create_worktree(
             self.repo_root,

@@ -8,7 +8,7 @@ from typing import Protocol
 
 from muxdeck.adapters.sqlite_store import SessionContextRecord
 from muxdeck.domain.models import Agent, Session, Worktree
-from muxdeck.exceptions import PersistenceError
+from muxdeck.exceptions import GitCommandError, PersistenceError
 from muxdeck.parsers.git_parser import GitStatusEntry
 from muxdeck.services.worktree_service import (
     WorktreeCreateResult,
@@ -286,7 +286,23 @@ class WorktreeController:
     ) -> WorktreeDetailView:
         contexts = tuple(self._store.list_session_contexts_for_worktree(worktree.id))
         sessions = tuple(self._store.list_sessions_for_worktree(worktree.id))
-        git_details = self._service.inspect_git_details(worktree.id, commit_limit=5)
+        try:
+            git_details = self._service.inspect_git_details(worktree.id, commit_limit=5)
+        except (GitCommandError, OSError):
+            # The worktree is unreadable from this host (e.g. a Windows-side
+            # git pointer file referencing a drive path that does not resolve
+            # under WSL). Degrade gracefully so the screen still renders.
+            return WorktreeDetailView(
+                summary=self._build_summary(worktree, conflicts=conflicts),
+                conflicts=self._render_conflicts(conflicts),
+                active_session_ids=tuple(
+                    session.id for session in sessions if session.ended_at is None
+                ),
+                pane_targets=tuple(
+                    context.tmux_pane_id for context in contexts if context.tmux_pane_id is not None
+                ),
+                branch_status="unreadable: git could not inspect this worktree",
+            )
         return WorktreeDetailView(
             summary=self._build_summary(worktree, conflicts=conflicts),
             conflicts=self._render_conflicts(conflicts),
