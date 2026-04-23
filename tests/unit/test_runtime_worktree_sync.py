@@ -160,7 +160,8 @@ class TestRuntimeWorktreeSync(unittest.TestCase):
         )
 
         class FailingSync:
-            def sync_worktrees_from_git(self, repo_roots) -> Never:
+            def sync_worktrees_from_git(self, repo_roots: Sequence[Path]) -> Never:
+                del repo_roots
                 msg = "sync failed"
                 raise RuntimeError(msg)
 

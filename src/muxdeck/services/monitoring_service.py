@@ -57,53 +57,101 @@ class MonitoringSessionResolver(Protocol):
 
 @runtime_checkable
 class MonitoringSnapshot(Protocol):
-    tmux_session_name: str
-    tmux_window_id: str
-    tmux_window_name: str | None
-    pane_id: str
-    pane_tty: str | None
-    pane_current_path: str | None
-    pane_pid: int | None
-    pane_dead: bool | None
-    repo_root: str | None
-    branch: str | None
+    @property
+    def tmux_session_name(self) -> str: ...
+
+    @property
+    def tmux_window_id(self) -> str: ...
+
+    @property
+    def tmux_window_name(self) -> str | None: ...
+
+    @property
+    def pane_id(self) -> str: ...
+
+    @property
+    def pane_tty(self) -> str | None: ...
+
+    @property
+    def pane_current_path(self) -> str | None: ...
+
+    @property
+    def pane_pid(self) -> int | None: ...
+
+    @property
+    def pane_dead(self) -> bool | None: ...
+
+    @property
+    def repo_root(self) -> str | None: ...
+
+    @property
+    def branch(self) -> str | None: ...
 
 
 @runtime_checkable
 class MonitoringUsage(Protocol):
-    input_tokens: int | None
-    output_tokens: int | None
-    total_tokens: int | None
-    cost: Decimal | None
-    currency: str | None
+    @property
+    def input_tokens(self) -> int | None: ...
+
+    @property
+    def output_tokens(self) -> int | None: ...
+
+    @property
+    def total_tokens(self) -> int | None: ...
+
+    @property
+    def cost(self) -> Decimal | None: ...
+
+    @property
+    def currency(self) -> str | None: ...
 
 
 @runtime_checkable
 class MonitoringParseResult(Protocol):
-    boundaries: Sequence[object]
-    ui_markers: Sequence[object]
-    activity_markers: Sequence[object]
+    @property
+    def boundaries(self) -> Sequence[object]: ...
+
+    @property
+    def ui_markers(self) -> Sequence[object]: ...
+
+    @property
+    def activity_markers(self) -> Sequence[object]: ...
 
 
 @runtime_checkable
 class MonitoringEvidence(Protocol):
-    latest_usage: MonitoringUsage | None
-    copilot_session_id: str | None
-    blocking_issue_kinds: Sequence[str]
-    error_messages: Sequence[str]
-    parse_result: MonitoringParseResult
+    @property
+    def latest_usage(self) -> MonitoringUsage | None: ...
+
+    @property
+    def copilot_session_id(self) -> str | None: ...
+
+    @property
+    def blocking_issue_kinds(self) -> Sequence[str]: ...
+
+    @property
+    def error_messages(self) -> Sequence[str]: ...
+
+    @property
+    def parse_result(self) -> MonitoringParseResult: ...
 
 
 @runtime_checkable
 class MonitoringLocalSessionUsage(Protocol):
-    input_tokens: int | None
-    output_tokens: int | None
+    @property
+    def input_tokens(self) -> int | None: ...
+
+    @property
+    def output_tokens(self) -> int | None: ...
 
 
 @runtime_checkable
 class MonitoringLocalSession(Protocol):
-    session_id: str
-    usage: MonitoringLocalSessionUsage | None
+    @property
+    def session_id(self) -> str: ...
+
+    @property
+    def usage(self) -> MonitoringLocalSessionUsage | None: ...
 
 
 @runtime_checkable

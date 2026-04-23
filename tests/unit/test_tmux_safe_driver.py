@@ -27,5 +27,7 @@ class TestTmuxSafeDriver:
         with patch.dict(os.environ, {"TMUX": "/tmp/tmux-1000/default,123,0"}):
             cls = _get_tmux_safe_driver()
             assert cls is not None
+            from textual.drivers.linux_driver import LinuxDriver
+
             # The subclass must override start_application_mode
-            assert cls.start_application_mode is not cls.__bases__[0].start_application_mode
+            assert cls.start_application_mode is not LinuxDriver.start_application_mode

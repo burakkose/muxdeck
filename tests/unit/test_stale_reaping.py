@@ -281,7 +281,7 @@ class TestStaleAgentReaping(unittest.TestCase):
             command_detection=CopilotCommandDetection(
                 candidate=("bash",),
                 is_likely_copilot=False,
-                reason="not_copilot",
+                reason="no_copilot_signature",
             ),
         )
         upserted: list[Agent] = []

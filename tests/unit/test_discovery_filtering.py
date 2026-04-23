@@ -11,9 +11,9 @@ from unittest.mock import MagicMock
 
 from muxdeck.adapters.copilot_adapter import (
     CopilotCommandDetection,
-    CopilotOutputParseResult,
     CopilotSessionEvidence,
 )
+from muxdeck.parsers.copilot_output_parser import CopilotOutputParseResult
 from muxdeck.services.discovery_service import (
     DiscoveryPaneSnapshot,
     _has_session_signal,
@@ -24,10 +24,10 @@ from muxdeck.services.discovery_service import (
 
 _TS = datetime(2025, 1, 1, tzinfo=UTC)
 _NO_COPILOT = CopilotCommandDetection(
-    candidate=("zsh",), is_likely_copilot=False, reason="no match"
+    candidate=("zsh",), is_likely_copilot=False, reason="no_copilot_signature"
 )
 _YES_COPILOT = CopilotCommandDetection(
-    candidate=("copilot",), is_likely_copilot=True, reason="copilot"
+    candidate=("copilot",), is_likely_copilot=True, reason="process_name"
 )
 _EMPTY_PARSE = CopilotOutputParseResult(
     session_ids=(),

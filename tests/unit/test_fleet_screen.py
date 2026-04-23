@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from textual.app import App
+from textual.widget import Widget
 from textual.widgets import Input
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -275,7 +276,7 @@ class _FleetApp(App[None]):
         self.push_screen(self._screen)
 
 
-def _render(widget: object) -> str:
+def _render(widget: Widget) -> str:
     renderable = widget.render()
     return renderable.plain if hasattr(renderable, "plain") else str(renderable)
 

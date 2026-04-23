@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+from typing import cast
 
 from muxdeck.controllers import WorktreeStartAgentIntent
 from muxdeck.screens.worktree_input import (
@@ -13,6 +14,7 @@ from muxdeck.screens.worktree_input import (
     CreateWorktreeScreen,
     LaunchAgentResult,
     LaunchAgentScreen,
+    LaunchWorktreeController,
 )
 from muxdeck.services.action_service import ActionModelHint
 
@@ -111,7 +113,7 @@ class _FakeWorktrees:
 class TestLaunchAgentScreen:
     def test_compose_is_generator(self) -> None:
         screen = LaunchAgentScreen(
-            _FakeWorktrees(),
+            cast(LaunchWorktreeController, _FakeWorktrees()),
             intent=WorktreeStartAgentIntent(
                 worktree_id="worktree-1",
                 repo_root="/repo",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
 from textual import on
 from textual.app import ComposeResult
@@ -13,9 +13,32 @@ from textual.widgets import Button, Input, Label, Static
 
 from muxdeck import theme
 from muxdeck.bindings import BindingSpec
-from muxdeck.controllers import WorktreeController, WorktreeStartAgentIntent
+from muxdeck.controllers import WorktreeActionView, WorktreeStartAgentIntent
 from muxdeck.exceptions import DomainValidationError, PersistenceError
 from muxdeck.services.action_service import ActionModelHint
+
+
+class LaunchWorktreeController(Protocol):
+    def create_worktree(
+        self,
+        cwd: str,
+        /,
+        *,
+        task_title: str | None = None,
+    ) -> WorktreeActionView: ...
+
+    def attach_worktree(self, path: str, /) -> WorktreeActionView: ...
+
+    def start_agent_intent(
+        self,
+        worktree_id: str,
+        /,
+        *,
+        prompt: str | None = None,
+        model: str | None = None,
+        target_session_name: str | None = None,
+        window_name: str | None = None,
+    ) -> WorktreeStartAgentIntent: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -319,7 +342,7 @@ class LaunchAgentScreen(ModalScreen[LaunchAgentResult]):
 
     def __init__(
         self,
-        worktrees: WorktreeController,
+        worktrees: LaunchWorktreeController,
         *,
         intent: WorktreeStartAgentIntent,
         model_hint: ActionModelHint,

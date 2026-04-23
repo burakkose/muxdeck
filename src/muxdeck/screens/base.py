@@ -10,6 +10,7 @@ from textual.app import ComposeResult
 from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widget import Widget
+from textual.worker import Worker
 
 from muxdeck.bindings import KeyHint
 from muxdeck.widgets.common import KeyHintFooter, TabBar
@@ -164,7 +165,7 @@ class ShellScreen(Screen[None]):
     # ``on_worker_state_changed`` MUST call ``super().on_worker_state_changed(event)``
     # so this counter stays accurate.
 
-    def on_worker_state_changed(self, event: events.Event) -> None:
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         # Imported lazily to avoid a hard dep on textual.worker at import.
         from textual.worker import WorkerState
 

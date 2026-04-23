@@ -120,3 +120,8 @@ show_error_codes = true
 pretty = true
 explicit_package_bases = true
 no_implicit_reexport = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+warn_unused_ignores = false

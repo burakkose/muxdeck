@@ -9,9 +9,11 @@ from typing import Literal, cast
 from muxdeck.app import MuxdeckApp, MuxdeckRuntime
 from muxdeck.controllers.attention_controller import AttentionController
 from muxdeck.controllers.dashboard_controller import (
+    DashboardAgentListItemView,
     DashboardAlertView,
     DashboardFilterState,
     DashboardHealthSummary,
+    DashboardSelectedAgentView,
     DashboardSort,
     DashboardState,
 )
@@ -30,8 +32,25 @@ class _FakeDashboardController:
         del filters, selected_agent_id, preview_line_limit, alert_limit
         return _empty_state()
 
-    def build_selected_agent_view(self, *_args: object, **_kwargs: object) -> object:
-        raise NotImplementedError
+    def build_selected_agent_view(
+        self,
+        item: DashboardAgentListItemView,
+        *,
+        preview_line_limit: int = 8,
+    ) -> DashboardSelectedAgentView:
+        del preview_line_limit
+        return DashboardSelectedAgentView(
+            item=item,
+            repo_root="/repo",
+            worktree_id="wt-1",
+            session_count=0,
+            open_session_id=None,
+            copilot_session_id=None,
+            latest_event_kind=None,
+            latest_event_severity=None,
+            latest_event_at=None,
+            log_preview=(),
+        )
 
 
 class _RecordingNotifier:
@@ -61,7 +80,7 @@ def _empty_state() -> DashboardState:
         filters=DashboardFilterState(),
         sort=DashboardSort(),
         health=DashboardHealthSummary(
-            tone="ok",
+            tone="healthy",
             message="",
             total_agents=0,
             active_agents=0,

@@ -1252,6 +1252,19 @@ def rendered_text(widget: object) -> str:
     return renderable.plain if hasattr(renderable, "plain") else str(renderable)
 
 
+async def wait_for_action_call(
+    pilot: object,
+    calls: list[tuple[object, ...]],
+    *,
+    minimum_count: int,
+    attempts: int = 5,
+) -> None:
+    for _ in range(attempts):
+        if len(calls) >= minimum_count:
+            return
+        await cast(Any, pilot).pause()
+
+
 @pytest.mark.asyncio
 async def test_textual_shell_navigation_and_updates() -> None:
     runtime = FakeRuntime()
@@ -1277,15 +1290,20 @@ async def test_textual_shell_navigation_and_updates() -> None:
             assert "output    30" in detail_text
             assert "output" in rendered_text(app.screen.query_one("#dashboard-log")).lower()
 
-            await pilot.press("p")
+            cast(Any, app.screen.query_one("#dashboard-agents")).focus_list()
             await pilot.pause()
+
+            expected_calls = len(runtime.actions.calls) + 1
+            await pilot.press("p")
+            await wait_for_action_call(pilot, runtime.actions.calls, minimum_count=expected_calls)
             assert runtime.actions.calls[-1] == ("open_pane", "%1")
             assert "focused pane %1" in rendered_text(app.screen.query_one("#shell-footer")).lower()
 
+            expected_calls = len(runtime.actions.calls) + 1
             await pilot.press("i")
             await pilot.pause()
             await pilot.press("y")
-            await pilot.pause()
+            await wait_for_action_call(pilot, runtime.actions.calls, minimum_count=expected_calls)
             assert runtime.actions.calls[-1] == ("interrupt", "%1")
             assert (
                 "sent interrupt to pane %1"
@@ -1308,8 +1326,9 @@ async def test_textual_shell_navigation_and_updates() -> None:
             assert "Tighten worktree board layout" in worktree_detail
             assert "src/app.py" in worktree_detail
 
+            expected_calls = len(runtime.actions.calls) + 1
             await pilot.press("g")
-            await pilot.pause()
+            await wait_for_action_call(pilot, runtime.actions.calls, minimum_count=expected_calls)
             assert cast(tuple[object, ...], runtime.actions.calls[-1]) == (
                 "open_terminal",
                 "/repo/worktrees/ui",
@@ -1333,8 +1352,9 @@ async def test_textual_shell_navigation_and_updates() -> None:
                 in rendered_text(app.screen.query_one("#launch-agent-model-help")).lower()
             )
 
+            expected_calls = len(runtime.actions.calls) + 1
             await pilot.press("enter")
-            await pilot.pause()
+            await wait_for_action_call(pilot, runtime.actions.calls, minimum_count=expected_calls)
             assert cast(tuple[object, ...], runtime.actions.calls[-1]) == (
                 "start_agent",
                 "/repo/worktrees/ui",

@@ -15,6 +15,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from muxdeck.adapters.git_adapter import (
+    GitCommitSummary,
     GitRepositorySnapshot,
     GitWorktreeCreateOutcome,
     GitWorktreeCreateRequest,
@@ -47,6 +48,16 @@ class FakeGit:
 
     def inspect_repository(self, cwd: str | Path, /) -> GitRepositorySnapshot:
         raise NotImplementedError
+
+    def list_recent_commits(
+        self,
+        cwd: str | Path,
+        /,
+        *,
+        limit: int = 5,
+    ) -> tuple[GitCommitSummary, ...]:
+        del cwd, limit
+        return ()
 
     def create_worktree(
         self, cwd: str | Path, request: GitWorktreeCreateRequest, /

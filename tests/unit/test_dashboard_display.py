@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from textual.widget import Widget
+
 from muxdeck.controllers import (
     DashboardAgentListItemView,
     DashboardHealthSummary,
@@ -109,7 +111,7 @@ def _selected_agent(
     )
 
 
-def _render(widget: object) -> str:
+def _render(widget: Widget) -> str:
     renderable = widget.render()
     return renderable.plain if hasattr(renderable, "plain") else str(renderable)
 
@@ -251,7 +253,7 @@ class TestAgentListTable:
         status_cells = table.columns[1]._cells
         cell = status_cells[0]
         assert "●" in str(cell)
-        assert GREEN in str(cell.style)
+        assert GREEN in str(getattr(cell, "style", ""))
 
     def test_attention_running_agent_shows_review_status(self):
         from muxdeck.theme import ORANGE
@@ -269,7 +271,7 @@ class TestAgentListTable:
         status_cells = table.columns[1]._cells
         cell = status_cells[0]
         assert "●" in str(cell)
-        assert ORANGE in str(cell.style)
+        assert ORANGE in str(getattr(cell, "style", ""))
 
     def test_stuck_agent_shows_stuck_status(self):
         from muxdeck.theme import YELLOW
@@ -283,7 +285,7 @@ class TestAgentListTable:
         status_cells = table.columns[1]._cells
         cell = status_cells[0]
         assert "●" in str(cell)
-        assert YELLOW in str(cell.style)
+        assert YELLOW in str(getattr(cell, "style", ""))
 
     def test_list_surfaces_activity_and_status_columns(self):
         from muxdeck.widgets.dashboard import AgentListPanel

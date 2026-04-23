@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from textual.widget import Widget
+
 from muxdeck.controllers.fleet_controller import (
     FleetAgentSummaryView,
     FleetFilterState,
@@ -207,7 +209,7 @@ def _state() -> FleetState:
     )
 
 
-def _render(widget: object) -> str:
+def _render(widget: Widget) -> str:
     renderable = widget.render()
     return renderable.plain if hasattr(renderable, "plain") else str(renderable)
 

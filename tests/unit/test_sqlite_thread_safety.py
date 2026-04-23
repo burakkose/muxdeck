@@ -6,13 +6,14 @@ from __future__ import annotations
 
 import threading
 from datetime import UTC, datetime
+from pathlib import Path
 
 from muxdeck.adapters.sqlite_store import SQLiteStore
 from muxdeck.domain.enums import AgentStatus
 from muxdeck.domain.models import Agent
 
 
-def test_cross_thread_write_and_read(tmp_path) -> None:
+def test_cross_thread_write_and_read(tmp_path: Path) -> None:
     """sync_store on a worker thread can write data that main store reads."""
     db_path = tmp_path / "test.db"
 
@@ -62,7 +63,7 @@ def test_cross_thread_write_and_read(tmp_path) -> None:
     worker_store.close()
 
 
-def test_default_store_rejects_cross_thread_access(tmp_path) -> None:
+def test_default_store_rejects_cross_thread_access(tmp_path: Path) -> None:
     """Default SQLiteStore raises when accessed from a non-creating thread."""
     db_path = tmp_path / "test.db"
     store = SQLiteStore(database_path=db_path)

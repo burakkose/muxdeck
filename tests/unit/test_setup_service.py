@@ -8,10 +8,11 @@ import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from muxdeck.exceptions import TmuxCommandError
 from muxdeck.parsers.tmux_parser import TmuxListPanesParseResult, TmuxPaneRecord
-from muxdeck.services.setup_service import SetupDoctorService
+from muxdeck.services.setup_service import SetupDoctorService, SetupTmuxPort
 
 
 class _FakeTmux:
@@ -64,7 +65,7 @@ class SetupDoctorServiceTests(unittest.TestCase):
             socket_path=selected_socket,
         )
         service = SetupDoctorService(
-            tmux,
+            cast(SetupTmuxPort, tmux),
             env={
                 "TMUX": f"{attached_socket},401,0",
                 "TMUX_PANE": "%9",
@@ -103,7 +104,7 @@ class SetupDoctorServiceTests(unittest.TestCase):
             socket_path=None,
         )
         service = SetupDoctorService(
-            tmux,
+            cast(SetupTmuxPort, tmux),
             env={},
             socket_search_roots=(self.temp_root,),
         )
@@ -124,7 +125,7 @@ class SetupDoctorServiceTests(unittest.TestCase):
             error=TmuxCommandError("tmux list-panes -a", stderr="no server running"),
         )
         service = SetupDoctorService(
-            tmux,
+            cast(SetupTmuxPort, tmux),
             env={},
             socket_search_roots=(self.temp_root,),
         )
@@ -176,7 +177,7 @@ class SetupDoctorWindowsHostTests(unittest.TestCase):
             socket_path=None,
         )
         return SetupDoctorService(
-            tmux,  # type: ignore[arg-type]
+            cast(SetupTmuxPort, tmux),
             env={"TMUX": ""},
             clock=lambda: datetime(2026, 4, 16, tzinfo=UTC),
             socket_search_roots=(),

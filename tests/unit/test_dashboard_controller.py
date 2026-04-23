@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 import sys
 import unittest
+from typing import Literal
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -119,7 +120,7 @@ class StubActivityReader:
 
 class StubSessionResolver:
     def __init__(self, session_id: str | None = None, *, ambiguous: bool = False) -> None:
-        state = "missing"
+        state: Literal["resolved", "ambiguous", "missing"] = "missing"
         if session_id is not None:
             state = "resolved"
         elif ambiguous:

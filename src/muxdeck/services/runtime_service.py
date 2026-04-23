@@ -81,21 +81,41 @@ class RuntimeWorktreeSyncPort(Protocol):
 
 @runtime_checkable
 class RuntimeSubAgentSnapshot(Protocol):
-    display_name: str
-    agent_name: str
-    model: str | None
-    task_name: str | None
-    prompt: str | None
-    description: str | None
-    is_running: bool
-    success: bool | None
-    error_message: str | None
+    @property
+    def display_name(self) -> str: ...
+
+    @property
+    def agent_name(self) -> str: ...
+
+    @property
+    def model(self) -> str | None: ...
+
+    @property
+    def task_name(self) -> str | None: ...
+
+    @property
+    def prompt(self) -> str | None: ...
+
+    @property
+    def description(self) -> str | None: ...
+
+    @property
+    def is_running(self) -> bool: ...
+
+    @property
+    def success(self) -> bool | None: ...
+
+    @property
+    def error_message(self) -> str | None: ...
 
 
 @runtime_checkable
 class RuntimeSubAgentTree(Protocol):
-    running: Sequence[RuntimeSubAgentSnapshot]
-    recent: Sequence[RuntimeSubAgentSnapshot]
+    @property
+    def running(self) -> Sequence[RuntimeSubAgentSnapshot]: ...
+
+    @property
+    def recent(self) -> Sequence[RuntimeSubAgentSnapshot]: ...
 
 
 @runtime_checkable

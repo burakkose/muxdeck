@@ -6,14 +6,24 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from stat import S_ISSOCK
-from typing import Literal
+from typing import Literal, Protocol
 
-from muxdeck.adapters.tmux_adapter import TmuxAdapter, parse_tmux_socket_path
+from muxdeck.adapters.tmux_adapter import parse_tmux_socket_path
 from muxdeck.adapters.windows_host import WindowsHostInfo
 from muxdeck.exceptions import TmuxCommandError
+from muxdeck.parsers.tmux_parser import TmuxListPanesParseResult
 from muxdeck.types import PathLike
 
 SetupCheckStatus = Literal["ok", "warning", "error", "info"]
+
+
+class SetupTmuxPort(Protocol):
+    @property
+    def socket_path(self) -> Path | None: ...
+
+    def list_panes(self) -> TmuxListPanesParseResult: ...
+
+    def set_socket_path(self, socket_path: PathLike | None) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +78,7 @@ class SetupDoctorReport:
 class SetupDoctorService:
     def __init__(
         self,
-        tmux: TmuxAdapter,
+        tmux: SetupTmuxPort,
         *,
         configured_socket_path: Path | None = None,
         env: Mapping[str, str] | None = None,

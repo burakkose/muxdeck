@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from typing import cast
 
 from muxdeck.controllers.agent_controller import (
     AgentIntentView,
@@ -13,6 +14,7 @@ from muxdeck.domain.enums import AgentStatus
 from muxdeck.services.action_service import (
     ActionResult,
     TmuxActionService,
+    TmuxOperations,
 )
 
 # -------------------------------------------------------------------
@@ -124,12 +126,16 @@ def _restart_intent(
 # -------------------------------------------------------------------
 
 
+def _service(tmux: FakeTmux) -> TmuxActionService:
+    return TmuxActionService(cast(TmuxOperations, tmux))
+
+
 class TestRestartExecution:
     """Tests for the restart intent in execute_intent."""
 
     def test_restart_sends_interrupt_then_command(self) -> None:
         tmux = FakeTmux(existing_panes={"%1"})
-        svc = TmuxActionService(tmux)
+        svc = _service(tmux)
         intent = _restart_intent("%1", task_title="fix bug")
 
         result = svc.execute_intent(intent)
@@ -149,7 +155,7 @@ class TestRestartExecution:
 
     def test_restart_without_task_sends_plain_copilot(self) -> None:
         tmux = FakeTmux(existing_panes={"%1"})
-        svc = TmuxActionService(tmux)
+        svc = _service(tmux)
         intent = _restart_intent("%1", task_title="")
 
         result = svc.execute_intent(intent)
@@ -162,7 +168,7 @@ class TestRestartExecution:
     def test_restart_no_task_title_in_metadata(self) -> None:
         """When task_title key is absent, defaults to plain copilot."""
         tmux = FakeTmux(existing_panes={"%1"})
-        svc = TmuxActionService(tmux)
+        svc = _service(tmux)
         intent = AgentIntentView(
             kind="restart",
             agent=_TARGET,
@@ -178,7 +184,7 @@ class TestRestartExecution:
 
     def test_restart_pane_not_found(self) -> None:
         tmux = FakeTmux(existing_panes=set())
-        svc = TmuxActionService(tmux)
+        svc = _service(tmux)
         intent = _restart_intent("%99")
 
         result = svc.execute_intent(intent)
@@ -189,7 +195,7 @@ class TestRestartExecution:
 
     def test_restart_result_has_correct_pane_id(self) -> None:
         tmux = FakeTmux(existing_panes={"%3"})
-        svc = TmuxActionService(tmux)
+        svc = _service(tmux)
         intent = _restart_intent("%3", task_title="deploy")
 
         result = svc.execute_intent(intent)
@@ -199,7 +205,7 @@ class TestRestartExecution:
     def test_restart_falls_back_to_agent_pane_target(self) -> None:
         """When metadata has no pane_target, use agent's pane."""
         tmux = FakeTmux(existing_panes={"%1"})
-        svc = TmuxActionService(tmux)
+        svc = _service(tmux)
         intent = AgentIntentView(
             kind="restart",
             agent=_TARGET,
@@ -223,7 +229,7 @@ class TestStopAllAgents:
 
     def test_stop_all_interrupts_each_pane(self) -> None:
         tmux = FakeTmux(existing_panes={"%1", "%2", "%3"})
-        svc = TmuxActionService(tmux)
+        svc = _service(tmux)
 
         results = svc.stop_all_agents(["%1", "%2", "%3"])
 
@@ -236,7 +242,7 @@ class TestStopAllAgents:
 
     def test_stop_all_handles_missing_panes(self) -> None:
         tmux = FakeTmux(existing_panes={"%1"})
-        svc = TmuxActionService(tmux)
+        svc = _service(tmux)
 
         results = svc.stop_all_agents(["%1", "%99"])
 
@@ -246,7 +252,7 @@ class TestStopAllAgents:
 
     def test_stop_all_empty_list(self) -> None:
         tmux = FakeTmux()
-        svc = TmuxActionService(tmux)
+        svc = _service(tmux)
 
         results = svc.stop_all_agents([])
 
@@ -255,7 +261,7 @@ class TestStopAllAgents:
 
     def test_stop_all_returns_action_results(self) -> None:
         tmux = FakeTmux(existing_panes={"%5"})
-        svc = TmuxActionService(tmux)
+        svc = _service(tmux)
 
         results = svc.stop_all_agents(["%5"])
 
@@ -265,7 +271,7 @@ class TestStopAllAgents:
 
     def test_stop_all_preserves_order(self) -> None:
         tmux = FakeTmux(existing_panes={"%a", "%b", "%c"})
-        svc = TmuxActionService(tmux)
+        svc = _service(tmux)
 
         results = svc.stop_all_agents(["%a", "%b", "%c"])
 

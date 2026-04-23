@@ -39,11 +39,20 @@ class FakeParseResult:
 
 @dataclass(frozen=True, slots=True)
 class FakeEvidence:
-    latest_usage: object | None = None
+    latest_usage: FakeUsage | None = None
     copilot_session_id: str | None = None
     blocking_issue_kinds: tuple[str, ...] = ()
     error_messages: tuple[str, ...] = ()
     parse_result: FakeParseResult = field(default_factory=FakeParseResult)
+
+
+@dataclass(frozen=True, slots=True)
+class FakeUsage:
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cost: Decimal | None = None
+    currency: str | None = None
 
 
 class TestActivitySignalNone:
@@ -62,7 +71,7 @@ class TestActivitySignalIgnoresStaleData:
         assert _has_activity_signal(ev) is False
 
     def test_usage_alone_not_activity(self) -> None:
-        ev = FakeEvidence(latest_usage=object())
+        ev = FakeEvidence(latest_usage=FakeUsage())
         assert _has_activity_signal(ev) is False
 
     def test_blocking_issues_alone_not_activity(self) -> None:

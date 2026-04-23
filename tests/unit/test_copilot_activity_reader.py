@@ -16,20 +16,20 @@ class _FakeStore:
     extra_roots: tuple[SessionStoreRoot, ...] = ()
 
 
-def _write(path: Path, events: list[dict]) -> None:
+def _write(path: Path, events: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as fh:
         for e in events:
             fh.write(json.dumps(e) + "\n")
 
 
-def _append(path: Path, events: list[dict]) -> None:
+def _append(path: Path, events: list[dict[str, object]]) -> None:
     with path.open("a", encoding="utf-8") as fh:
         for e in events:
             fh.write(json.dumps(e) + "\n")
 
 
-def _start(*, call_id: str, tool: str, ts: str, **args: object) -> dict:
+def _start(*, call_id: str, tool: str, ts: str, **args: object) -> dict[str, object]:
     return {
         "type": "tool.execution_start",
         "timestamp": ts,
@@ -41,7 +41,7 @@ def _start(*, call_id: str, tool: str, ts: str, **args: object) -> dict:
     }
 
 
-def _complete(*, call_id: str, ts: str) -> dict:
+def _complete(*, call_id: str, ts: str) -> dict[str, object]:
     return {
         "type": "tool.execution_complete",
         "timestamp": ts,
@@ -269,7 +269,7 @@ def test_handles_partial_trailing_line(tmp_path: Path) -> None:
 # ── transcript capture ────────────────────────────────────────────────────
 
 
-def _assistant_message(*, ts: str, content: str) -> dict:
+def _assistant_message(*, ts: str, content: str) -> dict[str, object]:
     return {
         "type": "assistant.message",
         "timestamp": ts,
@@ -277,7 +277,7 @@ def _assistant_message(*, ts: str, content: str) -> dict:
     }
 
 
-def _user_message(*, ts: str, content: str) -> dict:
+def _user_message(*, ts: str, content: str) -> dict[str, object]:
     return {
         "type": "user.message",
         "timestamp": ts,

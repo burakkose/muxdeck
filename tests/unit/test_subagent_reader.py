@@ -290,7 +290,7 @@ class TestSubAgentReader:
         original_open = Path.open
 
         def tracking_open(self: Path, *args: object, **kwargs: object) -> object:
-            fh = original_open(self, *args, **kwargs)  # type: ignore[arg-type]
+            fh = original_open(self, *args, **kwargs)  # type: ignore[call-overload]
             if self == events_path:
                 original_read = fh.read
 

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from textual.binding import Binding
+
 from muxdeck.bindings import (
     DASHBOARD_BINDINGS,
     DASHBOARD_HINTS,
@@ -74,12 +76,12 @@ class TestBindingsPresent:
     """Verify new bindings exist in the binding lists."""
 
     def test_stop_all_binding_in_dashboard(self) -> None:
-        actions = [b.action if hasattr(b, "action") else b[1] for b in DASHBOARD_BINDINGS]
+        actions = [b.action if isinstance(b, Binding) else b[1] for b in DASHBOARD_BINDINGS]
         assert "stop_all" in actions
 
     def test_stop_all_uses_capital_s(self) -> None:
         binding = next(
-            b for b in DASHBOARD_BINDINGS if hasattr(b, "action") and b.action == "stop_all"
+            b for b in DASHBOARD_BINDINGS if isinstance(b, Binding) and b.action == "stop_all"
         )
         assert binding.key == "S"
 
@@ -88,12 +90,14 @@ class TestBindingsPresent:
         assert "stop all" in labels
 
     def test_launch_agent_binding_in_worktrees(self) -> None:
-        actions = [b.action if hasattr(b, "action") else b[1] for b in WORKTREE_BINDINGS]
+        actions = [b.action if isinstance(b, Binding) else b[1] for b in WORKTREE_BINDINGS]
         assert "launch_agent" in actions
 
     def test_launch_agent_uses_all_launch_keys(self) -> None:
         keys = {
-            b.key for b in WORKTREE_BINDINGS if hasattr(b, "action") and b.action == "launch_agent"
+            b.key
+            for b in WORKTREE_BINDINGS
+            if isinstance(b, Binding) and b.action == "launch_agent"
         }
         assert keys == {"enter", "s", "x"}
 

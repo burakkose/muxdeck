@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import MagicMock
 
-from textual.worker import WorkerState
+from textual.worker import Worker, WorkerState
 
 from muxdeck.screens.base import ShellScreen
 
 
-def _make_event(state: WorkerState) -> SimpleNamespace:
-    return SimpleNamespace(worker=SimpleNamespace(state=state))
+def _make_event(state: WorkerState) -> Worker.StateChanged:
+    return cast(
+        Worker.StateChanged,
+        SimpleNamespace(worker=SimpleNamespace(state=state)),
+    )
 
 
 def test_active_worker_counter_increments_and_decrements() -> None:
