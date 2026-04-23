@@ -1,6 +1,65 @@
 # muxdeck
 
-A local Textual operator console for discovering and monitoring GitHub Copilot CLI panes in tmux.
+**muxdeck** is an experimental **TUI (textual user interface)** for discovering, monitoring,
+and operating **GitHub Copilot CLI agents running inside tmux**.
+
+It is built for people who are already using Copilot CLI in multiple panes and want a single
+local control surface to see what is running, jump between panes, inspect recent activity, and
+replay session history without leaving the terminal.
+
+## Experimental status
+
+This project is currently in **experimentation mode**.
+
+The goal is to explore what a strong local operator experience for Copilot-in-tmux workflows
+should look like before the UX, terminology, and feature boundaries are treated as stable. The
+requirements are based on my day-to-day workflow, so the project is still in an **exploration
+phase**. You should expect active iteration, rough edges, and behavior that may still change as
+the model, runtime, and operator workflows become clearer.
+
+## Why this exists
+
+Running agentic workflows in tmux is powerful, but it also gets messy quickly:
+
+- panes get spread across windows and sessions
+- recent output is easy to miss
+- it becomes harder to answer "what is this agent doing right now?"
+- replaying a session after the fact is awkward from raw terminal history alone
+
+muxdeck exists to make those workflows easier to operate locally. The motivation is not to
+replace tmux, but to make **tmux-based Copilot workflows more observable and manageable**.
+
+## What muxdeck focuses on
+
+- **Discovery across tmux** so Copilot panes are easier to find
+- **Live operator visibility** for activity, status, and recent output
+- **Session rediscovery** so if a session closes unexpectedly, it is easier to continue from the
+  same repository or worktree directory
+- **Session replay** for reviewing what happened after the fact
+- **Worktree-aware workflows** for local multi-agent development
+- **Keyboard-first control** in a terminal-native interface
+
+## How about other coding CLIs?
+
+muxdeck is **primarily focused on GitHub Copilot CLI** right now because that is the workflow
+driving the product requirements.
+
+Technically, the discovery model can already surface other agent-style panes today, including
+tools such as **Codex** or **Claude Code**, when their pane behavior looks similar enough to be
+detected. But the management plumbing, workflow assumptions, and operator controls for those tools
+are **not** the primary focus yet.
+
+In other words: **discovery may work today beyond Copilot, but first-class management is being
+designed for Copilot first**.
+
+## Who it is for
+
+muxdeck is aimed at developers who:
+
+- run GitHub Copilot CLI locally
+- use **tmux** as their working environment
+- want a TUI instead of piecing together pane inspection manually
+- are comfortable trying an alpha-stage tool while the interaction model is still evolving
 
 ## Environment
 
