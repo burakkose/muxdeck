@@ -380,6 +380,32 @@ class DashboardController:
             return latest.copilot_session_id
         return None
 
+    def build_agent_items(self) -> tuple[DashboardAgentListItemView, ...]:
+        """Build the per-agent list view items.
+
+        Exposed so callers (the sync worker) can compute the expensive
+        per-agent state once per cycle and reuse it across multiple
+        downstream views (e.g. the dashboard render and the attention
+        notification path) instead of regenerating it twice.
+        """
+        with timed("dashboard.build_agent_items"):
+            agents = self._store.list_agents()
+            return tuple(self._build_agent_item(agent) for agent in agents)
+
+    def build_alerts_from_items(
+        self,
+        items: Sequence[DashboardAgentListItemView],
+        *,
+        limit: int = 20,
+    ) -> tuple[DashboardAlertView, ...]:
+        """Compute alerts from precomputed agent items.
+
+        Lets the attention path notify on alerts without paying for an
+        entire ``build_state`` (filter/sort/select/metrics/health and
+        especially the per-selection ``_build_selected_agent`` queries).
+        """
+        return self._build_alerts(items, limit=limit)
+
     def build_state(
         self,
         *,
@@ -388,15 +414,16 @@ class DashboardController:
         selected_agent_id: str | None = None,
         preview_line_limit: int = 8,
         alert_limit: int = 5,
+        precomputed_items: Sequence[DashboardAgentListItemView] | None = None,
     ) -> DashboardState:
         with timed("dashboard.build_state"):
             applied_filters = DashboardFilterState() if filters is None else filters
             applied_sort = DashboardSort() if sort is None else sort
             generated_at = self._clock()
-            with timed("dashboard.list_agents"):
-                agents = self._store.list_agents()
-            with timed("dashboard.build_agent_items"):
-                agent_views = tuple(self._build_agent_item(agent) for agent in agents)
+            if precomputed_items is None:
+                agent_views = self.build_agent_items()
+            else:
+                agent_views = tuple(precomputed_items)
             filtered_agents = self._filter_agents(agent_views, applied_filters)
             sorted_agents = self._sort_agents(filtered_agents, applied_sort)
             selected_item = self._select_agent(sorted_agents, selected_agent_id)

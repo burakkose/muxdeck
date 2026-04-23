@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -142,6 +143,12 @@ class CopilotActivityReader:
     def __init__(self, *, store: _SessionDirProvider) -> None:
         self._store = store
         self._state: dict[str, _SessionState] = {}
+        # The dashboard sync worker and the per-row detail worker can
+        # both call ``read`` / ``read_transcript`` from different
+        # threads. Serialize all access so the per-session state
+        # mutations (offsets, transcript deque, pending tool dict)
+        # stay coherent.
+        self._lock = threading.Lock()
 
     def read(self, session_id: str) -> AgentActivity | None:
         """Return the latest activity for ``session_id``, or None.
@@ -151,6 +158,10 @@ class CopilotActivityReader:
         was invented by the discovery pipeline and doesn't match a
         real Copilot session).
         """
+        with self._lock:
+            return self._read_locked(session_id)
+
+    def _read_locked(self, session_id: str) -> AgentActivity | None:
         state = self._state.get(session_id)
         if state is None:
             resolved = self._resolve_events_path(session_id)
@@ -216,10 +227,11 @@ class CopilotActivityReader:
         return self._snapshot(state)
 
     def invalidate(self, session_id: str | None = None) -> None:
-        if session_id is None:
-            self._state.clear()
-        else:
-            self._state.pop(session_id, None)
+        with self._lock:
+            if session_id is None:
+                self._state.clear()
+            else:
+                self._state.pop(session_id, None)
 
     # ── internals ────────────────────────────────────────────────────
 
@@ -364,17 +376,19 @@ class CopilotActivityReader:
         conversational content yet. Callers should fall back to the
         tmux log preview in that case.
         """
-        # Force an ingest so the transcript reflects current disk state.
-        # ``read()`` already has all the rotation / offset logic we need.
-        self.read(session_id)
-        state = self._state.get(session_id)
-        if state is None or not state.transcript:
-            return ()
-        if limit <= 0:
-            return ()
-        # deque supports slicing via list(); it's O(N) but N is bounded
-        # by _TRANSCRIPT_BUFFER_MAX (200) so this is cheap.
-        return tuple(list(state.transcript)[-limit:])
+        with self._lock:
+            # Force an ingest so the transcript reflects current disk
+            # state. ``_read_locked`` already has all the rotation /
+            # offset logic we need.
+            self._read_locked(session_id)
+            state = self._state.get(session_id)
+            if state is None or not state.transcript:
+                return ()
+            if limit <= 0:
+                return ()
+            # deque supports slicing via list(); it's O(N) but N is bounded
+            # by _TRANSCRIPT_BUFFER_MAX (200) so this is cheap.
+            return tuple(list(state.transcript)[-limit:])
 
     def _snapshot(self, state: _SessionState) -> AgentActivity:
         pending_tool: _PendingTool | None = None

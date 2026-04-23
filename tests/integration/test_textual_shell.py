@@ -1295,6 +1295,9 @@ async def test_textual_shell_navigation_and_updates() -> None:
             await pilot.press("slash")
             await pilot.press("p", "l", "a", "n", "n", "e", "r")
             await pilot.pause()
+            # Filter input is debounced (~200ms) before triggering a
+            # dashboard rebuild — wait long enough for the timer to fire.
+            await pilot.pause(0.3)
             assert "1 agents" in rendered_text(app.screen.query_one("#shell-footer"))
 
             app.action_show_worktrees()

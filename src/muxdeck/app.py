@@ -38,7 +38,6 @@ from muxdeck.controllers import (
     AgentController,
     AttentionController,
     DashboardController,
-    DashboardFilterState,
     DashboardState,
     FleetController,
     OperationsController,
@@ -509,7 +508,8 @@ class MuxdeckApp(App[None]):
     class _SyncResult:
         report: RuntimeSyncReport
         dashboard_state: DashboardState | None = None
-        attention_dashboard_state: DashboardState | None = None
+        attention_notifications: tuple[AttentionNotification, ...] = ()
+        attention_unread_count: int | None = None
 
     def _run_sync(self) -> _SyncResult | None:
         synchronizer = self.runtime.synchronizer
@@ -521,8 +521,18 @@ class MuxdeckApp(App[None]):
             # Build dashboard state here (worker thread) to avoid
             # blocking the main UI thread with SQLite queries.
             dashboard_state = None
+            attention_notifications: tuple[AttentionNotification, ...] = ()
+            attention_unread_count: int | None = None
             sync_dashboard = self.runtime.sync_dashboard
+            attention = self.runtime.attention
             if sync_dashboard is not None:
+                # Compute per-agent items once and reuse them for both
+                # the dashboard render and the attention alert path.
+                # Each item involves several SQLite queries and a
+                # JSONL tail read; building them twice (the previous
+                # behavior) doubled the cost of every sync cycle.
+                with timed("sync.build_items"):
+                    agent_items = sync_dashboard.build_agent_items()
                 try:
                     screen = self.screen
                 except Exception:
@@ -536,22 +546,23 @@ class MuxdeckApp(App[None]):
                             preview_line_limit=min(
                                 self.runtime.config.general.log_preview_lines, 24
                             ),
+                            precomputed_items=agent_items,
                         )
-            # Build an attention-filtered snapshot regardless of the active
-            # screen so OS notifications fire from any tab. Read-only
-            # against ``sync_store`` and safe to run in the worker.
-            attention_state = None
-            if sync_dashboard is not None and self.runtime.attention is not None:
-                with timed("sync.build_attention"):
-                    attention_state = sync_dashboard.build_state(
-                        filters=DashboardFilterState(attention_only=True, include_completed=True),
-                        alert_limit=20,
-                        preview_line_limit=1,
-                    )
+                # Attention only needs the alert list — derive it
+                # directly from the precomputed items instead of
+                # paying for a second full ``build_state`` (which
+                # would re-run filter/sort/select and another
+                # ``_build_selected_agent`` round-trip).
+                if attention is not None:
+                    with timed("sync.build_attention"):
+                        alerts = sync_dashboard.build_alerts_from_items(agent_items, limit=20)
+                    attention_notifications = attention.observe_alerts(alerts)
+                    attention_unread_count = attention.unread_count
             return MuxdeckApp._SyncResult(
                 report=report,
                 dashboard_state=dashboard_state,
-                attention_dashboard_state=attention_state,
+                attention_notifications=attention_notifications,
+                attention_unread_count=attention_unread_count,
             )
         except Exception:
             _log.exception("sync worker error")
@@ -569,7 +580,10 @@ class MuxdeckApp(App[None]):
                 self.last_sync_report = result.report
                 if result.dashboard_state is not None:
                     self.last_dashboard_state = result.dashboard_state
-                self._dispatch_attention_notifications(result.attention_dashboard_state)
+                self._dispatch_attention_notifications(
+                    result.attention_notifications,
+                    unread_count=result.attention_unread_count,
+                )
             elif event.state == WorkerState.ERROR:
                 _log.warning("sync worker failed: %s", event.worker.error)
             with timed("ui.refresh_widgets"):
@@ -583,11 +597,15 @@ class MuxdeckApp(App[None]):
                 self._refresh_pending = False
                 self._refresh_current_screen()
 
-    def _dispatch_attention_notifications(self, attention_state: DashboardState | None) -> None:
+    def _dispatch_attention_notifications(
+        self,
+        notifications: tuple[AttentionNotification, ...],
+        *,
+        unread_count: int | None,
+    ) -> None:
         attention = self.runtime.attention
-        if attention is None or attention_state is None:
+        if attention is None:
             return
-        notifications = attention.observe_dashboard_state(attention_state)
         notifier = self.runtime.notifier
         if notifier is not None:
             for notification in notifications:
@@ -596,7 +614,10 @@ class MuxdeckApp(App[None]):
                     notification.message,
                     _urgency_for(notification),
                 )
-        self.set_tab_badge("attention", attention.unread_count)
+        self.set_tab_badge(
+            "attention",
+            unread_count if unread_count is not None else attention.unread_count,
+        )
 
     def _refresh_screen_widgets(self, *, force: bool = False) -> None:
         screen = self.screen

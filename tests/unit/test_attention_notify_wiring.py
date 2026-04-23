@@ -134,7 +134,8 @@ def test_dispatch_attention_notifications_calls_notifier_with_mapped_urgency() -
         _alert("agent-3:stale", "warning", title="agent-3 warning", message="slow"),
     )
 
-    app._dispatch_attention_notifications(state)
+    notifications = attention.observe_alerts(state.alerts)
+    app._dispatch_attention_notifications(notifications, unread_count=attention.unread_count)
 
     # Only critical signals produce notifications; map "error" → "critical".
     assert notifier.calls == [
@@ -153,8 +154,9 @@ def test_dispatch_attention_notifications_does_not_renotify_same_ids() -> None:
     state = _state_with_alerts(
         _alert("agent-1:failed", "error"),
     )
-    app._dispatch_attention_notifications(state)
-    app._dispatch_attention_notifications(state)
+    for _ in range(2):
+        notifications = attention.observe_alerts(state.alerts)
+        app._dispatch_attention_notifications(notifications, unread_count=attention.unread_count)
 
     assert len(notifier.calls) == 1
 
@@ -162,15 +164,15 @@ def test_dispatch_attention_notifications_does_not_renotify_same_ids() -> None:
 def test_dispatch_attention_is_noop_without_attention_controller() -> None:
     notifier = _RecordingNotifier()
     app = MuxdeckApp(_make_runtime(attention=None, notifier=notifier))
-    app._dispatch_attention_notifications(_empty_state())
+    app._dispatch_attention_notifications((), unread_count=None)
     assert notifier.calls == []
 
 
-def test_dispatch_attention_does_nothing_when_state_is_none() -> None:
+def test_dispatch_attention_does_nothing_when_no_notifications() -> None:
     attention = AttentionController(_FakeDashboardController(), AttentionInboxService())
     notifier = _RecordingNotifier()
     app = MuxdeckApp(_make_runtime(attention=attention, notifier=notifier))
-    app._dispatch_attention_notifications(None)
+    app._dispatch_attention_notifications((), unread_count=0)
     assert notifier.calls == []
 
 

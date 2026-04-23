@@ -16,6 +16,7 @@ from muxdeck.controllers import (
     AgentIntentView,
     DashboardAgentListItemView,
     DashboardFilterState,
+    DashboardSelectedAgentView,
     DashboardSort,
     DashboardSortField,
     DashboardState,
@@ -56,6 +57,7 @@ _SORT_ORDER: tuple[DashboardSortField, ...] = (
 )
 
 _DASHBOARD_WORKER = "dashboard_load"
+_DASHBOARD_DETAIL_WORKER = "dashboard_detail"
 
 _NOTIFY_SEVERITY: dict[str, Literal["information", "warning", "error"]] = {
     "info": "information",
@@ -76,6 +78,21 @@ class DashboardScreen(ShellScreen):
         self._selected_agent_id: str | None = None
         self._state: DashboardState | None = None
         self._detail_timer: Timer | None = None
+        self._filter_timer: Timer | None = None
+        # Monotonic token bumped on every selection change AND every
+        # ``_apply_state``. The detail worker captures the token at
+        # kickoff and drops its result if the token has advanced —
+        # that way a slow detail load can never overwrite a fresher
+        # selection or a fresher ``_state``.
+        self._detail_request_token: int = 0
+        # Monotonic token bumped on every ``_apply_state``. The local
+        # ``_DASHBOARD_WORKER`` captures it at kickoff and drops its
+        # result if a fresher state has already been painted (e.g. the
+        # app sync worker delivered a post-refresh build while the local
+        # pre-refresh build was still running). Prevents the cold-start
+        # "instant paint from store" path from clobbering the first
+        # post-sync paint.
+        self._state_apply_seq: int = 0
         self._loading: bool = False
         # Textual fires ``on_mount`` followed immediately by ``on_show``
         # on first activation. Without this guard the screen does
@@ -138,24 +155,15 @@ class DashboardScreen(ShellScreen):
         )
         first_load = self._state is None
         if first_load:
-            # Show a loading overlay immediately. The app sync worker
-            # is about to fire too — whichever delivers first wins.
+            # Show a loading overlay immediately. We still kick off a
+            # local build below — even if the synchronizer hasn't run
+            # yet, the on-disk store typically has agents from the prior
+            # session (or the previous sync cycle). Painting that data
+            # in ~50ms beats waiting 5+ seconds for synchronizer.refresh
+            # (tmux discovery + monitoring + worktree sync) to deliver
+            # fresh state on a "loading…" screen.
             self.set_status("loading dashboard…")
             self.begin_loading(*loading_widgets)
-
-        # On the very first dashboard render, skip the local screen
-        # worker if a synchronizer exists. ``app.on_mount`` always queues
-        # an immediate sync that calls ``synchronizer.refresh()`` and
-        # then builds dashboard state — that data is FRESH. The local
-        # worker would otherwise paint stale-from-store data first and
-        # the user would briefly see incorrect state before the sync
-        # delivers a moment later.
-        if (
-            first_load
-            and getattr(self.runtime, "synchronizer", None) is not None
-            and self.muxdeck_app.last_sync_report is None
-        ):
-            return
 
         # Snapshot inputs so the worker doesn't read mutable UI state.
         # ``sync_dashboard`` uses the thread-safe SQLite connection;
@@ -166,20 +174,22 @@ class DashboardScreen(ShellScreen):
         sort = self._sort
         selected_id = self._selected_agent_id
         preview_lines = self._preview_line_limit()
+        # Capture the current state-apply sequence. If a fresher state
+        # is painted (e.g. the app sync worker delivers post-refresh
+        # data) before this worker finishes, ``on_worker_state_changed``
+        # will see the seq has advanced and drop the stale result.
+        kickoff_seq = self._state_apply_seq
 
-        def _build() -> DashboardState | None:
+        def _build() -> tuple[int, DashboardState] | None:
             try:
-                return dashboard.build_state(
+                state = dashboard.build_state(
                     filters=filters,
                     sort=sort,
                     selected_agent_id=selected_id,
                     preview_line_limit=preview_lines,
                 )
+                return (kickoff_seq, state)
             except Exception:
-                # Logged via on_worker_state_changed (state == ERROR
-                # path is bypassed because we returned cleanly). Return
-                # None so the worker terminates SUCCESS-with-no-result;
-                # the apply path drops it.
                 return None
 
         self.run_worker(_build, thread=True, exclusive=True, name=_DASHBOARD_WORKER)
@@ -197,6 +207,11 @@ class DashboardScreen(ShellScreen):
         )
         self._state = state
         self._loading = False
+        # Bump both tokens so any in-flight workers (detail load, local
+        # pre-sync state build) drop their results instead of
+        # overwriting the freshly-applied state.
+        self._detail_request_token += 1
+        self._state_apply_seq += 1
         self.end_loading(*loading_widgets)
         # Preserve the live selection across async refreshes.
         #
@@ -285,11 +300,16 @@ class DashboardScreen(ShellScreen):
                 self._state.metrics,
                 self._find_selected_agent(),
             )
+        # Bumping the token here invalidates any in-flight detail load
+        # for the previous selection so its result is dropped instead
+        # of clobbering the freshly highlighted row.
+        self._detail_request_token += 1
         # Debounce: cancel any pending detail load and schedule a new one.
-        # This prevents stacking 200ms DB calls while the user holds arrow keys.
+        # Coalesces rapid j/k presses into a single worker dispatch
+        # instead of stacking SQLite + JSONL loads per keystroke.
         if self._detail_timer is not None:
             self._detail_timer.stop()
-        self._detail_timer = self.set_timer(0.05, self._update_selected_detail)
+        self._detail_timer = self.set_timer(0.1, self._schedule_selected_detail_worker)
 
     def on_agent_list_panel_sub_agent_highlighted(
         self,
@@ -316,7 +336,13 @@ class DashboardScreen(ShellScreen):
             text_query=event.value,
             include_completed=self._filters.include_completed,
         )
-        self.refresh_data()
+        # Debounce: each keystroke would otherwise kick off a worker
+        # that re-runs ``build_state`` (per-agent SQL queries + JSONL
+        # reads). Coalesce typing bursts into a single rebuild after
+        # the user pauses.
+        if self._filter_timer is not None:
+            self._filter_timer.stop()
+        self._filter_timer = self.set_timer(0.2, self.refresh_data)
 
     def action_cursor_down(self) -> None:
         self.query_one(AgentListPanel).move_cursor(1)
@@ -702,6 +728,15 @@ class DashboardScreen(ShellScreen):
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         super().on_worker_state_changed(event)
+        if event.worker.name == _DASHBOARD_DETAIL_WORKER:
+            if event.state != WorkerState.SUCCESS:
+                return
+            result = event.worker.result
+            if not isinstance(result, tuple) or len(result) != 3:
+                return
+            token, agent_id, view = result
+            self._apply_async_detail(token, agent_id, view)
+            return
         if event.worker.name != _DASHBOARD_WORKER:
             return
         if event.state == WorkerState.ERROR:
@@ -716,9 +751,95 @@ class DashboardScreen(ShellScreen):
         if event.state != WorkerState.SUCCESS:
             return
         result = event.worker.result
-        if not isinstance(result, DashboardState):
+        if not isinstance(result, tuple) or len(result) != 2:
             return
-        self._apply_state(result, self.muxdeck_app.last_sync_report)
+        kickoff_seq, state = result
+        if not isinstance(state, DashboardState):
+            return
+        # Drop the result if a fresher state was painted while this
+        # worker was running — most commonly the app sync worker
+        # delivering post-refresh data after the cold-start "paint
+        # from store" build kicked off but before it returned.
+        if kickoff_seq != self._state_apply_seq:
+            return
+        self._apply_state(state, self.muxdeck_app.last_sync_report)
+
+    def _schedule_selected_detail_worker(self) -> None:
+        """Kick off a worker to load detail for the currently selected agent.
+
+        Runs the SQLite + JSONL work on a thread so the UI stays
+        responsive while the user holds j/k. The captured token gates
+        the result: if the user (or a fresh sync) advances state
+        before the worker finishes, the result is dropped.
+        """
+        item = self._find_selected_agent()
+        if item is None:
+            self._update_selected_detail()
+            return
+        sync_dashboard = getattr(self.runtime, "sync_dashboard", None)
+        if sync_dashboard is None:
+            # Fallback: no thread-safe controller, use the synchronous
+            # path (which lives on the UI thread but at least keeps
+            # behavior correct).
+            self._update_selected_detail()
+            return
+        token = self._detail_request_token
+        agent_id = item.agent_id
+        preview_lines = self._preview_line_limit()
+
+        def _build() -> tuple[int, str, DashboardSelectedAgentView | None]:
+            try:
+                view = sync_dashboard.build_selected_agent_view(
+                    item, preview_line_limit=preview_lines
+                )
+            except Exception:
+                return token, agent_id, None
+            return token, agent_id, view
+
+        self.run_worker(
+            _build,
+            thread=True,
+            exclusive=True,
+            name=_DASHBOARD_DETAIL_WORKER,
+        )
+
+    def _apply_async_detail(
+        self,
+        token: int,
+        agent_id: str,
+        view: DashboardSelectedAgentView | None,
+    ) -> None:
+        # Drop stale worker results — the user moved on or a fresh
+        # sync replaced ``_state`` while we were loading.
+        if token != self._detail_request_token:
+            return
+        if agent_id != self._selected_agent_id:
+            return
+        if view is None:
+            return
+        if self._state is not None:
+            self._state = DashboardState(
+                generated_at=self._state.generated_at,
+                metrics=self._state.metrics,
+                filters=self._state.filters,
+                sort=self._state.sort,
+                health=self._state.health,
+                alerts=self._state.alerts,
+                agents=self._state.agents,
+                selected_agent_id=agent_id,
+                selected_agent=view,
+            )
+            self.query_one(StatusBar).set_state(
+                self._state.health,
+                self._state.metrics,
+                view.item,
+            )
+        panel = self.query_one(AgentListPanel)
+        if panel.selected_subagent is not None:
+            self.query_one(AgentDetailPanel).set_subagent(panel.selected_subagent)
+        else:
+            self.query_one(AgentDetailPanel).set_agent(view)
+        self.query_one(LogPreviewPanel).set_logs(view)
 
     def _update_selected_detail(self) -> None:
         """Lightweight: rebuild only the detail panels for the newly selected agent."""

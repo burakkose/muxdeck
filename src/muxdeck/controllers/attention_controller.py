@@ -8,6 +8,7 @@ from typing import Protocol, runtime_checkable
 from muxdeck.controllers.dashboard_controller import (
     AlertSeverity,
     DashboardAgentListItemView,
+    DashboardAlertView,
     DashboardFilterState,
     DashboardSelectedAgentView,
     DashboardState,
@@ -151,6 +152,12 @@ class AttentionController:
         )
 
     def observe_dashboard_state(self, state: DashboardState) -> tuple[AttentionNotification, ...]:
+        return self.observe_alerts(state.alerts)
+
+    def observe_alerts(
+        self,
+        alerts: Sequence[DashboardAlertView],
+    ) -> tuple[AttentionNotification, ...]:
         signals = tuple(
             AttentionSignal(
                 alert_id=alert.alert_id,
@@ -159,7 +166,7 @@ class AttentionController:
                 message=alert.message,
                 occurred_at=alert.occurred_at,
             )
-            for alert in state.alerts
+            for alert in alerts
             if alert.alert_id
         )
         return self._inbox.observe(signals)
