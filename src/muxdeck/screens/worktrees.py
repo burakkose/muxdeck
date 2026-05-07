@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.timer import Timer
 from textual.worker import Worker, WorkerState
 
@@ -238,11 +239,24 @@ class WorktreesScreen(ShellScreen):
         self.muxdeck_app.remember_worktree_selection(target_id)
 
         def _load() -> tuple[str, WorktreeDetailView | None, WorktreeStartAgentIntent | None]:
-            return (
-                target_id,
-                worktree_service.get_worktree_detail(target_id),
-                worktree_service.start_agent_intent(target_id, model=configured_model),
-            )
+            # The user can delete or prune the worktree between the
+            # moment the worker is scheduled and the moment it runs.
+            # When that happens, the controller raises PersistenceError
+            # for a now-missing row. Swallow that here so the worker
+            # exits cleanly instead of bubbling a fatal error to the
+            # app; the stale-result guard below will discard the empty
+            # payload if the user has already moved on.
+            try:
+                detail = worktree_service.get_worktree_detail(target_id)
+            except PersistenceError:
+                return (target_id, None, None)
+            try:
+                start_intent = worktree_service.start_agent_intent(
+                    target_id, model=configured_model
+                )
+            except PersistenceError:
+                start_intent = None
+            return (target_id, detail, start_intent)
 
         self.run_worker(_load, thread=True, exclusive=True, name=_DETAIL_WORKER_NAME)
 
@@ -466,15 +480,39 @@ class WorktreesScreen(ShellScreen):
             return
         if self._selected_worktree_id is None:
             return
+        deleted_id = self._selected_worktree_id
         try:
             action_view = self.runtime.worktrees.remove_worktree(
-                self._selected_worktree_id,
+                deleted_id,
                 force=False,
             )
         except Exception as exc:
             self.set_status(f"✗ delete failed: {exc}")
             return
+        self._drop_worktree_from_local_state(deleted_id)
         self._refresh_after_worktree_action(action_view)
+
+    def _drop_worktree_from_local_state(self, worktree_id: str) -> None:
+        """Repaint the list/detail without the deleted row before the worker reloads."""
+        self._worktrees = tuple(item for item in self._worktrees if item.worktree_id != worktree_id)
+        self._selected_worktree_id = None
+        self._detail = None
+        self._start_intent = None
+        try:
+            list_panel = self.query_one(WorktreeListPanel)
+            detail_panel = self.query_one(WorktreeDetailPanel)
+            conflicts_panel = self.query_one(ConflictPanel)
+            intent_panel = self.query_one(StartIntentPanel)
+        except NoMatches:
+            return
+        list_panel.set_worktrees(
+            self._worktrees,
+            selected_worktree_id=None,
+            notify=False,
+        )
+        detail_panel.set_detail(None)
+        conflicts_panel.set_conflicts(())
+        intent_panel.set_intent(None)
 
     def action_prune_worktrees(self) -> None:
         """Prune stale worktrees after confirmation."""

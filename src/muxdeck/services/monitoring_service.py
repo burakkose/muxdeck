@@ -160,6 +160,18 @@ class MonitoringLocalSessionStore(Protocol):
         """Return cached or freshly scanned local Copilot sessions."""
 
 
+@runtime_checkable
+class MonitoringLogChunk(Protocol):
+    @property
+    def content(self) -> str: ...
+
+
+@runtime_checkable
+class MonitoringLogHistory(Protocol):
+    def get_latest_log_chunk(self, session_id: str, /) -> MonitoringLogChunk | None:
+        """Return the most recently stored capture chunk for a session."""
+
+
 @dataclass(frozen=True, slots=True)
 class MonitoringThresholds:
     waiting_input_after_seconds: int = 30
@@ -195,6 +207,7 @@ class StatusHeuristicInput:
     previous_last_activity_at: datetime | None = None
     pane_dead: bool = False
     activity_observed: bool = False
+    captured_output_changed: bool = False
     blocking_issue_kinds: tuple[str, ...] = ()
     error_messages: tuple[str, ...] = ()
     session_exit_reason: str | None = None
@@ -250,12 +263,14 @@ class MonitoringService:
         *,
         session_resolver: MonitoringSessionResolver | None = None,
         local_session_store: MonitoringLocalSessionStore | None = None,
+        log_history: MonitoringLogHistory | None = None,
         thresholds: MonitoringThresholds | None = None,
         clock: Clock = utc_now,
     ) -> None:
         self._agent_recorder = agent_recorder
         self._session_resolver = session_resolver
         self._local_session_store = local_session_store
+        self._log_history = log_history
         self._thresholds = MonitoringThresholds() if thresholds is None else thresholds
         self._clock = clock
 
@@ -278,6 +293,15 @@ class MonitoringService:
             session_evidence = discovery.session_evidence
             snapshot = discovery.snapshot
             started_at = existing_agent.started_at if existing_agent is not None else monitored_at
+            copilot_session_id = self._resolve_copilot_session_id(
+                snapshot=snapshot,
+                session_evidence=session_evidence,
+                existing_agent=existing_agent,
+            )
+            captured_output_changed = self._captured_output_changed(
+                copilot_session_id=copilot_session_id,
+                current_capture=discovery.captured_output,
+            )
             heuristic_input = StatusHeuristicInput(
                 started_at=started_at,
                 observed_at=monitored_at,
@@ -286,6 +310,7 @@ class MonitoringService:
                 ),
                 pane_dead=bool(getattr(snapshot, "pane_dead", False)),
                 activity_observed=_has_activity_signal(session_evidence),
+                captured_output_changed=captured_output_changed,
                 blocking_issue_kinds=(
                     tuple(getattr(session_evidence, "blocking_issue_kinds", ()))
                     if session_evidence is not None
@@ -309,6 +334,7 @@ class MonitoringService:
                 evaluation=evaluation,
                 existing_agent=existing_agent,
                 local_usage_by_session_id=local_usage_by_session_id,
+                copilot_session_id=copilot_session_id,
             )
             persisted = self._agent_recorder.persist_agent_facts(facts)
             results.append(
@@ -320,6 +346,23 @@ class MonitoringService:
             )
         return MonitoringReport(monitored_at=monitored_at, results=tuple(results))
 
+    def _captured_output_changed(
+        self,
+        *,
+        copilot_session_id: str | None,
+        current_capture: str | None,
+    ) -> bool:
+        if (
+            self._log_history is None
+            or copilot_session_id is None
+            or not current_capture
+            or not current_capture.strip()
+        ):
+            return False
+        previous = self._log_history.get_latest_log_chunk(copilot_session_id)
+        previous_text = None if previous is None else previous.content
+        return _capture_added_new_lines(current_capture, previous_text)
+
     def _build_agent_fact_input(
         self,
         discovery: MonitoringDiscovery,
@@ -329,6 +372,7 @@ class MonitoringService:
         evaluation: StatusHeuristicResult,
         existing_agent: Agent | None,
         local_usage_by_session_id: Mapping[str, MonitoringLocalSessionUsage],
+        copilot_session_id: str | None,
     ) -> AgentFactInput:
         snapshot = discovery.snapshot
         session_evidence = discovery.session_evidence
@@ -342,11 +386,6 @@ class MonitoringService:
         cwd = current_path or (existing_agent.cwd if existing_agent is not None else "/")
         worktree_path = current_path or (
             existing_agent.worktree_path if existing_agent is not None else None
-        )
-        copilot_session_id = self._resolve_copilot_session_id(
-            snapshot=snapshot,
-            session_evidence=session_evidence,
-            existing_agent=existing_agent,
         )
         token_input = latest_usage.input_tokens if latest_usage is not None else None
         token_output = latest_usage.output_tokens if latest_usage is not None else None
@@ -451,8 +490,9 @@ def compute_status_heuristics(
     thresholds: MonitoringThresholds | None = None,
 ) -> StatusHeuristicResult:
     applied_thresholds = MonitoringThresholds() if thresholds is None else thresholds
+    activity_observed = payload.activity_observed or payload.captured_output_changed
     last_activity_at = (
-        payload.observed_at if payload.activity_observed else payload.previous_last_activity_at
+        payload.observed_at if activity_observed else payload.previous_last_activity_at
     )
     idle_reference = last_activity_at or payload.started_at
     idle_seconds = max(0, int((payload.observed_at - idle_reference).total_seconds()))
@@ -462,7 +502,7 @@ def compute_status_heuristics(
     # Only fall through to the live-classification branches if the pane
     # produced fresh activity after mark-complete, so the user can resume
     # the same pane without it being frozen in a terminal state.
-    if payload.session_exit_reason == "marked_complete" and not payload.activity_observed:
+    if payload.session_exit_reason == "marked_complete" and not activity_observed:
         return StatusHeuristicResult(
             status=AgentStatus.COMPLETED,
             idle_seconds=idle_seconds,
@@ -521,7 +561,7 @@ def compute_status_heuristics(
     # error lines as an activity signal for the same reason.
     if (
         payload.error_messages
-        and not payload.activity_observed
+        and not activity_observed
         and idle_seconds >= applied_thresholds.error_after_seconds
     ):
         reason = payload.error_messages[0]
@@ -659,6 +699,37 @@ def _candidate_session_ids(session_evidence: MonitoringEvidence | None, /) -> tu
     if session_id is not None and session_id not in seen:
         unique.insert(0, session_id)
     return tuple(unique)
+
+
+def _capture_added_new_lines(
+    current: str | None,
+    previous: str | None,
+    /,
+    *,
+    tail_lines: int = 12,
+) -> bool:
+    """Return True when the current capture's tail contains a non-blank line that
+    did not appear anywhere in the previous capture.
+
+    A spinner that overwrites the same line position with the same characters
+    will repeat across snapshots, so it lives in `previous` and does not flag
+    activity. We deliberately ignore blank lines so that ``\\r``-padded
+    snapshots that only differ in trailing whitespace are not treated as
+    activity.
+    """
+    if current is None:
+        return False
+    current_lines = [line.rstrip() for line in current.splitlines()]
+    if not current_lines:
+        return False
+    previous_lines = set() if not previous else {line.rstrip() for line in previous.splitlines()}
+    tail = current_lines[-max(1, tail_lines) :]
+    for line in tail:
+        if not line:
+            continue
+        if line not in previous_lines:
+            return True
+    return False
 
 
 def _derive_agent_name(

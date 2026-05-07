@@ -87,8 +87,6 @@ Screen {
 
 #dashboard-root,
 #attention-root,
-#operations-root,
-#fleet-root,
 #worktrees-root,
 #replay-root,
 #sessions-root,
@@ -174,130 +172,6 @@ Screen {
 #attention-activity {
     height: auto;
     min-height: 6;
-}
-
-/* ── operations ─────────────────────────────────────────────────── */
-
-#operations-main {
-    height: 1fr;
-}
-
-#operations-agents {
-    width: 38%;
-}
-
-#operations-sidebar {
-    width: 62%;
-    height: 1fr;
-    layout: vertical;
-}
-
-#operations-top {
-    height: auto;
-    min-height: 12;
-    max-height: 16;
-}
-
-#operations-bottom {
-    height: 1fr;
-    border-top: solid #171B24;
-}
-
-#operations-selection {
-    width: 62%;
-}
-
-#operations-health {
-    width: 38%;
-    min-width: 24;
-}
-
-#operations-preview {
-    width: 68%;
-    height: 1fr;
-}
-
-#operations-sidepanels {
-    width: 32%;
-    height: 1fr;
-    layout: vertical;
-}
-
-#operations-alerts {
-    height: auto;
-    max-height: 8;
-}
-
-#operations-history {
-    height: 1fr;
-}
-
-/* ── fleet ──────────────────────────────────────────────────────── */
-
-#fleet-summary {
-    height: 1;
-    padding: 0 1;
-}
-
-#fleet-filter-input {
-    border: none;
-    height: 1;
-    background: #181C26;
-    color: #CCCAC2;
-    padding: 0 1;
-    margin: 0 1;
-}
-
-#fleet-main {
-    height: 1fr;
-}
-
-#fleet-stories {
-    width: 37%;
-    min-width: 32;
-}
-
-#fleet-side {
-    width: 63%;
-    height: 1fr;
-    layout: vertical;
-}
-
-#fleet-command {
-    height: auto;
-    min-height: 14;
-    max-height: 18;
-}
-
-#fleet-middle {
-    height: auto;
-    min-height: 11;
-    max-height: 15;
-    border-top: solid #171B24;
-}
-
-#fleet-sessions {
-    width: 62%;
-}
-
-#fleet-inbox {
-    width: 38%;
-    min-width: 26;
-}
-
-#fleet-bottom {
-    height: 1fr;
-    border-top: solid #171B24;
-}
-
-#fleet-history {
-    width: 58%;
-    height: 1fr;
-}
-
-#fleet-search {
-    width: 42%;
-    height: 1fr;
 }
 
 /* ── worktrees ───────────────────────────────────────────────────── */
@@ -538,24 +412,6 @@ ListView:focus {
     width: 56%;
 }
 
-.ux-density-comfortable #fleet-groups,
-.ux-density-comfortable #fleet-stories {
-    width: 42%;
-    min-width: 36;
-}
-
-.ux-density-comfortable #fleet-side {
-    width: 58%;
-}
-
-.ux-density-comfortable #operations-agents {
-    width: 42%;
-}
-
-.ux-density-comfortable #operations-sidebar {
-    width: 58%;
-}
-
 .ux-density-comfortable #replay-markers {
     width: 30%;
 }
@@ -590,9 +446,6 @@ ListView:focus {
 .ux-contrast-high .section-top,
 .ux-contrast-high #dashboard-log,
 .ux-contrast-high #dashboard-alerts,
-.ux-contrast-high #fleet-middle,
-.ux-contrast-high #fleet-bottom,
-.ux-contrast-high #operations-bottom,
 .ux-contrast-high #worktrees-conflicts,
 .ux-contrast-high #worktrees-intent {
     border-top: solid #48515F;
@@ -611,9 +464,6 @@ ListView:focus {
 .ux-decor-reduced .section-top,
 .ux-decor-reduced #dashboard-log,
 .ux-decor-reduced #dashboard-alerts,
-.ux-decor-reduced #fleet-middle,
-.ux-decor-reduced #fleet-bottom,
-.ux-decor-reduced #operations-bottom,
 .ux-decor-reduced #worktrees-conflicts,
 .ux-decor-reduced #worktrees-intent {
     border-top: solid #242936;

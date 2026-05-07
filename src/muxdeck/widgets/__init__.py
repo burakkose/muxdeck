@@ -6,27 +6,10 @@ from muxdeck.widgets.attention import (
 )
 from muxdeck.widgets.common import KeyHintFooter, TabBar
 from muxdeck.widgets.dashboard import (
-    ActivityPanel,
     AgentDetailPanel,
     AgentListPanel,
     AlertPanel,
-    FleetHealthPanel,
     StatusBar,
-)
-from muxdeck.widgets.fleet import (
-    FleetCommandDeckPanel,
-    FleetHistoryPanel,
-    FleetInboxPanel,
-    FleetLocalSessionsPanel,
-    FleetSearchPanel,
-    FleetStoryLanesPanel,
-    FleetSummaryBar,
-)
-from muxdeck.widgets.operations import (
-    BulkActionPreviewPanel,
-    OperationsAgentListPanel,
-    OperationsHistoryPanel,
-    OperationsSelectionPanel,
 )
 from muxdeck.widgets.replay import (
     ReplayDetailPanel,
@@ -42,7 +25,6 @@ from muxdeck.widgets.worktrees import (
 )
 
 __all__ = [
-    "ActivityPanel",
     "AgentDetailPanel",
     "AgentListPanel",
     "AlertPanel",
@@ -50,21 +32,9 @@ __all__ = [
     "AttentionDetailPanel",
     "AttentionListPanel",
     "AttentionSummaryBar",
-    "BulkActionPreviewPanel",
     "ConflictPanel",
     "DoctorDetailPanel",
-    "FleetCommandDeckPanel",
-    "FleetHealthPanel",
-    "FleetHistoryPanel",
-    "FleetInboxPanel",
-    "FleetLocalSessionsPanel",
-    "FleetSearchPanel",
-    "FleetStoryLanesPanel",
-    "FleetSummaryBar",
     "KeyHintFooter",
-    "OperationsAgentListPanel",
-    "OperationsHistoryPanel",
-    "OperationsSelectionPanel",
     "ReplayDetailPanel",
     "ReplayMarkerListPanel",
     "ReplayTranscriptPanel",

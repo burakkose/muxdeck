@@ -59,7 +59,6 @@ from muxdeck.ui_preferences import (
 )
 from muxdeck.widgets.common import (
     format_short_timestamp,
-    format_timestamp,
     item_separator,
     pipe_separator,
     status_glyph_parts,
@@ -1542,74 +1541,6 @@ def _truncate(value: str, limit: int) -> str:
     return value[: limit - 1].rstrip() + "…"
 
 
-class FleetHealthPanel(Static):
-    """Fleet-level counts — used by operations screen."""
-
-    def set_state(
-        self,
-        health: DashboardHealthSummary,
-        selected: DashboardSelectedAgentView | None,
-    ) -> None:
-        preferences = resolve_ui_preferences(self)
-        result = Text()
-        _section_header(result, "fleet", preferences=preferences)
-        tone_label, tone_color = _HEALTH_TONE_STYLES[health.tone]
-        result.append("  health   ", style=FG4)
-        result.append(f"{tone_label}\n", style=f"bold {tone_color}")
-        for label, value, style in (
-            ("agents", f"{health.total_agents} total / {health.active_agents} active", FG1),
-            ("attention", str(health.attention_agents), ORANGE),
-            ("waiting", str(health.waiting_input_agents), ORANGE),
-            ("blocked", str(health.blocked_agents), SEVERITY_ERROR),
-            ("errors", str(health.error_agents), SEVERITY_ERROR),
-        ):
-            result.append(f"  {label:<9}", style=FG4)
-            result.append(f"{value}\n", style=f"bold {style}" if label != "agents" else style)
-        if selected is not None:
-            status_label, status_style = _status_display(selected.item)
-            result.append("  selected ", style=FG4)
-            result.append(selected.item.name, style=f"bold {FG}")
-            result.append("  ")
-            result.append(status_label, style=status_style)
-        self.update(result)
-
-
-class ActivityPanel(Static):
-    """Selected-agent activity — used by operations screen."""
-
-    def set_agent(self, agent: DashboardSelectedAgentView | None) -> None:
-        preferences = resolve_ui_preferences(self)
-        result = Text()
-        _section_header(result, "activity", preferences=preferences)
-        if agent is None:
-            result.append("  no activity available", style=FG4)
-            self.update(result)
-            return
-        item = agent.item
-        activity = item.current_activity or item.task_title or "-"
-        pulse = item.sparkline if item.sparkline.strip() else "-"
-        for label, value, style in (
-            ("current", activity, FG1),
-            ("pulse", pulse, AQUA),
-            ("event", _humanize_event_kind(agent.latest_event_kind), FG2),
-            ("output", format_timestamp(item.last_log_at), FG4),
-        ):
-            if not value or value == "-":
-                continue
-            result.append(f"  {label:<8}", style=FG4)
-            result.append(f"{value}\n", style=style)
-        if not agent.recent_events:
-            result.append("  recent   no parsed activity markers", style=FG4)
-            self.update(result)
-            return
-        result.append("  recent\n", style=FG4)
-        for event in agent.recent_events[-6:]:
-            result.append("  ")
-            result.append(event, style=_event_color(event))
-            result.append("\n")
-        self.update(result)
-
-
 class LogPreviewPanel(Static):
     """Recent pane output — ANSI-stripped, timestamp-grouped, syntax-highlighted."""
 
@@ -1696,12 +1627,10 @@ class AlertPanel(Static):
 
 
 __all__ = [
-    "ActivityPanel",
     "AgentDetailPanel",
     "AgentListPanel",
     "AlertPanel",
     "FilterBar",
-    "FleetHealthPanel",
     "LogPreviewPanel",
     "StatusBar",
 ]

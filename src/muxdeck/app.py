@@ -39,8 +39,6 @@ from muxdeck.controllers import (
     AttentionController,
     DashboardController,
     DashboardState,
-    FleetController,
-    OperationsController,
     ReplayController,
     WorktreeController,
 )
@@ -50,9 +48,7 @@ from muxdeck.perf import timed
 from muxdeck.screens import (
     AttentionScreen,
     DashboardScreen,
-    FleetScreen,
     HelpScreen,
-    OperationsScreen,
     ReplayScreen,
     SetupScreen,
     WorktreesScreen,
@@ -65,7 +61,6 @@ from muxdeck.services import (
     DiscoveryService,
     MonitoringService,
     MonitoringThresholds,
-    OperationAuditService,
     ReplayService,
     RuntimeSynchronizer,
     RuntimeSyncReport,
@@ -141,13 +136,10 @@ class MuxdeckRuntime:
     sync_store: SQLiteStore | None = None
     sessions_ctrl: SessionsController | None = None
     sync_dashboard: DashboardController | None = None
-    sync_fleet: FleetController | None = None
     # Thread-safe worktree controller for worker-thread usage (worktrees screen).
     sync_worktrees: WorktreeController | None = None
     setup: SetupDoctorService | None = None
     attention: AttentionController | None = None
-    operations: OperationsController | None = None
-    fleet: FleetController | None = None
     tmux: TmuxAdapter | None = None
     pane_stream: PaneStreamAdapter | None = None
     session_resolver: InuseLockResolver | None = None
@@ -219,9 +211,6 @@ class MuxdeckApp(App[None]):
 
     def on_mount(self) -> None:
         attention = getattr(self.runtime, "attention", None)
-        operations = getattr(self.runtime, "operations", None)
-        fleet = getattr(self.runtime, "fleet", None)
-        sync_fleet = getattr(self.runtime, "sync_fleet", None)
         self.add_mode("dashboard", lambda: DashboardScreen(self.runtime))
         self.add_mode("worktrees", lambda: WorktreesScreen(self.runtime))
         self.add_mode("replay", lambda: ReplayScreen(self.runtime))
@@ -229,20 +218,6 @@ class MuxdeckApp(App[None]):
         self.add_mode("setup", lambda: SetupScreen(self.runtime))
         if attention is not None:
             self.add_mode("attention", lambda: AttentionScreen(self.runtime))
-        if operations is not None:
-            self.add_mode(
-                "operations",
-                lambda: OperationsScreen(self.runtime, operations),
-            )
-        if fleet is not None:
-            self.add_mode(
-                "fleet",
-                lambda: FleetScreen(
-                    self.runtime,
-                    controller=fleet,
-                    worker_controller=sync_fleet,
-                ),
-            )
         self.add_mode("help", lambda: HelpScreen(self.runtime))
         self._activate_mode("dashboard")
         self._apply_ui_preferences(refresh_screen=False)
@@ -269,16 +244,6 @@ class MuxdeckApp(App[None]):
         if getattr(self.runtime, "attention", None) is None:
             return
         self._activate_mode("attention")
-
-    def action_show_operations(self) -> None:
-        if getattr(self.runtime, "operations", None) is None:
-            return
-        self._activate_mode("operations")
-
-    def action_show_fleet(self) -> None:
-        if getattr(self.runtime, "fleet", None) is None:
-            return
-        self._activate_mode("fleet")
 
     def action_show_help(self) -> None:
         self._activate_mode("help")
@@ -421,18 +386,6 @@ class MuxdeckApp(App[None]):
                 SystemCommand(
                     "Open attention", "Switch to the attention inbox", self.action_show_attention
                 )
-            )
-        if getattr(self.runtime, "operations", None) is not None:
-            commands.append(
-                SystemCommand(
-                    "Open operations",
-                    "Switch to the bulk operations screen",
-                    self.action_show_operations,
-                )
-            )
-        if getattr(self.runtime, "fleet", None) is not None:
-            commands.append(
-                SystemCommand("Open fleet", "Switch to the fleet overview", self.action_show_fleet)
             )
         if not self.ui_preferences.is_default:
             commands.append(
@@ -627,7 +580,7 @@ class MuxdeckApp(App[None]):
         # spam git subprocesses or filesystem scans.
         if not force and not isinstance(
             screen,
-            DashboardScreen | AttentionScreen | OperationsScreen | FleetScreen | SessionsScreen,
+            DashboardScreen | AttentionScreen | SessionsScreen,
         ):
             return
         refresher = getattr(screen, "refresh_data", None)
@@ -758,6 +711,7 @@ def build_runtime(config: AppConfig | None = None) -> MuxdeckRuntime:
         sync_agent_service,
         session_resolver=session_resolver,
         local_session_store=cast(MonitoringLocalSessionStore, copilot_session_store),
+        log_history=sync_store,
         thresholds=MonitoringThresholds(
             waiting_input_after_seconds=max(15, resolved_config.general.discovery_interval_sec * 2),
             idle_after_seconds=resolved_config.general.idle_threshold_sec,
@@ -803,14 +757,6 @@ def build_runtime(config: AppConfig | None = None) -> MuxdeckRuntime:
     )
     agent_controller = AgentController(store, sessions)
     attention = AttentionController(dashboard, AttentionInboxService())
-    operations = OperationsController(
-        dashboard,
-        agent_controller,
-        OperationAuditService(),
-        actions=action_service,
-    )
-    fleet = FleetController(store, local_sessions=copilot_session_store)
-    sync_fleet = FleetController(sync_store, local_sessions=copilot_session_store)
     sync_dashboard = DashboardController(
         sync_store,
         subtask_registry=subtask_registry,
@@ -842,7 +788,6 @@ def build_runtime(config: AppConfig | None = None) -> MuxdeckRuntime:
         sync_store=sync_store,
         sessions_ctrl=sessions_ctrl,
         sync_dashboard=sync_dashboard,
-        sync_fleet=sync_fleet,
         setup=SetupDoctorService(
             tmux_adapter,
             configured_socket_path=resolved_config.tmux.socket_path,
@@ -850,8 +795,6 @@ def build_runtime(config: AppConfig | None = None) -> MuxdeckRuntime:
             windows_session_count_provider=lambda: copilot_session_store.count_by_origin("windows"),
         ),
         attention=attention,
-        operations=operations,
-        fleet=fleet,
         tmux=tmux_adapter,
         pane_stream=pane_stream_adapter,
         session_resolver=session_resolver,

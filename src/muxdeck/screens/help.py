@@ -45,8 +45,8 @@ _HELP_NOTES: tuple[str, ...] = (
     "Discovery scans tmux with list-panes -a across the current server",
     "Copilot panes in other windows appear on the dashboard",
     "Use the Setup screen to inspect tmux socket health and switch servers",
-    "Press y on dashboard, worktrees, sessions, or fleet to copy the selected details",
-    "Use r to rescan, j/k to move, / to filter, and 1-8 to switch screens",
+    "Press y on dashboard, worktrees, or sessions to copy the selected details",
+    "Use r to rescan, j/k to move, / to filter, and 1-6 to switch screens",
 )
 
 

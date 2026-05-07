@@ -35,10 +35,6 @@ from muxdeck.services.monitoring_service import (
     StatusHeuristicResult,
     compute_status_heuristics,
 )
-from muxdeck.services.operations_service import (
-    OperationAuditEntry,
-    OperationAuditService,
-)
 from muxdeck.services.operator_status_service import (
     OperatorStatus,
     OperatorStatusKind,
@@ -103,8 +99,6 @@ __all__ = [
     "MonitoringResult",
     "MonitoringService",
     "MonitoringThresholds",
-    "OperationAuditEntry",
-    "OperationAuditService",
     "OperatorStatus",
     "OperatorStatusKind",
     "OperatorStatusTone",

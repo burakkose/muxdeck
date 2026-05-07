@@ -31,7 +31,7 @@ from muxdeck.ui_preferences import (
     resolve_ui_preferences,
 )
 
-# Keys that perform actions on agents / the fleet. Rendered with
+# Keys that perform actions on agents. Rendered with
 # higher visual weight in the hint footer to signal that the TUI is
 # a command surface, not a passive log viewer.
 ACTION_HINT_KEYS: frozenset[str] = frozenset(
@@ -230,8 +230,6 @@ _TAB_ITEMS: Final[tuple[tuple[str, str], ...]] = (
     ("4", "sessions"),
     ("5", "setup"),
     ("6", "attention"),
-    ("7", "operations"),
-    ("8", "fleet"),
     ("?", "help"),
 )
 

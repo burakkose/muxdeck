@@ -20,7 +20,7 @@ from muxdeck.adapters.sqlite_store import SessionContextRecord
 from muxdeck.config import AppConfig
 from muxdeck.domain.models import Agent, Worktree
 from muxdeck.domain.value_objects import WorktreeId, utc_now
-from muxdeck.exceptions import DomainValidationError, PersistenceError
+from muxdeck.exceptions import DomainValidationError, GitCommandError, PersistenceError
 from muxdeck.types import Clock
 
 _log = logging.getLogger(__name__)
@@ -139,8 +139,9 @@ class WorktreeAttachResult:
 @dataclass(frozen=True, slots=True)
 class WorktreeRemoveResult:
     path: Path
-    git_outcome: GitWorktreeRemoveOutcome
+    git_outcome: GitWorktreeRemoveOutcome | None
     conflicts: tuple[WorktreeOrphanConflict, ...]
+    already_gone: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,7 +327,26 @@ class WorktreeService:
             if contexts and not force:
                 msg = f"worktree {existing.path} still has cached session context"
                 raise DomainValidationError(msg)
-        outcome = self._git.remove_worktree(target_path, force=force)
+        outcome: GitWorktreeRemoveOutcome | None
+        already_gone = False
+        try:
+            outcome = self._git.remove_worktree(target_path, force=force)
+        except GitCommandError as exc:
+            stderr = (exc.stderr or "").lower()
+            # When git tells us the worktree no longer exists, fall back
+            # to dropping just our local record so the user isn't blocked
+            # by historic state. Different git versions phrase this
+            # several ways; match all known patterns and double-check the
+            # filesystem before swallowing.
+            if self._is_worktree_missing_error(stderr) and self._path_is_absent(target_path):
+                _log.info(
+                    "worktree remove: git no longer tracks %s; dropping local record only",
+                    target_path,
+                )
+                outcome = None
+                already_gone = True
+            else:
+                raise
         if existing is not None:
             self._worktrees.delete_worktree(existing.id)
         try:
@@ -340,7 +360,42 @@ class WorktreeService:
         else:
             self._reconcile_worktrees_with_git(repo_root, remaining_worktrees)
         conflicts = self.detect_orphan_conflicts(repo_root)
-        return WorktreeRemoveResult(path=target_path, git_outcome=outcome, conflicts=conflicts)
+        return WorktreeRemoveResult(
+            path=target_path,
+            git_outcome=outcome,
+            conflicts=conflicts,
+            already_gone=already_gone,
+        )
+
+    @staticmethod
+    def _is_worktree_missing_error(stderr_lower: str) -> bool:
+        """Detect git error strings that mean the worktree is already gone."""
+        if not stderr_lower:
+            return False
+        # Observed across git 2.30+ when the worktree directory or its
+        # admin entry under .git/worktrees is missing. We deliberately
+        # match on substrings rather than exact phrases because git keeps
+        # rewording these messages.
+        markers = (
+            "not registered",
+            "not a working tree",
+            "is not a working tree",
+            "no such file or directory",
+            "does not exist",
+        )
+        return any(marker in stderr_lower for marker in markers)
+
+    @staticmethod
+    def _path_is_absent(target_path: Path) -> bool:
+        """Return True when the worktree directory is missing or empty on disk."""
+        try:
+            if not target_path.exists():
+                return True
+            if target_path.is_dir():
+                return not any(target_path.iterdir())
+        except OSError:
+            return False
+        return False
 
     def prune_worktrees(
         self,

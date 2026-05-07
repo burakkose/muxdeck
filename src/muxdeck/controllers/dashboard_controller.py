@@ -696,12 +696,6 @@ class DashboardController:
             if latest_session is not None
             else ()
         )
-        # The tmux pane capture is a noisy fallback: it picks up shell
-        # prompts, scrollback from before the agent started, and any
-        # other terminal chatter. When we have a Copilot session id
-        # we'd rather show the agent's actual speech from
-        # ``events.jsonl``, which is clean and attributable. Fall back
-        # to tmux only when no transcript is available yet.
         copilot_session_id = (
             self._resolve_copilot_session_id(
                 agent, latest_session=latest_session, prefer_live=False
@@ -711,12 +705,19 @@ class DashboardController:
             if latest_session is not None
             else None
         )
-        log_preview = self._build_transcript_preview(
-            copilot_session_id=copilot_session_id,
-            preview_line_limit=preview_line_limit,
-        )
+        # The Output panel is meant to mirror what the operator sees in
+        # the live tmux pane. The scrollback tail is the highest-fidelity
+        # source for that — assistant/user speech in events.jsonl loses
+        # tool output, scroll context, and prompts. So prefer the most
+        # recent capture chunk's last N non-blank lines and only fall
+        # back to the transcript when no capture exists yet (very early
+        # in an agent's lifecycle).
+        log_preview = self._build_log_preview(logs, preview_line_limit=preview_line_limit)
         if not log_preview:
-            log_preview = self._build_log_preview(logs, preview_line_limit=preview_line_limit)
+            log_preview = self._build_transcript_preview(
+                copilot_session_id=copilot_session_id,
+                preview_line_limit=preview_line_limit,
+            )
         worktree_id = None
         if worktree is not None:
             worktree_id = worktree.id
@@ -785,46 +786,31 @@ class DashboardController:
     ) -> tuple[DashboardLogLineView, ...]:
         # Each ``tmux_capture`` chunk is a *complete snapshot* of the
         # pane's recent scrollback (~200 lines), not an incremental
-        # delta. Successive snapshots share long stretches of identical
-        # text — typically the original shell prompt, the ``copilot``
-        # command the user typed, and any startup banner that scrolled
-        # far enough back to remain inside the scrollback window. The
-        # previous implementation flattened every snapshot end-to-end
-        # and took ``lines[-N:]``, which surfaced that frozen prefix
-        # (200xN copies of it) instead of the live tail the operator
-        # actually wants — so for a long-lived ``pwsh`` Copilot agent
-        # the Output panel pinned itself on the original ``copilot``
-        # invocation and "never updated" even though new chunks were
-        # streaming in correctly.
+        # delta. The latest chunk is the freshest snapshot, so its tail
+        # mirrors what the operator sees in the live tmux pane.
         #
-        # Dedup by line content while iterating chronologically: a line
-        # that already appeared in any earlier chunk is part of the
-        # static scrollback overlap and contributes nothing new to a
-        # "recent activity" preview, so skip it. What's left, in order,
-        # is the cumulative live churn at the bottom of the pane —
-        # exactly the "live or recent logs" view the panel is meant to
-        # show. Source/timestamp metadata still tracks the chunk where
-        # each line *first* appeared so the timestamp grouping in
-        # ``LogPreviewPanel`` stays meaningful.
-        if preview_line_limit <= 0:
+        # Earlier we deduped lines across all retained snapshots which
+        # surfaced long-stale scrollback (e.g. the original ``copilot``
+        # invocation) and made the panel look frozen even while new
+        # output was streaming in. Returning the most recent snapshot's
+        # tail (with blank lines removed) keeps the panel honest with
+        # what's actually on screen right now.
+        if preview_line_limit <= 0 or not logs:
             return ()
-        seen: set[str] = set()
-        lines: list[DashboardLogLineView] = []
-        for chunk in logs:
-            for line in chunk.content.splitlines():
-                stripped = line.rstrip()
-                if not stripped or stripped in seen:
-                    continue
-                seen.add(stripped)
-                lines.append(
-                    DashboardLogLineView(
-                        captured_at=chunk.captured_at,
-                        source=chunk.source,
-                        sequence_no=chunk.sequence_no,
-                        content=stripped,
-                    )
-                )
-        return tuple(lines[-preview_line_limit:])
+        latest = logs[-1]
+        non_blank_tail = [line.rstrip() for line in latest.content.splitlines() if line.strip()]
+        if not non_blank_tail:
+            return ()
+        tail = non_blank_tail[-preview_line_limit:]
+        return tuple(
+            DashboardLogLineView(
+                captured_at=latest.captured_at,
+                source=latest.source,
+                sequence_no=latest.sequence_no,
+                content=line,
+            )
+            for line in tail
+        )
 
     def _build_alerts(
         self,

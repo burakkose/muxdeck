@@ -272,9 +272,14 @@ class WorktreeController:
         )
 
     def _action_from_remove_result(self, result: WorktreeRemoveResult) -> WorktreeActionView:
+        message = (
+            f"removed {result.path} (already gone in git)"
+            if result.already_gone
+            else f"removed {result.path}"
+        )
         return WorktreeActionView(
             action="remove",
-            message=f"removed {result.path}",
+            message=message,
             worktree=None,
             conflicts=self._render_conflicts(result.conflicts),
         )
