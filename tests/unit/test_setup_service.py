@@ -236,3 +236,55 @@ class SetupDoctorWindowsHostTests(unittest.TestCase):
         self.assertIn("wslu", by_key["windows-host"].detail)
         # No count check when dir is unavailable.
         self.assertNotIn("windows-sessions", by_key)
+
+    def test_pane_visibility_warning_when_no_panes(self) -> None:
+        tmux = _FakeTmux(panes=())
+        service = SetupDoctorService(
+            cast(SetupTmuxPort, tmux),
+            env={},
+            clock=lambda: datetime(2025, 1, 1, tzinfo=UTC),
+            socket_search_roots=(self.temp_root,),
+        )
+
+        report = service.build_report()
+
+        self.assertTrue(
+            any(
+                check.key == "pane-visibility" and check.status == "warning"
+                for check in report.checks
+            )
+        )
+
+    def test_current_pane_info_when_not_set(self) -> None:
+        tmux = _FakeTmux(panes=(TmuxPaneRecord(pane_id="%1"),))
+        service = SetupDoctorService(
+            cast(SetupTmuxPort, tmux),
+            env={},
+            clock=lambda: datetime(2025, 1, 1, tzinfo=UTC),
+            socket_search_roots=(self.temp_root,),
+        )
+
+        report = service.build_report()
+
+        self.assertTrue(
+            any(check.key == "current-pane" and check.status == "info" for check in report.checks)
+        )
+
+    def test_tmux_connection_error_handling(self) -> None:
+        from muxdeck.exceptions import TmuxCommandError
+
+        tmux = _FakeTmux(error=TmuxCommandError("tmux error", exit_code=1))
+        service = SetupDoctorService(
+            cast(SetupTmuxPort, tmux),
+            env={},
+            clock=lambda: datetime(2025, 1, 1, tzinfo=UTC),
+            socket_search_roots=(self.temp_root,),
+        )
+
+        report = service.build_report()
+
+        self.assertEqual(report.overall_status, "error")
+
+
+if __name__ == "__main__":
+    unittest.main()

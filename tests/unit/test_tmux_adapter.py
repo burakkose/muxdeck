@@ -1,4 +1,4 @@
-# ruff: noqa: PT009
+# ruff: noqa: PT009, PT027
 
 from __future__ import annotations
 
@@ -551,6 +551,401 @@ class TmuxAdapterTests(unittest.TestCase):
         )
         # Must not raise — a dead pane during teardown is normal.
         TmuxAdapter(runner).stop_pipe_pane("%404")
+
+
+class TmuxAdapterValidationTests(unittest.TestCase):
+    """Constructor + validation paths."""
+
+    def test_constructor_rejects_zero_or_negative_timeout(self) -> None:
+        runner = FakeCommandRunner(results=[])
+        with self.assertRaises(ValueError):
+            TmuxAdapter(runner, timeout_sec=0)
+        with self.assertRaises(ValueError):
+            TmuxAdapter(runner, timeout_sec=-1.0)
+
+    def test_with_socket_path_returns_new_instance_with_overridden_socket(self) -> None:
+        runner = FakeCommandRunner(results=[])
+        original = TmuxAdapter(runner, binary="tmux", timeout_sec=5.0, socket_path=None)
+        cloned = original.with_socket_path(Path("/run/user/1000/tmux.sock"))
+        # Same runner, same binary, same timeout, but different socket.
+        self.assertIs(cloned._command_runner, runner)
+        self.assertEqual(cloned._binary, "tmux")
+        self.assertEqual(cloned._timeout_sec, 5.0)
+        self.assertIsNotNone(cloned.socket_path)
+        # Original is untouched.
+        self.assertIsNone(original.socket_path)
+
+    def test_set_socket_path_with_none_clears(self) -> None:
+        runner = FakeCommandRunner(results=[])
+        adapter = TmuxAdapter(runner, socket_path="/run/socket")
+        self.assertIsNotNone(adapter.socket_path)
+        adapter.set_socket_path(None)
+        self.assertIsNone(adapter.socket_path)
+
+
+class TmuxAdapterDisplayMetadataTests(unittest.TestCase):
+    def test_display_pane_metadata_raises_when_metadata_missing(self) -> None:
+        # display-message returns no parseable record → display_pane_metadata
+        # converts the get_pane_metadata None into a TmuxCommandError.
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(
+                    ("tmux", "display-message"),
+                    exit_code=1,
+                    stderr="can't find pane: %999",
+                ),
+            ],
+        )
+        with self.assertRaises(TmuxCommandError) as ctx:
+            TmuxAdapter(runner).display_pane_metadata("%999")
+        self.assertIn("pane not found", ctx.exception.stderr or "")
+
+    def test_get_pane_metadata_returns_none_for_missing_target(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(
+                    ("tmux", "display-message"),
+                    exit_code=1,
+                    stderr="can't find session: foo",
+                ),
+            ],
+        )
+        self.assertIsNone(TmuxAdapter(runner).get_pane_metadata("foo"))
+
+    def test_get_pane_metadata_re_raises_other_errors(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(
+                    ("tmux", "display-message"),
+                    exit_code=1,
+                    stderr="permission denied",
+                ),
+            ],
+        )
+        with self.assertRaises(TmuxCommandError):
+            TmuxAdapter(runner).get_pane_metadata("%9")
+
+
+class TmuxAdapterCapturePaneTests(unittest.TestCase):
+    def test_capture_pane_with_start_and_end_lines(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "capture-pane"), stdout="captured")],
+        )
+        out = TmuxAdapter(runner).capture_pane(
+            "%5",
+            start_line=-100,
+            end_line=10,
+            join_wrapped_lines=True,
+            include_escape_sequences=True,
+        )
+        self.assertEqual(out, "captured")
+        cmd = runner.calls[0][0]
+        self.assertIn("-S", cmd)
+        self.assertIn("-100", cmd)
+        self.assertIn("-E", cmd)
+        self.assertIn("10", cmd)
+        self.assertIn("-J", cmd)
+        self.assertIn("-e", cmd)
+
+
+class TmuxAdapterSendKeysTests(unittest.TestCase):
+    def test_send_keys_with_empty_keys_and_no_enter_raises(self) -> None:
+        runner = FakeCommandRunner(results=[])
+        with self.assertRaises(ValueError):
+            TmuxAdapter(runner).send_keys("%1", ())
+
+    def test_send_keys_empty_keys_with_append_enter_only_sends_enter(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "send-keys"), stdout="")],
+        )
+        TmuxAdapter(runner).send_keys("%1", (), append_enter=True)
+        # Single send-keys command with Enter appended.
+        self.assertEqual(
+            runner.calls[0][0],
+            ("tmux", "send-keys", "-t", "%1", "Enter"),
+        )
+
+    def test_send_keys_literal_without_enter(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "send-keys"), stdout="")],
+        )
+        TmuxAdapter(runner).send_keys("%1", ("abc",), literal=True, append_enter=False)
+        self.assertEqual(
+            runner.calls[0][0],
+            ("tmux", "send-keys", "-t", "%1", "-l", "abc"),
+        )
+
+
+class TmuxAdapterSplitNewWindowTests(unittest.TestCase):
+    def test_split_window_minimal_args_horizontal(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(
+                    ("tmux", "split-window"),
+                    stdout=(
+                        "session_name=s\tsession_id=$1\twindow_id=@2\twindow_index=3\t"
+                        "window_name=w\twindow_active=1\tpane_id=%10\tpane_index=1\t"
+                        "pane_active=0\tpane_pid=11\tpane_tty=/dev/pts/3\t"
+                        "pane_current_path=/p\tpane_current_command=sh\tpane_dead=0"
+                    ),
+                ),
+            ],
+        )
+        meta = TmuxAdapter(runner).split_window("%9")
+        self.assertEqual(meta.pane_id, "%10")
+        cmd = runner.calls[0][0]
+        # Defaults: vertical=True
+        self.assertIn("-v", cmd)
+        # No -c, no -l, no -d, no shell_command appended.
+        self.assertNotIn("-c", cmd)
+        self.assertNotIn("-l", cmd)
+        self.assertNotIn("-d", cmd)
+
+    def test_new_window_minimal_args(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(
+                    ("tmux", "new-window"),
+                    stdout=(
+                        "session_name=s\tsession_id=$1\twindow_id=@22\twindow_index=4\t"
+                        "window_name=w\twindow_active=1\tpane_id=%30\tpane_index=0\t"
+                        "pane_active=1\tpane_pid=11\tpane_tty=/dev/pts/3\t"
+                        "pane_current_path=/p\tpane_current_command=sh\tpane_dead=0"
+                    ),
+                ),
+            ],
+        )
+        meta = TmuxAdapter(runner).new_window()
+        self.assertEqual(meta.pane_id, "%30")
+        cmd = runner.calls[0][0]
+        # No optional args appended.
+        self.assertNotIn("-t", cmd)
+        self.assertNotIn("-n", cmd)
+        self.assertNotIn("-c", cmd)
+        self.assertNotIn("-d", cmd)
+
+    def test_new_window_with_all_options(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(
+                    ("tmux", "new-window"),
+                    stdout=(
+                        "session_name=s\tsession_id=$1\twindow_id=@99\twindow_index=5\t"
+                        "window_name=fancy\twindow_active=1\tpane_id=%99\tpane_index=0\t"
+                        "pane_active=1\tpane_pid=11\tpane_tty=/dev/pts/3\t"
+                        "pane_current_path=/repo\tpane_current_command=python\tpane_dead=0"
+                    ),
+                ),
+            ],
+        )
+        TmuxAdapter(runner).new_window(
+            "session-x",
+            window_name="fancy",
+            start_directory=Path("/repo"),
+            shell_command=("python", "-V"),
+            detached=True,
+        )
+        cmd = runner.calls[0][0]
+        self.assertIn("-t", cmd)
+        self.assertIn("session-x", cmd)
+        self.assertIn("-n", cmd)
+        self.assertIn("fancy", cmd)
+        self.assertIn("-c", cmd)
+        self.assertIn("/repo", cmd)
+        self.assertIn("-d", cmd)
+        self.assertIn("python", cmd)
+
+
+class TmuxAdapterBreakJoinRenameKillTests(unittest.TestCase):
+    def test_break_pane_rejects_blank_source(self) -> None:
+        runner = FakeCommandRunner(results=[])
+        with self.assertRaises(ValueError):
+            TmuxAdapter(runner).break_pane("   ")
+
+    def test_break_pane_rejects_blank_window_name(self) -> None:
+        runner = FakeCommandRunner(results=[])
+        with self.assertRaises(ValueError):
+            TmuxAdapter(runner).break_pane("%9", window_name="   ")
+
+    def test_break_pane_rejects_blank_target_window(self) -> None:
+        runner = FakeCommandRunner(results=[])
+        with self.assertRaises(ValueError):
+            TmuxAdapter(runner).break_pane("%9", target_window="   ")
+
+    def test_break_pane_appends_window_name_and_target_when_present(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(
+                    ("tmux", "break-pane"),
+                    stdout=(
+                        "session_name=s\tsession_id=$1\twindow_id=@9\twindow_index=2\t"
+                        "window_name=w\twindow_active=1\tpane_id=%19\tpane_index=0\t"
+                        "pane_active=1\tpane_pid=11\tpane_tty=/dev/pts/3\t"
+                        "pane_current_path=/p\tpane_current_command=sh\tpane_dead=0"
+                    ),
+                ),
+            ],
+        )
+        TmuxAdapter(runner).break_pane(
+            "%9", window_name="newwin", target_window="@7", detached=False
+        )
+        cmd = runner.calls[0][0]
+        self.assertIn("-n", cmd)
+        self.assertIn("newwin", cmd)
+        self.assertIn("@7", cmd)
+        self.assertNotIn("-d", cmd)
+
+    def test_join_pane_rejects_blank_source_or_target(self) -> None:
+        runner = FakeCommandRunner(results=[])
+        with self.assertRaises(ValueError):
+            TmuxAdapter(runner).join_pane("   ", "%9")
+        with self.assertRaises(ValueError):
+            TmuxAdapter(runner).join_pane("%9", "   ")
+
+    def test_join_pane_horizontal_no_detach(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(("tmux", "join-pane"), stdout=""),
+                _command_result(
+                    ("tmux", "display-message"),
+                    stdout=(
+                        "session_name=s\tsession_id=$1\twindow_id=@9\twindow_index=2\t"
+                        "window_name=w\twindow_active=1\tpane_id=%5\tpane_index=0\t"
+                        "pane_active=1\tpane_pid=11\tpane_tty=/dev/pts/3\t"
+                        "pane_current_path=/p\tpane_current_command=sh\tpane_dead=0"
+                    ),
+                ),
+            ],
+        )
+        TmuxAdapter(runner).join_pane("%5", "%9", detached=False, vertical=False)
+        join_cmd = runner.calls[0][0]
+        self.assertIn("-h", join_cmd)
+        self.assertNotIn("-d", join_cmd)
+
+    def test_rename_window_validation(self) -> None:
+        runner = FakeCommandRunner(results=[])
+        with self.assertRaises(ValueError):
+            TmuxAdapter(runner).rename_window("   ", "name")
+        with self.assertRaises(ValueError):
+            TmuxAdapter(runner).rename_window("@1", "   ")
+
+    def test_rename_window_strips_inputs_and_runs_command(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "rename-window"), stdout="")],
+        )
+        TmuxAdapter(runner).rename_window("  @1  ", "  hello  ")
+        self.assertEqual(runner.calls[0][0], ("tmux", "rename-window", "-t", "@1", "hello"))
+
+    def test_kill_pane_validates_and_strips(self) -> None:
+        runner = FakeCommandRunner(results=[])
+        with self.assertRaises(ValueError):
+            TmuxAdapter(runner).kill_pane("  ")
+
+        runner2 = FakeCommandRunner(
+            results=[_command_result(("tmux", "kill-pane"), stdout="")],
+        )
+        TmuxAdapter(runner2).kill_pane("  %5  ")
+        self.assertEqual(runner2.calls[0][0], ("tmux", "kill-pane", "-t", "%5"))
+
+
+class TmuxAdapterClientControlTests(unittest.TestCase):
+    def test_switch_client_runs_switch_client(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "switch-client"), stdout="")],
+        )
+        TmuxAdapter(runner).switch_client("$2")
+        self.assertEqual(runner.calls[0][0], ("tmux", "switch-client", "-t", "$2"))
+
+    def test_has_attached_client_returns_false_on_tmux_error(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(("tmux", "list-clients"), exit_code=1, stderr="boom"),
+            ],
+        )
+        self.assertFalse(TmuxAdapter(runner).has_attached_client())
+
+    def test_has_attached_client_returns_true_when_clients_attached(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "list-clients"), stdout="client-1\n")],
+        )
+        self.assertTrue(TmuxAdapter(runner).has_attached_client())
+
+    def test_has_attached_client_returns_false_when_blank_stdout(self) -> None:
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "list-clients"), stdout="\n")],
+        )
+        self.assertFalse(TmuxAdapter(runner).has_attached_client())
+
+    def test_pane_is_dead_returns_true_when_metadata_missing(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(
+                    ("tmux", "display-message"),
+                    exit_code=1,
+                    stderr="can't find pane: %404",
+                ),
+            ],
+        )
+        self.assertTrue(TmuxAdapter(runner).pane_is_dead("%404"))
+
+    def test_pane_is_dead_returns_false_when_metadata_alive(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(
+                    ("tmux", "display-message"),
+                    stdout=(
+                        "session_name=s\tsession_id=$1\twindow_id=@9\twindow_index=2\t"
+                        "window_name=w\twindow_active=1\tpane_id=%5\tpane_index=0\t"
+                        "pane_active=1\tpane_pid=11\tpane_tty=/dev/pts/3\t"
+                        "pane_current_path=/p\tpane_current_command=sh\tpane_dead=0"
+                    ),
+                ),
+            ],
+        )
+        self.assertFalse(TmuxAdapter(runner).pane_is_dead("%5"))
+
+
+class TmuxAdapterParseMetadataTests(unittest.TestCase):
+    def test_parse_pane_metadata_raises_when_zero_panes(self) -> None:
+        # Empty stdout → 0 panes parsed → TmuxCommandError.
+        runner = FakeCommandRunner(
+            results=[_command_result(("tmux", "split-window"), stdout="")],
+        )
+        with self.assertRaises(TmuxCommandError):
+            TmuxAdapter(runner).split_window("%9")
+
+    def test_run_tmux_wraps_command_error(self) -> None:
+        runner = FakeCommandRunner(
+            results=[],
+            errors=[
+                CommandError(
+                    "tmux list-clients",
+                    exit_code=None,
+                    stderr="boom",
+                    stdout="",
+                ),
+            ],
+        )
+        with self.assertRaises(TmuxCommandError):
+            TmuxAdapter(runner).list_panes()
+
+
+class ParseTmuxSocketPathTests(unittest.TestCase):
+    def test_returns_none_when_value_is_none(self) -> None:
+        self.assertIsNone(parse_tmux_socket_path(None))
+
+    def test_returns_none_when_value_is_blank(self) -> None:
+        self.assertIsNone(parse_tmux_socket_path("   "))
+
+    def test_strips_comma_metadata(self) -> None:
+        result = parse_tmux_socket_path("/run/user/1000/tmux.sock,1,extra")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertTrue(str(result).endswith("tmux.sock"))
+
+    def test_returns_none_when_socket_value_blank_after_split(self) -> None:
+        # Comma immediately after blank → empty leading segment.
+        self.assertIsNone(parse_tmux_socket_path(",foo,bar"))
 
 
 if __name__ == "__main__":

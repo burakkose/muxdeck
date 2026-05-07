@@ -38,10 +38,3 @@ def test_tab_bar_set_badges_updates_render() -> None:
 def test_tab_bar_default_has_empty_badges() -> None:
     bar = TabBar(active="dashboard")
     assert bar.badges == {}
-
-
-def test_tab_bar_includes_operations_and_fleet_tabs() -> None:
-    rendered = _render_plain(TabBar(active="fleet"))
-
-    assert "operations" in rendered
-    assert "fleet" in rendered

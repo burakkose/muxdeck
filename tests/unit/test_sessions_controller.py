@@ -11,9 +11,12 @@ from muxdeck.adapters.copilot_session_store import (
 )
 from muxdeck.controllers.sessions_controller import (
     SessionsController,
+    _format_usage_count,
     _relative_time,
     _session_status,
     _status_glyph,
+    _summary_for,
+    _usage_view_for,
 )
 
 # ── helpers ─────────────────────────────────────────────────────
@@ -275,3 +278,170 @@ def test_local_session_resume_command_is_plain() -> None:
     assert state.selected is not None
     assert state.selected.origin == "local"
     assert state.selected.resume_command == "copilot --resume=lin-abc"
+
+
+# ── _summary_for edge cases ────────────────────────────────────────
+
+
+def test_summary_for_with_all_fallbacks() -> None:
+    """_summary_for falls back to cwd when no summary/repo/branch."""
+
+    s = CopilotLocalSession(
+        session_id="test",
+        cwd=Path("/home/user/myproject"),
+        git_root=Path("/home/user/myproject"),
+        repository="",
+        branch="",
+        summary="",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    result = _summary_for(s)
+    assert result == "myproject"
+
+
+def test_summary_for_prefers_explicit_summary() -> None:
+    """_summary_for prefers explicit summary over all fallbacks."""
+
+    s = CopilotLocalSession(
+        session_id="test",
+        cwd=Path("/home/user/myproject"),
+        git_root=Path("/home/user/myproject"),
+        repository="user/repo",
+        branch="main",
+        summary="My Custom Task",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    result = _summary_for(s)
+    assert result == "My Custom Task"
+
+
+def test_summary_for_uses_repo_and_branch() -> None:
+    """_summary_for uses repo + branch when summary is empty."""
+
+    s = CopilotLocalSession(
+        session_id="test",
+        cwd=Path("/home/user/myproject"),
+        git_root=Path("/home/user/myproject"),
+        repository="user/repo",
+        branch="feature/auth",
+        summary="",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    result = _summary_for(s)
+    assert result == "user/repo · feature/auth"
+
+
+def test_summary_for_uses_repo_alone() -> None:
+    """_summary_for uses repo alone when branch is empty."""
+
+    s = CopilotLocalSession(
+        session_id="test",
+        cwd=Path("/home/user/myproject"),
+        git_root=Path("/home/user/myproject"),
+        repository="user/repo",
+        branch="",
+        summary="",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    result = _summary_for(s)
+    assert result == "user/repo"
+
+
+def test_summary_for_fallback_to_session_id_when_cwd_missing() -> None:
+    """_summary_for uses session id short form when cwd is None."""
+
+    s = CopilotLocalSession(
+        session_id="abc1234567890",
+        cwd=None,
+        git_root=Path("/home/user"),
+        repository="",
+        branch="",
+        summary="",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    result = _summary_for(s)
+    # session_id[:8] = "abc12345"
+    assert result == "session abc12345"
+
+
+# ── _format_usage_count ────────────────────────────────────────────
+
+
+def test_format_usage_count_millions() -> None:
+    assert _format_usage_count(1_000_000) == "1.0M"
+    assert _format_usage_count(2_500_000) == "2.5M"
+
+
+def test_format_usage_count_thousands() -> None:
+    assert _format_usage_count(1000) == "1.0k"
+    assert _format_usage_count(5500) == "5.5k"
+
+
+def test_format_usage_count_plain() -> None:
+    assert _format_usage_count(100) == "100"
+    assert _format_usage_count(999) == "999"
+
+
+# ── _usage_view_for ───────────────────────────────────────────────
+
+
+def test_usage_view_for_with_no_usage() -> None:
+    """_usage_view_for returns appropriate text when usage is None."""
+
+    s = _session("test", usage=None, is_cleanly_closed=False)
+    summary, badge, available, premium = _usage_view_for(s)
+
+    assert summary == "pending (recorded on clean shutdown)"
+    assert badge == "pending"
+    assert available is False
+    assert premium is None
+
+
+def test_usage_view_for_unclosed_with_no_usage() -> None:
+    """_usage_view_for for unclosed session with no usage data."""
+
+    s = _session("test", usage=None, is_cleanly_closed=True)
+    summary, badge, available, premium = _usage_view_for(s)
+
+    assert summary == "not recorded in session state"
+    assert badge == "n/a"
+    assert available is False
+
+
+def test_usage_view_for_with_full_usage_data() -> None:
+    """_usage_view_for formats full usage including cache tokens."""
+
+    usage = CopilotSessionUsage(
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read_tokens=200,
+        cache_write_tokens=100,
+        premium_requests=3,
+    )
+    s = _session("test", usage=usage, is_cleanly_closed=True)
+    summary, badge, available, premium = _usage_view_for(s)
+
+    assert "1,000 in" in summary
+    assert "500 out" in summary
+    assert "300 cached" in summary
+    assert "1,800 total" in summary
+    assert available is True
+    assert premium == "3 req"
+
+
+def test_usage_view_for_with_only_output_tokens() -> None:
+    """_usage_view_for handles partial usage data."""
+
+    usage = CopilotSessionUsage(
+        output_tokens=250,
+    )
+    s = _session("test", usage=usage, is_cleanly_closed=True)
+    summary, badge, available, premium = _usage_view_for(s)
+
+    assert "250 out" in summary
+    assert available is True

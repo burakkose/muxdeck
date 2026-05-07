@@ -9,6 +9,16 @@ from muxdeck.services.operator_status_service import (
 )
 
 
+def test_default_operator_status() -> None:
+    from muxdeck.services.operator_status_service import OperatorStatusKind, default_operator_status
+
+    status = default_operator_status()
+    assert status.kind == OperatorStatusKind.WORKING
+    assert status.label == "working"
+    assert status.tone == "info"
+    assert status.needs_attention is False
+
+
 def test_describe_operator_status_distinguishes_operator_states() -> None:
     working = describe_operator_status(
         agent_status=AgentStatus.RUNNING,
@@ -132,3 +142,154 @@ def test_dead_agents_are_terminated_not_failed() -> None:
     assert failed.kind == OperatorStatusKind.FAILED
     assert failed.tone == "error"
     assert failed.is_critical is True
+
+
+def test_stale_agent_with_idle_and_needs_attention() -> None:
+    """Idle agent with needs_attention flag should be classified as stale."""
+    status = describe_operator_status(
+        agent_status=AgentStatus.IDLE,
+        needs_attention=True,
+        attention_reason=None,
+        idle_seconds=300,
+        is_potentially_stuck=False,
+        task_title=None,
+        current_activity=None,
+    )
+
+    assert status.kind == OperatorStatusKind.STALE
+
+
+def test_stale_markers_in_attention_reason() -> None:
+    """Attention reason with stale markers should trigger STALE status."""
+    for marker_text in [
+        "idle for 5 minutes",
+        "output unchanged for 30s",
+        "STALE connection",
+        "no activity detected",
+    ]:
+        status = describe_operator_status(
+            agent_status=AgentStatus.RUNNING,
+            needs_attention=True,
+            attention_reason=marker_text,
+            idle_seconds=100,
+            is_potentially_stuck=False,
+            task_title=None,
+            current_activity=None,
+        )
+        assert status.kind == OperatorStatusKind.STALE, f"Failed for marker: {marker_text}"
+
+
+def test_working_reason_with_current_activity() -> None:
+    """Current activity should be used as working reason."""
+    status = describe_operator_status(
+        agent_status=AgentStatus.RUNNING,
+        needs_attention=False,
+        attention_reason=None,
+        idle_seconds=5,
+        is_potentially_stuck=False,
+        task_title="Task title",
+        current_activity="  parsing code  ",  # With whitespace
+    )
+
+    assert status.reason == "parsing code"
+
+
+def test_working_reason_fallback_to_task_title() -> None:
+    """Task title should be used when current_activity is empty."""
+    status = describe_operator_status(
+        agent_status=AgentStatus.RUNNING,
+        needs_attention=False,
+        attention_reason=None,
+        idle_seconds=5,
+        is_potentially_stuck=False,
+        task_title="Implement feature",
+        current_activity="",  # Empty
+    )
+
+    assert status.reason == "Implement feature"
+
+
+def test_working_reason_with_discovered_status() -> None:
+    """DISCOVERED status should have specific working reason."""
+    status = describe_operator_status(
+        agent_status=AgentStatus.DISCOVERED,
+        needs_attention=False,
+        attention_reason=None,
+        idle_seconds=0,
+        is_potentially_stuck=False,
+        task_title=None,
+        current_activity=None,
+    )
+
+    assert status.reason == "starting up"
+
+
+def test_working_reason_with_idle_status() -> None:
+    """IDLE status should show formatted duration."""
+    status = describe_operator_status(
+        agent_status=AgentStatus.IDLE,
+        needs_attention=False,
+        attention_reason=None,
+        idle_seconds=125,
+        is_potentially_stuck=False,
+        task_title=None,
+        current_activity=None,
+    )
+
+    assert "2m" in status.reason
+
+
+def test_working_reason_with_unknown_status() -> None:
+    """UNKNOWN status should have generic reason."""
+    status = describe_operator_status(
+        agent_status=AgentStatus.UNKNOWN,
+        needs_attention=False,
+        attention_reason=None,
+        idle_seconds=0,
+        is_potentially_stuck=False,
+        task_title=None,
+        current_activity=None,
+    )
+
+    assert status.reason == "status not yet classified"
+
+
+def test_format_duration_seconds() -> None:
+    """Short durations should be formatted in seconds."""
+    from muxdeck.services.operator_status_service import _format_duration
+
+    assert _format_duration(0) == "0s"
+    assert _format_duration(45) == "45s"
+
+
+def test_format_duration_minutes() -> None:
+    """Medium durations should be formatted in minutes."""
+    from muxdeck.services.operator_status_service import _format_duration
+
+    assert _format_duration(60) == "1m"
+    assert _format_duration(150) == "2m"
+
+
+def test_format_duration_hours() -> None:
+    """Long durations should be formatted in hours and minutes."""
+    from muxdeck.services.operator_status_service import _format_duration
+
+    assert _format_duration(3600) == "1h0m"
+    assert _format_duration(3900) == "1h5m"
+
+
+def test_first_text_returns_first_non_empty() -> None:
+    """_first_text should return first non-empty, non-None string."""
+    from muxdeck.services.operator_status_service import _first_text
+
+    assert _first_text(None, "  ", "third", "fourth") == "third"
+    assert _first_text("", "second") == "second"
+    assert _first_text(None, None, None) is None
+
+
+def test_failure_reason_for_dead_status() -> None:
+    """Failure reason for DEAD status should mention pane exit."""
+    from muxdeck.services.operator_status_service import _failure_reason
+
+    reason = _failure_reason(AgentStatus.DEAD)
+    assert "pane" in reason.lower() or "exit" in reason.lower()

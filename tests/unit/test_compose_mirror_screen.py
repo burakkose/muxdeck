@@ -1,21 +1,25 @@
 """Tests for :mod:`muxdeck.screens.compose_mirror`."""
 
+# ruff: noqa: SLF001
+
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import unittest
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import patch
 
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
-from textual.widgets import TextArea
+from textual.widgets import Label, TextArea
 
 from muxdeck.adapters.pane_stream import PaneStreamAdapter
 from muxdeck.app import MuxdeckRuntime
+from muxdeck.exceptions import TmuxCommandError
 from muxdeck.screens.compose_mirror import ComposeWithMirrorScreen
 from muxdeck.ui_preferences import UiPreferences
 from muxdeck.widgets.live_pane_viewer import LivePaneViewer
@@ -671,6 +675,974 @@ class ComposeWithMirrorScreenTests(unittest.TestCase):
 
         assert buffer_lines == ()
         assert last_snapshot == ""
+
+
+@dataclass
+class _RaisingTmuxStream:
+    """Tmux stream that raises configurable errors at each lifecycle hook.
+
+    Used to drive the error branches in
+    :meth:`ComposeWithMirrorScreen._seed_and_stream`,
+    :meth:`_sync_snapshot`, and :meth:`_teardown_pipe`.
+    """
+
+    capture_error: BaseException | None = None
+    pipe_error: BaseException | None = None
+    stop_error: BaseException | None = None
+    seed_text: str = "seeded\n"
+    captures: list[str] = field(default_factory=list)
+    pipe_started: list[str] = field(default_factory=list)
+    pipe_paths: list[Path] = field(default_factory=list)
+    pipe_stopped: list[str] = field(default_factory=list)
+
+    def capture_pane(
+        self,
+        target_pane: str,
+        /,
+        *,
+        start_line: str | int | None = None,
+        end_line: str | int | None = None,
+        join_wrapped_lines: bool = False,
+        include_escape_sequences: bool = False,
+    ) -> str:
+        del start_line, end_line, join_wrapped_lines, include_escape_sequences
+        self.captures.append(target_pane)
+        if self.capture_error is not None:
+            raise self.capture_error
+        return self.seed_text
+
+    def pipe_pane_to_file(
+        self,
+        target_pane: str,
+        /,
+        *,
+        target_path: Path,
+        append: bool = True,
+    ) -> None:
+        del append
+        self.pipe_started.append(target_pane)
+        self.pipe_paths.append(target_path)
+        if self.pipe_error is not None:
+            raise self.pipe_error
+
+    def stop_pipe_pane(self, target_pane: str, /) -> None:
+        self.pipe_stopped.append(target_pane)
+        if self.stop_error is not None:
+            raise self.stop_error
+
+    def send_keys(
+        self,
+        target_pane: str,
+        keys: Sequence[str],
+        /,
+        *,
+        literal: bool = False,
+        append_enter: bool = False,
+    ) -> object:
+        del target_pane, keys, literal, append_enter
+        return None
+
+    def pane_exists(self, pane_id: str, /) -> bool:
+        del pane_id
+        return True
+
+
+def _runtime_without_pane_stream(actions: _FakeActionService) -> MuxdeckRuntime:
+    return cast(
+        MuxdeckRuntime,
+        type(
+            "FakeRuntime",
+            (),
+            {
+                "actions": actions,
+                "pane_stream": None,
+            },
+        )(),
+    )
+
+
+def _runtime_without_actions(stream: PaneStreamAdapter) -> MuxdeckRuntime:
+    return cast(
+        MuxdeckRuntime,
+        type(
+            "FakeRuntime",
+            (),
+            {
+                "actions": None,
+                "pane_stream": stream,
+            },
+        )(),
+    )
+
+
+class ComposeMirrorMountErrorTests(unittest.TestCase):
+    """Branches taken when the screen mounts without a stream / errors."""
+
+    def test_mount_with_no_adapter_marks_capture_error_and_clears_loading(self) -> None:
+        async def scenario(tmp: Path) -> tuple[str | None, bool, str]:
+            actions = _FakeActionService()
+            runtime = _runtime_without_pane_stream(actions)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%101",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                viewer = app.screen.query_one(LivePaneViewer)
+                return (
+                    screen._capture_error,
+                    screen._loading_cleared,
+                    str(viewer.border_subtitle or ""),
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            err, cleared, subtitle = asyncio.run(scenario(Path(tmp)))
+
+        # The on_mount adapter-None branch sets a capture-error message
+        # and immediately clears the loading state so the user isn't
+        # stuck on a spinner.
+        assert err == "✗ pane streaming unavailable"
+        assert cleared is True
+        assert subtitle == "capture failed"
+
+    def test_capture_pane_tmux_error_marks_capture_error(self) -> None:
+        async def scenario(tmp: Path) -> tuple[str | None, bool]:
+            tmux = _RaisingTmuxStream(
+                capture_error=TmuxCommandError("capture-pane", stderr="boom"),
+            )
+            stream = PaneStreamAdapter(tmux=cast(Any, tmux))
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%102",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                return screen._capture_error, screen._loading_cleared
+
+        with tempfile.TemporaryDirectory() as tmp:
+            err, cleared = asyncio.run(scenario(Path(tmp)))
+
+        assert err is not None
+        assert err.startswith("✗ capture failed:")
+        assert cleared is True
+
+    def test_capture_pane_oserror_marks_capture_error(self) -> None:
+        async def scenario(tmp: Path) -> tuple[str | None, bool]:
+            tmux = _RaisingTmuxStream(capture_error=OSError("disk gone"))
+            stream = PaneStreamAdapter(tmux=cast(Any, tmux))
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%103",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                return screen._capture_error, screen._loading_cleared
+
+        with tempfile.TemporaryDirectory() as tmp:
+            err, cleared = asyncio.run(scenario(Path(tmp)))
+
+        assert err is not None
+        assert "disk gone" in err
+        assert cleared is True
+
+    def test_pipe_pane_tmux_error_records_stream_warning(self) -> None:
+        async def scenario(tmp: Path) -> tuple[str | None, str | None]:
+            tmux = _RaisingTmuxStream(
+                pipe_error=TmuxCommandError("pipe-pane", stderr="no pipe"),
+            )
+            stream = PaneStreamAdapter(tmux=cast(Any, tmux))
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%104",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                return screen._capture_error, screen._stream_warning
+
+        with tempfile.TemporaryDirectory() as tmp:
+            err, warning = asyncio.run(scenario(Path(tmp)))
+
+        # Pipe failures degrade to "snapshot sync only" without
+        # poisoning the capture-error state.
+        assert err is None
+        assert warning is not None
+        assert "live stream unavailable" in warning
+
+    def test_pipe_pane_oserror_records_stream_warning(self) -> None:
+        async def scenario(tmp: Path) -> str | None:
+            tmux = _RaisingTmuxStream(pipe_error=OSError("no fd"))
+            stream = PaneStreamAdapter(tmux=cast(Any, tmux))
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%105",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                return screen._stream_warning
+
+        with tempfile.TemporaryDirectory() as tmp:
+            warning = asyncio.run(scenario(Path(tmp)))
+
+        assert warning is not None
+        assert "no fd" in warning
+
+
+class ComposeMirrorSyncSnapshotErrorTests(unittest.TestCase):
+    """Error branches inside ``_sync_snapshot``."""
+
+    def test_sync_snapshot_tmux_error_records_warning(self) -> None:
+        async def scenario(tmp: Path) -> tuple[str | None, str | None]:
+            tmux = _RaisingTmuxStream(seed_text="hello\n")
+            stream = PaneStreamAdapter(tmux=cast(Any, tmux))
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%106",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                # Now flip the stream so the next capture raises.
+                tmux.capture_error = TmuxCommandError("capture-pane", stderr="snap fail")
+                screen._sync_snapshot(force=False)
+                return screen._sync_warning, screen._capture_error
+
+        with tempfile.TemporaryDirectory() as tmp:
+            warning, capture_err = asyncio.run(scenario(Path(tmp)))
+
+        assert warning is not None
+        assert "snapshot sync failed" in warning
+        # The non-forced path keeps the existing content so it must NOT
+        # raise the warning to a hard capture-error.
+        assert capture_err is None
+
+    def test_sync_snapshot_force_with_no_content_promotes_to_capture_error(self) -> None:
+        async def scenario(tmp: Path) -> str | None:
+            tmux = _RaisingTmuxStream(seed_text="hello\n")
+            stream = PaneStreamAdapter(tmux=cast(Any, tmux))
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%107",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                # Drop everything we have so the "no content" branch
+                # fires: clear the viewer and switch the stream to error.
+                viewer = app.screen.query_one(LivePaneViewer)
+                viewer.set_snapshot("")
+                tmux.capture_error = TmuxCommandError("capture-pane", stderr="hard fail")
+                screen._sync_snapshot(force=True)
+                return screen._capture_error
+
+        with tempfile.TemporaryDirectory() as tmp:
+            err = asyncio.run(scenario(Path(tmp)))
+
+        assert err is not None
+        assert "snapshot sync failed" in err
+
+    def test_sync_snapshot_oserror_records_warning(self) -> None:
+        async def scenario(tmp: Path) -> str | None:
+            tmux = _RaisingTmuxStream(seed_text="hello\n")
+            stream = PaneStreamAdapter(tmux=cast(Any, tmux))
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%108",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                tmux.capture_error = OSError("io")
+                screen._sync_snapshot(force=False)
+                return screen._sync_warning
+
+        with tempfile.TemporaryDirectory() as tmp:
+            warning = asyncio.run(scenario(Path(tmp)))
+
+        assert warning is not None
+        assert "io" in warning
+
+    def test_sync_snapshot_force_oserror_with_no_content_promotes_to_capture_error(
+        self,
+    ) -> None:
+        async def scenario(tmp: Path) -> str | None:
+            tmux = _RaisingTmuxStream(seed_text="hello\n")
+            stream = PaneStreamAdapter(tmux=cast(Any, tmux))
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%109",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                viewer = app.screen.query_one(LivePaneViewer)
+                viewer.set_snapshot("")
+                tmux.capture_error = OSError("dead")
+                screen._sync_snapshot(force=True)
+                return screen._capture_error
+
+        with tempfile.TemporaryDirectory() as tmp:
+            err = asyncio.run(scenario(Path(tmp)))
+
+        assert err is not None
+        assert "dead" in err
+
+
+class ComposeMirrorActionEdgeTests(unittest.TestCase):
+    """Action handlers exercising guard-clause / failure branches."""
+
+    def test_action_send_no_action_service_sets_status(self) -> None:
+        async def scenario(tmp: Path) -> str:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            runtime = _runtime_without_actions(stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%201",
+                    display_name="demo",
+                    ring_dir=tmp,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                # Need text in the editor or the no-text branch wins.
+                editor = app.screen.query_one("#compose-editor", TextArea)
+                editor.text = "anything"
+                screen.action_send()
+                return screen._status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            status = asyncio.run(scenario(Path(tmp)))
+
+        assert status == "✗ action service unavailable"
+
+    def test_action_send_failure_result_sets_failure_status(self) -> None:
+        @dataclass
+        class _FailingActions:
+            calls: list[tuple[str, str]] = field(default_factory=list)
+
+            def send_message(self, pane_id: str, text: str) -> _FakeActionService._Result:
+                self.calls.append((pane_id, text))
+                return _FakeActionService._Result(success=False, message="quota exceeded")
+
+        async def scenario(tmp: Path) -> str:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FailingActions()
+            runtime = _fake_runtime(cast(Any, actions), stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%202",
+                    display_name="demo",
+                    ring_dir=tmp,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                editor = app.screen.query_one("#compose-editor", TextArea)
+                editor.text = "msg"
+                screen.action_send()
+                return screen._status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            status = asyncio.run(scenario(Path(tmp)))
+
+        assert status == "✗ quota exceeded"
+
+    def test_action_send_in_viewer_only_mode_emits_status(self) -> None:
+        async def scenario(tmp: Path) -> str:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%203",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen.action_send()
+                return screen._status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            status = asyncio.run(scenario(Path(tmp)))
+
+        assert "live viewer only" in status
+
+    def test_grow_and_shrink_no_op_when_editor_hidden(self) -> None:
+        """Verify the ``if not self._show_editor: return`` guard.
+
+        The original test called grow then shrink (cancelling out) and
+        asserted height stayed at 10 — that assertion held whether or
+        not the guard existed. Spy on ``_set_editor_height`` so the
+        guard's absence becomes a recorded call.
+        """
+
+        async def scenario(tmp: Path) -> tuple[int, int]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%204",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                set_calls: list[int] = []
+                screen._set_editor_height = lambda v: set_calls.append(v)  # type: ignore[method-assign,assignment]
+                screen.action_grow_editor()
+                screen.action_shrink_editor()
+                return screen._editor_height, len(set_calls)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            height, set_count = asyncio.run(scenario(Path(tmp)))
+
+        # Height untouched AND, more importantly, the underlying
+        # setter was never invoked because the guard short-circuited.
+        # Without the guard, set_count would be 2.
+        assert height == 10
+        assert set_count == 0, (
+            f"_show_editor guard removed: _set_editor_height was called {set_count} time(s)"
+        )
+
+    def test_set_editor_height_no_op_for_same_value(self) -> None:
+        """Verify the ``if clamped == self._editor_height: return``
+        early-return short-circuits the side effects.
+
+        The earlier test asserted that height stayed at the same value,
+        which is true with or without the guard (since assigning a
+        clamped value back to itself is a no-op). Spy on the side
+        effects ``_apply_editor_height``/``_refresh_guidance`` that
+        the guard skips.
+        """
+
+        async def scenario(tmp: Path) -> tuple[int, int, int]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%205",
+                    display_name="demo",
+                    ring_dir=tmp,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                apply_calls: list[bool] = []
+                refresh_calls: list[bool] = []
+                screen._apply_editor_height = lambda: apply_calls.append(True)  # type: ignore[method-assign]
+                screen._refresh_guidance = lambda *a, **kw: refresh_calls.append(True)  # type: ignore[method-assign]
+                screen._set_editor_height(screen._editor_height)
+                return screen._editor_height, len(apply_calls), len(refresh_calls)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            height, apply_count, refresh_count = asyncio.run(scenario(Path(tmp)))
+
+        assert height == 10
+        assert apply_count == 0, (
+            f"early-return removed: _apply_editor_height fired {apply_count} time(s)"
+        )
+        assert refresh_count == 0, (
+            f"early-return removed: _refresh_guidance fired {refresh_count} time(s)"
+        )
+
+    def test_set_mirror_input_mode_idempotent(self) -> None:
+        """Verify the ``if self._mirror_input_active == enabled: return``
+        guard skips ``_refresh_guidance`` when called with the
+        already-active value. Asserting the flag stayed False isn't
+        enough — assigning False to False yields the same observable
+        flag whether or not the guard exists.
+        """
+
+        async def scenario(tmp: Path) -> tuple[bool, int]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%206",
+                    display_name="demo",
+                    ring_dir=tmp,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                refresh_calls: list[bool] = []
+                screen._refresh_guidance = lambda *a, **kw: refresh_calls.append(True)  # type: ignore[method-assign]
+                # Already-False; calling False again should early-return.
+                screen._set_mirror_input_mode(False)
+                return screen._mirror_input_active, len(refresh_calls)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            active, refresh_count = asyncio.run(scenario(Path(tmp)))
+
+        assert active is False
+        assert refresh_count == 0, (
+            f"idempotency guard removed: _refresh_guidance fired {refresh_count} time(s)"
+        )
+
+
+class ComposeMirrorKeyHandlingTests(unittest.TestCase):
+    """Cross-cutting key handling edges."""
+
+    def test_shift_tab_in_compose_mode_swaps_focus(self) -> None:
+        async def scenario(tmp: Path) -> tuple[bool, bool]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%301",
+                    display_name="demo",
+                    ring_dir=tmp,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                editor = app.screen.query_one("#compose-editor", TextArea)
+                mirror = app.screen.query_one(LivePaneViewer)
+                # Editor focused on mount → shift+tab moves to mirror.
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                mirror_focused = mirror.has_focus
+                # And shift+tab again returns to the editor.
+                await pilot.press("shift+tab")
+                await pilot.pause()
+                editor_focused = editor.has_focus
+                return mirror_focused, editor_focused
+
+        with tempfile.TemporaryDirectory() as tmp:
+            mirror_focused, editor_focused = asyncio.run(scenario(Path(tmp)))
+
+        assert mirror_focused is True
+        assert editor_focused is True
+
+    def test_live_input_unhandled_key_emits_status_and_does_not_send(self) -> None:
+        async def scenario(tmp: Path) -> tuple[str, list[tuple[str, tuple[str, ...], bool]]]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%302",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                # Mirror gets focus on mount in viewer-only mode.
+                await pilot.press("i")
+                await pilot.pause()
+                # ``f1`` is not in the textual→tmux translation map.
+                await pilot.press("f1")
+                await pilot.pause()
+                return screen._status, tmux.sent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            status, sent = asyncio.run(scenario(Path(tmp)))
+
+        assert "live input ignores" in status
+        assert sent == []
+
+
+class ComposeMirrorGuidanceTests(unittest.TestCase):
+    """Status / subtitle / label rendering helpers."""
+
+    def test_viewer_subtitle_reports_capture_error_when_set(self) -> None:
+        async def scenario(tmp: Path) -> str:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%401",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._capture_error = "✗ broken"
+                screen._refresh_guidance(update_status=False)
+                viewer = app.screen.query_one(LivePaneViewer)
+                return str(viewer.border_subtitle or "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            subtitle = asyncio.run(scenario(Path(tmp)))
+
+        assert subtitle == "capture failed"
+
+    def test_viewer_subtitle_reports_sync_warning_when_set(self) -> None:
+        async def scenario(tmp: Path) -> str:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%402",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._sync_warning = "⚠ snap"
+                screen._refresh_guidance(update_status=True)
+                viewer = app.screen.query_one(LivePaneViewer)
+                return str(viewer.border_subtitle or "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            subtitle = asyncio.run(scenario(Path(tmp)))
+
+        assert "snapshot sync warning" in subtitle
+
+    def test_viewer_subtitle_reports_stream_warning_when_set(self) -> None:
+        async def scenario(tmp: Path) -> str:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%403",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._stream_warning = "⚠ stream"
+                screen._refresh_guidance(update_status=False)
+                viewer = app.screen.query_one(LivePaneViewer)
+                return str(viewer.border_subtitle or "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            subtitle = asyncio.run(scenario(Path(tmp)))
+
+        assert "snapshot sync only" in subtitle
+
+    def test_status_message_returns_capture_error_directly(self) -> None:
+        async def scenario(tmp: Path) -> str:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%404",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._capture_error = "✗ explicit-error"
+                screen._refresh_guidance(update_status=True)
+                return screen._status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            status = asyncio.run(scenario(Path(tmp)))
+
+        assert status == "✗ explicit-error"
+
+    def test_status_message_prefixes_warning_to_guidance(self) -> None:
+        async def scenario(tmp: Path) -> str:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%405",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._sync_warning = "⚠ snap-warn"
+                screen._capture_error = None
+                screen._refresh_guidance(update_status=True)
+                return screen._status
+
+        with tempfile.TemporaryDirectory() as tmp:
+            status = asyncio.run(scenario(Path(tmp)))
+
+        assert status.startswith("⚠ snap-warn ·")
+
+    def test_editor_label_in_viewer_only_mode_returns_live_viewer(self) -> None:
+        async def scenario(tmp: Path) -> str:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%406",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                viewer = app.screen.query_one(LivePaneViewer)
+                # Direct call: the helper short-circuits before any
+                # editor query when ``_show_editor`` is False.
+                return screen._editor_label(viewer)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            label_text = asyncio.run(scenario(Path(tmp)))
+
+        assert label_text == "live pane viewer"
+
+
+class ComposeMirrorTeardownTests(unittest.TestCase):
+    """``_teardown_pipe`` + ``_drain_ring`` adapter-None branches."""
+
+    def test_teardown_swallows_tmux_command_error(self) -> None:
+        async def scenario(tmp: Path) -> list[str]:
+            tmux = _RaisingTmuxStream(
+                seed_text="seed\n",
+                stop_error=TmuxCommandError("kill-pipe", stderr="x"),
+            )
+            stream = PaneStreamAdapter(tmux=cast(Any, tmux))
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%501",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                # Trigger teardown explicitly. Should not raise even
+                # though stop_pipe_pane raises ``TmuxCommandError``.
+                screen._teardown_pipe()
+                return tmux.pipe_stopped
+
+        with tempfile.TemporaryDirectory() as tmp:
+            stopped = asyncio.run(scenario(Path(tmp)))
+
+        assert stopped == ["%501"]
+
+    def test_teardown_swallows_oserror(self) -> None:
+        async def scenario(tmp: Path) -> list[str]:
+            tmux = _RaisingTmuxStream(
+                seed_text="seed\n",
+                stop_error=OSError("io"),
+            )
+            stream = PaneStreamAdapter(tmux=cast(Any, tmux))
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%502",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._teardown_pipe()
+                return tmux.pipe_stopped
+
+        with tempfile.TemporaryDirectory() as tmp:
+            stopped = asyncio.run(scenario(Path(tmp)))
+
+        assert stopped == ["%502"]
+
+    def test_drain_ring_no_op_when_adapter_is_none(self) -> None:
+        async def scenario(tmp: Path) -> tuple[str | None, bool]:
+            actions = _FakeActionService()
+            runtime = _runtime_without_pane_stream(actions)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%503",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                # Adapter is None due to no pane_stream; _drain_ring
+                # must short-circuit without raising.
+                screen._drain_ring()
+                screen._sync_snapshot(force=True)
+                return screen._capture_error, screen._loading_cleared
+
+        with tempfile.TemporaryDirectory() as tmp:
+            err, cleared = asyncio.run(scenario(Path(tmp)))
+
+        # The on_mount adapter-None branch already ran; both helpers
+        # leave that state alone.
+        assert err == "✗ pane streaming unavailable"
+        assert cleared is True
+
+    def test_drain_ring_clears_loading_when_first_chunk_arrives_late(self) -> None:
+        async def scenario(tmp: Path) -> tuple[bool, bool]:
+            tmux = _FakeTmuxStream(seed_text="hello\n")
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+
+            app = _Harness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%504",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                # Force the not-yet-cleared branch by resetting the
+                # flag: the next ring chunk will then re-clear loading.
+                screen._loading_cleared = False
+                ring_path = tmux.pipe_paths[0]
+                with ring_path.open("a", encoding="utf-8") as fh:
+                    fh.write("late\n")
+                screen._drain_ring()
+                return screen._loading_cleared, True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cleared, ok = asyncio.run(scenario(Path(tmp)))
+
+        assert cleared is True
+        assert ok is True
+
+
+# Mark intentionally retained references to avoid unused-import errors
+# from ruff in case future tests don't reach them.
+_ = (Label, patch)
 
 
 if __name__ == "__main__":  # pragma: no cover

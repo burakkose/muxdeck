@@ -341,26 +341,6 @@ class TestDashboardPanels:
         assert "output    30" in rendered
         assert "cost      $0.12" in rendered
 
-    def test_activity_panel_renders_recent_markers(self):
-        from muxdeck.widgets.dashboard import ActivityPanel
-
-        selected = _selected_agent(
-            _agent(
-                task_title="Review logs",
-                current_activity="Reviewing logs",
-                sparkline="▁▂▄▆█",
-            ),
-            recent_events=("⚡ Running tests", "⚠ Needs input"),
-        )
-        panel = ActivityPanel(id="activity")
-
-        panel.set_agent(selected)
-
-        rendered = _render(panel)
-        assert "activity" in rendered.lower()
-        assert "Running tests" in rendered
-        assert "Needs input" in rendered
-
     def test_log_preview_panel_promotes_output_title_and_lines(self):
         from muxdeck.widgets.dashboard import LogPreviewPanel
 
@@ -421,28 +401,6 @@ class TestDashboardPanels:
         assert "planning dashboard layout" in rendered
         assert "120 tok" in rendered
         assert "$0.12" in rendered
-
-    def test_fleet_health_panel_renders_counts_and_selected_status(self):
-        from muxdeck.widgets.dashboard import FleetHealthPanel
-
-        panel = FleetHealthPanel(id="fleet")
-        health = DashboardHealthSummary(
-            tone="warning",
-            message="some agents need review",
-            total_agents=4,
-            active_agents=3,
-            attention_agents=2,
-            waiting_input_agents=1,
-            blocked_agents=0,
-            error_agents=1,
-        )
-
-        panel.set_state(health, _selected_agent(_agent(name="Planner")))
-
-        rendered = _render(panel).lower()
-        assert "fleet" in rendered
-        assert "4 total / 3 active" in rendered
-        assert "planner" in rendered
 
     def test_subagent_detail_renders_structured_block_for_background(self):
         from muxdeck.controllers import DashboardSubAgentView

@@ -197,3 +197,106 @@ def test_notify_send_accepts_various_texts(title: str, body: str) -> None:
     runner = _RecordingRunner()
     NotifySendNotifier(runner=runner).notify(title, body, "normal")
     assert runner.calls[0][-2:] == (title, body)
+
+
+# ── _default_runner & TerminalBellNotifier edge cases ────────────────
+
+
+def test_default_runner_invokes_subprocess_with_expected_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from muxdeck.adapters import os_notifier as mod
+
+    captured: dict[str, object] = {}
+
+    def fake_run(argv: object, /, **kwargs: object) -> object:
+        captured["argv"] = argv
+        captured.update(kwargs)
+        return None
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)  # type: ignore[attr-defined]
+    mod._default_runner(("toast", "--title", "x"))
+
+    assert captured["argv"] == ["toast", "--title", "x"]
+    assert captured["check"] is False
+    assert captured["capture_output"] is True
+    assert captured["text"] is True
+    assert captured["timeout"] == 5
+
+
+def test_default_runner_swallows_oserror(monkeypatch: pytest.MonkeyPatch) -> None:
+    from muxdeck.adapters import os_notifier as mod
+
+    def boom(argv: object, /, **kwargs: object) -> object:
+        del argv, kwargs
+        raise FileNotFoundError("toast missing")
+
+    monkeypatch.setattr(mod.subprocess, "run", boom)  # type: ignore[attr-defined]
+    # Must not raise — notifications are best-effort.
+    mod._default_runner(("toast",))
+
+
+def test_default_runner_swallows_subprocess_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from muxdeck.adapters import os_notifier as mod
+
+    def boom(argv: object, /, **kwargs: object) -> object:
+        del argv, kwargs
+        raise subprocess.SubprocessError("kaboom")
+
+    monkeypatch.setattr(mod.subprocess, "run", boom)  # type: ignore[attr-defined]
+    mod._default_runner(("toast",))
+
+
+def test_default_runner_handles_empty_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+    from muxdeck.adapters import os_notifier as mod
+
+    def boom(argv: object, /, **kwargs: object) -> object:
+        del argv, kwargs
+        raise FileNotFoundError("missing")
+
+    monkeypatch.setattr(mod.subprocess, "run", boom)  # type: ignore[attr-defined]
+    # Empty argv should still be swallowed cleanly (the log call uses
+    # argv[0] if argv else "?" — verify the else branch is exercised).
+    mod._default_runner(())
+
+
+def test_terminal_bell_works_when_stream_has_no_flush_attr() -> None:
+    class _NoFlushStream:
+        def __init__(self) -> None:
+            self.buffer: list[str] = []
+
+        def write(self, value: str, /) -> int | None:
+            self.buffer.append(value)
+            return len(value)
+
+    stream = _NoFlushStream()
+    TerminalBellNotifier(stream=stream).notify("t", "b", "low")
+    assert stream.buffer == ["\a"]
+
+
+def test_terminal_bell_works_when_flush_attr_is_not_callable() -> None:
+    class _DataFlushStream:
+        flush = None  # not a callable — must be skipped without raising
+
+        def __init__(self) -> None:
+            self.buffer: list[str] = []
+
+        def write(self, value: str, /) -> int | None:
+            self.buffer.append(value)
+            return len(value)
+
+    stream = _DataFlushStream()
+    TerminalBellNotifier(stream=stream).notify("t", "b", "low")
+    assert stream.buffer == ["\a"]
+
+
+def test_terminal_bell_swallows_write_oserror() -> None:
+    class _BrokenStream:
+        def write(self, value: str, /) -> int | None:
+            del value
+            raise OSError("pipe closed")
+
+    # Must not raise — notification failures are best-effort.
+    TerminalBellNotifier(stream=_BrokenStream()).notify("t", "b", "low")

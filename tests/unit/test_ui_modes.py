@@ -120,8 +120,6 @@ def _build_runtime() -> MuxdeckRuntime:
                 "synchronizer": None,
                 "sync_store": None,
                 "attention": None,
-                "operations": None,
-                "fleet": None,
             },
         )(),
     )

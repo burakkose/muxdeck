@@ -391,7 +391,10 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertEqual(activity_reader.calls, ["copilot-123"])
         self.assertEqual(state.agents[0].current_activity, "Inspecting dashboard widgets")
 
-    def test_build_state_uses_session_resolver_for_activity_and_transcript_preview(self) -> None:
+    def test_build_state_uses_session_resolver_for_activity_and_falls_back_to_transcript(
+        self,
+    ) -> None:
+        """When no log chunks exist yet, transcript becomes the preview source."""
         store = InMemoryDashboardStore()
         observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
         store.agents["agent-1"] = Agent(
@@ -445,6 +448,8 @@ class DashboardControllerTests(unittest.TestCase):
 
         self.assertEqual(resolver.calls, [4242, 4242])
         self.assertEqual(activity_reader.calls, ["copilot-live"])
+        # No log chunks exist for this session, so the transcript fills
+        # the preview as a fallback.
         self.assertEqual(activity_reader.transcript_calls, [("copilot-live", 1)])
         self.assertEqual(state.agents[0].current_activity, "Inspecting dashboard widgets")
         assert state.selected_agent is not None
@@ -547,15 +552,15 @@ class DashboardControllerTests(unittest.TestCase):
         assert state.selected_agent is not None
         self.assertEqual(state.selected_agent.item.idle_seconds, 75)
 
-    def test_log_preview_dedupes_static_scrollback_across_snapshots(self) -> None:
+    def test_log_preview_returns_latest_snapshot_tail_to_mirror_tmux(self) -> None:
         # Each tmux_capture LogChunk is a complete pane snapshot, not
-        # an incremental delta — so a long-lived agent accumulates
-        # many snapshots that share the same static scrollback prefix
-        # (the original ``copilot`` command, the launch banner, etc.).
-        # Without dedup, ``lines[-N:]`` surfaces that frozen prefix
-        # because it dominates the flattened line stream. The preview
-        # must show the *cumulative live churn* — content that's new
-        # in later snapshots — not the same banner over and over.
+        # an incremental delta. The Output panel must mirror what is
+        # currently on screen in tmux, so the preview should come from
+        # the most recent snapshot's tail rather than a deduped union
+        # of all retained snapshots (the old behavior dropped lines
+        # that appeared in earlier scrollback even if they had since
+        # been re-emitted by the agent, which made the panel diverge
+        # from what the operator was actually seeing).
         store = InMemoryDashboardStore()
         observed_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
         store.agents["agent-pwsh"] = Agent(
@@ -574,21 +579,11 @@ class DashboardControllerTests(unittest.TestCase):
             agent_id="agent-pwsh",
             created_at=observed_at,
         )
-        # First snapshot: shell prompt + the operator's `copilot` command
-        # + the banner that copilot prints on launch.
-        snapshot_one = (
-            "PS C:\\repo> copilot\n"
-            "  banner-line-1\n"
-            "  banner-line-2\n"
-            "  banner-line-3\n"
-            "Copilot ready. > \n"
-        )
-        # Second snapshot: same scrollback above, plus a new live line
-        # at the bottom (typical TUI churn).
-        snapshot_two = snapshot_one + "● Read main.py\n  done\n"
-        # Third snapshot: same scrollback + more new churn.
-        snapshot_three = snapshot_two + "◐ Thinking (1.2 KiB)\n"
-        for sequence_no, content in enumerate((snapshot_one, snapshot_two, snapshot_three)):
+        # Snapshot 1: shell prompt + banner — older state.
+        snapshot_one = "PS C:\\repo> copilot\n  banner-line-1\n  banner-line-2\nCopilot ready. > \n"
+        # Snapshot 2: the live tail of the pane right now.
+        snapshot_two = "● Read main.py\n  done\n◐ Thinking (1.2 KiB)\n  ● follow-up line\n"
+        for sequence_no, content in enumerate((snapshot_one, snapshot_two)):
             store.logs.append(
                 LogChunk(
                     id=f"log-{sequence_no}",
@@ -604,21 +599,220 @@ class DashboardControllerTests(unittest.TestCase):
         controller = DashboardController(store, clock=lambda: observed_at)
         state = controller.build_state(
             selected_agent_id="agent-pwsh",
-            preview_line_limit=5,
+            preview_line_limit=4,
         )
 
         assert state.selected_agent is not None
         contents = [line.content for line in state.selected_agent.log_preview]
-        # The frozen prefix must NOT dominate the preview…
-        self.assertNotIn("PS C:\\repo> copilot", contents)
-        self.assertNotIn("banner-line-1", contents)
-        # …and the live tail from the most recent snapshots MUST be
-        # what surfaces, including content unique to later snapshots.
-        self.assertIn("● Read main.py", contents)
-        self.assertIn("◐ Thinking (1.2 KiB)", contents)
-        # The live tail is the *last* thing in the preview, since
-        # dedup preserves chronological insertion order.
-        self.assertEqual(contents[-1], "◐ Thinking (1.2 KiB)")
+        # The preview is the tail of the latest snapshot — only its
+        # non-blank lines, in order — not lines from older snapshots.
+        self.assertEqual(
+            contents,
+            ["● Read main.py", "  done", "◐ Thinking (1.2 KiB)", "  ● follow-up line"],
+        )
+
+    def test_log_preview_returns_only_tail_when_latest_snapshot_exceeds_limit(self) -> None:
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+        store.agents["agent-x"] = Agent(
+            id="agent-x",
+            name="agent-x",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_seen_at=observed_at,
+        )
+        store.sessions["session-x"] = Session(
+            id="session-x",
+            agent_id="agent-x",
+            created_at=observed_at,
+        )
+        store.logs.append(
+            LogChunk(
+                id="log-x",
+                agent_id="agent-x",
+                session_id="session-x",
+                source="tmux_capture",
+                sequence_no=0,
+                captured_at=observed_at,
+                content="line-1\nline-2\nline-3\n\nline-4\n",
+            )
+        )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        state = controller.build_state(
+            selected_agent_id="agent-x",
+            preview_line_limit=2,
+        )
+
+        assert state.selected_agent is not None
+        contents = [line.content for line in state.selected_agent.log_preview]
+        # Only the last two non-blank lines from the latest snapshot.
+        self.assertEqual(contents, ["line-3", "line-4"])
+
+    def test_waiting_for_user_from_events_activity(self) -> None:
+        """When events_activity has waiting_for_user flag, attention is set."""
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Planner",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Plan dashboard",
+            copilot_session_id="copilot-123",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_seen_at=observed_at,
+        )
+
+        activity_reader = StubActivityReader(
+            AgentActivity(
+                intent="Waiting",
+                tool_name="ask_user",
+                tool_target="confirm",
+                summary="waiting on user",
+                waiting_for_user=True,
+                latest_at=observed_at,
+            )
+        )
+
+        controller = DashboardController(
+            store,
+            clock=lambda: observed_at,
+            activity_reader=activity_reader,
+        )
+        state = controller.build_state()
+
+        self.assertEqual(len(state.agents), 1)
+        self.assertTrue(state.agents[0].needs_attention)
+        self.assertIn("waiting for input", state.agents[0].attention_reason or "")
+
+    def test_precomputed_items_skip_build_agent_items(self) -> None:
+        """When precomputed_items are provided, build_agent_items is skipped."""
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Agent",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Task",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_seen_at=observed_at,
+        )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        items = controller.build_agent_items()
+
+        # Build state with precomputed items
+        state = controller.build_state(precomputed_items=items)
+
+        self.assertEqual(len(state.agents), 1)
+        self.assertEqual(state.agents[0].agent_id, "agent-1")
+
+    def test_log_preview_with_no_logs_returns_empty_tuple(self) -> None:
+        """When no logs exist for a session, log preview is empty."""
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Agent",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_seen_at=observed_at,
+        )
+        store.sessions["session-1"] = Session(
+            id="session-1",
+            agent_id="agent-1",
+            created_at=observed_at,
+        )
+        # No logs added
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        state = controller.build_state(selected_agent_id="agent-1")
+
+        assert state.selected_agent is not None
+        self.assertEqual(len(state.selected_agent.log_preview), 0)
+
+    def test_alert_severity_mapping(self) -> None:
+        """Alert severity is derived from operator_status tone."""
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        store.agents["warning-agent"] = Agent(
+            id="warning-agent",
+            name="Warning",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Waiting",
+            status=AgentStatus.WAITING_INPUT,
+            started_at=observed_at,
+            last_activity_at=observed_at,
+            last_seen_at=observed_at,
+            needs_attention=True,
+            attention_reason="waiting for input",
+        )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        state = controller.build_state()
+
+        self.assertEqual(len(state.alerts), 1)
+        alert = state.alerts[0]
+        # WAITING_INPUT must surface as a "warning" alert (not "info"
+        # or "error"). The earlier assertion accepted any of the three
+        # valid Literal values, so it would still pass under a buggy
+        # mapping that promoted/demoted the severity.
+        self.assertEqual(alert.severity, "warning")
+
+    def test_build_alerts_from_items(self) -> None:
+        """build_alerts_from_items computes alerts without full state build."""
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Agent",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Task",
+            status=AgentStatus.WAITING_INPUT,
+            started_at=observed_at,
+            last_activity_at=observed_at,
+            last_seen_at=observed_at,
+            needs_attention=True,
+            attention_reason="waiting",
+        )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        items = controller.build_agent_items()
+        alerts = controller.build_alerts_from_items(items, limit=5)
+
+        self.assertEqual(len(alerts), 1)
+        self.assertEqual(alerts[0].agent_id, "agent-1")
 
 
 if __name__ == "__main__":

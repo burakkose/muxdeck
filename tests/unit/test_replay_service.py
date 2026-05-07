@@ -250,6 +250,124 @@ class ReplayServiceTests(unittest.TestCase):
         self.assertEqual(sorted(labels_for_file_edit), ["legacy/old.py", "src/auth.py"])
         self.assertEqual(labels_for_tool, ["ripgrep"])
 
+    def test_load_multi_session_replay_deduplicates_session_ids(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, 0, tzinfo=UTC),
+        )
+
+        replay = self.replays.load_multi_session_replay((bundle.session.id, bundle.session.id))
+
+        self.assertEqual(len(replay.sessions), 1)
+
+    def test_export_transcript_text_includes_all_entry_types(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_events(
+            bundle.session.id,
+            (
+                Event(
+                    occurred_at=timestamp,
+                    kind="custom.note",
+                    payload_json='{"message":"test"}',
+                    severity="info",
+                ),
+            ),
+        )
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("output line 1", "output line 2"),
+            captured_at=datetime(2025, 1, 1, 12, 10, tzinfo=UTC),
+        )
+
+        replay = self.replays.load_session_replay(bundle.session.id)
+        transcript = self.replays.export_transcript_text(replay)
+
+        self.assertIn("EVENT", transcript)
+        self.assertIn("LOG", transcript)
+        self.assertIn("output line 1", transcript)
+
+    def test_export_transcript_skips_log_entries_with_no_chunk(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+
+        replay = self.replays.load_session_replay(bundle.session.id)
+        lines = self.replays.export_transcript_lines(replay)
+
+        self.assertEqual(len(lines), 1)
+
+    def test_build_entry_markers_with_file_mutations(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Created file: src/new.py",),
+            captured_at=timestamp,
+        )
+
+        replay = self.replays.load_session_replay(bundle.session.id)
+        markers = replay.jump_markers
+
+        file_edit_markers = [m for m in markers if m.kind == "file_edit"]
+        self.assertEqual(len(file_edit_markers), 1)
+
+    def test_payload_normalization_handles_invalid_json(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_events(
+            bundle.session.id,
+            (
+                Event(
+                    occurred_at=timestamp,
+                    kind="custom.note",
+                    payload_json='{"valid":"json"}',
+                ),
+            ),
+        )
+
+        replay = self.replays.load_session_replay(bundle.session.id)
+        transcript = self.replays.export_transcript_text(replay)
+
+        self.assertIn("valid", transcript)
+
+    def test_load_replay_by_locator_with_copilot_session_id(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+
+        replay = self.replays.load_replay_by_locator(copilot_session_id="copilot-agent-123")
+
+        self.assertEqual(replay.entries[0].session_id, bundle.session.id)
+
+    def test_load_replay_by_locator_with_tmux_pane_id(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+
+        replay = self.replays.load_replay_by_locator(tmux_pane_id="%1")
+
+        self.assertEqual(replay.entries[0].session_id, bundle.session.id)
+
+    def test_load_replay_by_locator_raises_on_not_found(self) -> None:
+        with self.assertRaises(LookupError) as cm:
+            self.replays.load_replay_by_locator(session_id="nonexistent")
+        self.assertIn("no replayable session found", str(cm.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

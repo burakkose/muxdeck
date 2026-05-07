@@ -7,6 +7,8 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from muxdeck.adapters.copilot_session_store import (
     CopilotSessionStore,
     _parse_session_dir,
@@ -392,3 +394,299 @@ def test_store_age_filtering(tmp_path: Path) -> None:
     )
     sessions = store.discover()
     assert len(sessions) == 0  # filtered by age
+
+
+# ── parser helper edge cases ────────────────────────────────────────
+
+
+def test_parse_iso_returns_none_for_empty_or_malformed() -> None:
+    from muxdeck.adapters.copilot_session_store import _parse_iso
+
+    assert _parse_iso("") is None
+    assert _parse_iso(None) is None
+    assert _parse_iso("not-a-date") is None
+    # Trailing 'Z' is normalized to +00:00 — sanity check the happy path.
+    parsed = _parse_iso("2026-01-15T10:00:00Z")
+    assert parsed is not None
+    assert parsed.tzinfo is not None
+
+
+def test_parse_workspace_yaml_skips_indented_lines_and_comments(tmp_path: Path) -> None:
+    ws = tmp_path / "workspace.yaml"
+    ws.write_text(
+        "# leading comment\n"
+        "  indented_at_top: ignored\n"  # leading whitespace → skipped
+        "no_colon_line\n"  # no colon → skipped
+        ": empty_key\n"  # blank key → skipped
+        "\n"
+        "id: real-id\n"
+        "url: http://example.com/path # inline comment\n"
+    )
+    result = _parse_workspace_yaml(ws)
+    assert result == {"id": "real-id", "url": "http://example.com/path"}
+
+
+def test_apply_block_scalar_returns_empty_when_no_lines() -> None:
+    from muxdeck.adapters.copilot_session_store import _apply_block_scalar
+
+    assert _apply_block_scalar([], "|-") == ""
+
+
+def test_apply_block_scalar_handles_blank_paragraphs_in_folded_mode() -> None:
+    from muxdeck.adapters.copilot_session_store import _apply_block_scalar
+
+    # Folded with one paragraph followed by a blank line and EOF — the
+    # blank line is preserved, but no trailing buffer flush happens.
+    text = _apply_block_scalar(["one", "two", "", "three"], ">")
+    assert text == "one two\n\nthree"
+
+
+def test_count_checkpoints_returns_zero_when_dir_missing(tmp_path: Path) -> None:
+    from muxdeck.adapters.copilot_session_store import _count_checkpoints
+
+    sd = tmp_path / "no-cp-session"
+    sd.mkdir()
+    assert _count_checkpoints(sd) == 0
+
+
+def test_count_checkpoints_ignores_index_md_and_non_md(tmp_path: Path) -> None:
+    from muxdeck.adapters.copilot_session_store import _count_checkpoints
+
+    sd = tmp_path / "session"
+    cp = sd / "checkpoints"
+    cp.mkdir(parents=True)
+    (cp / "index.md").write_text("# index")
+    (cp / "001-good.md").write_text("# good")
+    (cp / "002-also-good.md").write_text("# good")
+    (cp / "junk.txt").write_text("not md")
+    assert _count_checkpoints(sd) == 2
+
+
+def test_as_int_handles_various_inputs() -> None:
+    from muxdeck.adapters.copilot_session_store import _as_int
+
+    assert _as_int(42) == 42
+    assert _as_int("42") == 42
+    assert _as_int("1,234") == 1234
+    assert _as_int("-99") == -99
+    # Bool must NOT be treated as int.
+    assert _as_int(True) is None
+    assert _as_int(False) is None
+    # Non-digit strings, lists, dicts → None.
+    assert _as_int("abc") is None
+    assert _as_int(None) is None
+    assert _as_int([1]) is None
+
+
+def test_extract_session_usage_returns_none_for_non_shutdown_event() -> None:
+    from muxdeck.adapters.copilot_session_store import _extract_session_usage
+
+    # Wrong event type → None.
+    assert (
+        _extract_session_usage(
+            {"type": "tool.execution_start", "data": {"totalPremiumRequests": 5}}
+        )
+        is None
+    )
+    # None input → None.
+    assert _extract_session_usage(None) is None
+
+
+def test_extract_session_usage_returns_none_when_data_not_dict() -> None:
+    from muxdeck.adapters.copilot_session_store import _extract_session_usage
+
+    assert _extract_session_usage({"type": "session.shutdown", "data": "not-a-dict"}) is None
+
+
+def test_extract_session_usage_returns_none_when_no_usage_or_premium() -> None:
+    from muxdeck.adapters.copilot_session_store import _extract_session_usage
+
+    # No modelMetrics, no totalPremiumRequests → None.
+    result = _extract_session_usage({"type": "session.shutdown", "data": {}})
+    assert result is None
+
+
+def test_extract_session_usage_skips_non_dict_entries() -> None:
+    from muxdeck.adapters.copilot_session_store import _extract_session_usage
+
+    # modelMetrics with non-dict details and details with non-dict usage.
+    payload: dict[str, object] = {
+        "type": "session.shutdown",
+        "data": {
+            "totalPremiumRequests": 1,
+            "modelMetrics": {
+                "broken-1": "not-a-dict",
+                "broken-2": {"usage": "still-not-a-dict"},
+            },
+        },
+    }
+    result = _extract_session_usage(payload)
+    assert result is not None
+    # No usage entries seen → token fields stay None, premium captured.
+    assert result.input_tokens is None
+    assert result.premium_requests == 1
+
+
+def test_extract_session_usage_total_tokens_sums_when_some_none() -> None:
+    from muxdeck.adapters.copilot_session_store import CopilotSessionUsage
+
+    # If every component is None, total_tokens is None.
+    usage = CopilotSessionUsage()
+    assert usage.total_tokens is None
+
+    # If at least one component is present, total_tokens sums it.
+    usage = CopilotSessionUsage(input_tokens=10, output_tokens=5)
+    assert usage.total_tokens == 15
+
+
+# ── _iter_roots / _scan_root edge cases ──────────────────────────────
+
+
+def test_iter_roots_dedups_extra_root_matching_primary(tmp_path: Path) -> None:
+    from muxdeck.adapters.copilot_session_store import SessionStoreRoot
+
+    store = CopilotSessionStore(
+        session_state_dir=tmp_path,
+        cache_ttl_sec=0,
+        extra_roots=(SessionStoreRoot(tmp_path, "windows"),),
+    )
+    roots = store._iter_roots()
+    # Duplicate path is dropped — only the local root remains.
+    assert len(roots) == 1
+    assert roots[0].origin == "local"
+
+
+def test_scan_root_returns_empty_for_missing_dir(tmp_path: Path) -> None:
+    from muxdeck.adapters.copilot_session_store import SessionStoreRoot
+
+    store = CopilotSessionStore(session_state_dir=tmp_path / "absent", cache_ttl_sec=0)
+    sessions, paths = store._scan_root(
+        SessionStoreRoot(tmp_path / "absent", "local"),
+        cutoff=None,
+    )
+    assert sessions == []
+    assert paths == set()
+
+
+def test_scan_root_returns_empty_when_root_is_empty(tmp_path: Path) -> None:
+    from muxdeck.adapters.copilot_session_store import SessionStoreRoot
+
+    store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=0)
+    sessions, paths = store._scan_root(
+        SessionStoreRoot(tmp_path, "local"),
+        cutoff=None,
+    )
+    assert sessions == []
+    assert paths == set()
+
+
+def test_scan_root_swallows_scandir_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import muxdeck.adapters.copilot_session_store as mod
+    from muxdeck.adapters.copilot_session_store import SessionStoreRoot
+
+    real_scandir = mod.os.scandir  # type: ignore[attr-defined]
+
+    def fake_scandir(path: object, /) -> object:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(mod.os, "scandir", fake_scandir)  # type: ignore[attr-defined]
+    try:
+        store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=0)
+        sessions, paths = store._scan_root(
+            SessionStoreRoot(tmp_path, "local"),
+            cutoff=None,
+        )
+        assert sessions == []
+        assert paths == set()
+    finally:
+        monkeypatch.setattr(mod.os, "scandir", real_scandir)  # type: ignore[attr-defined]
+
+
+def test_scan_drops_session_dir_without_workspace_from_entry_cache(tmp_path: Path) -> None:
+    # First scan populates the cache with one session.
+    _make_session(tmp_path, "to-be-removed", summary="Now you see me")
+    store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=0)
+    first = store.discover()
+    assert any(s.session_id == "to-be-removed" for s in first)
+    # Remove workspace.yaml — directory still exists but is no longer
+    # a session. Next scan must drop it from the entry cache.
+    (tmp_path / "to-be-removed" / "workspace.yaml").unlink()
+    second = store.discover(force=True)
+    assert all(s.session_id != "to-be-removed" for s in second)
+
+
+def test_scan_dedups_when_same_id_appears_in_local_and_windows(tmp_path: Path) -> None:
+    from muxdeck.adapters.copilot_session_store import SessionStoreRoot
+
+    # Same session_id in both local and windows roots — local must win.
+    local_root = tmp_path / "local"
+    windows_root = tmp_path / "windows"
+    local_root.mkdir()
+    windows_root.mkdir()
+    _make_session(local_root, "shared-id", summary="local-side")
+    _make_session(windows_root, "shared-id", summary="windows-side")
+
+    store = CopilotSessionStore(
+        session_state_dir=local_root,
+        cache_ttl_sec=0,
+        extra_roots=(SessionStoreRoot(windows_root, "windows"),),
+    )
+    sessions = store.discover()
+    matches = [s for s in sessions if s.session_id == "shared-id"]
+    assert len(matches) == 1
+    assert matches[0].origin == "local"
+    assert matches[0].summary == "local-side"
+
+
+def test_set_extra_roots_invalidates_top_level_cache(tmp_path: Path) -> None:
+    _make_session(tmp_path, "warm-1", summary="Warm")
+    store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=60)
+    store.discover()
+    assert store._cache_time > 0.0
+    # Replacing extras must blow away the top-level cache so the next
+    # discover() re-walks. Per-entry cache stays intact (verified via
+    # the fact that discover still returns the original entry).
+    store.set_extra_roots(())
+    assert store._cache_time == 0.0
+    assert store._cache == []
+    refreshed = store.discover()
+    assert any(s.session_id == "warm-1" for s in refreshed)
+
+
+def test_count_by_origin_categorises_sessions(tmp_path: Path) -> None:
+    _make_session(tmp_path, "local-1", summary="L")
+    store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=0)
+    assert store.count_by_origin("local") == 1
+    assert store.count_by_origin("windows") == 0
+
+
+# ── _parse_session_dir for windows-style cwd ─────────────────────────
+
+
+def test_parse_session_dir_preserves_windows_paths(tmp_path: Path) -> None:
+    sd = tmp_path / "winsess"
+    sd.mkdir()
+    (sd / "workspace.yaml").write_text(
+        "id: winsess\n"
+        "cwd: 'C:\\Users\\alice\\projects\\foo'\n"
+        "git_root: 'C:\\Users\\alice\\projects\\foo'\n"
+        "summary: Windows session\n"
+    )
+    session = _parse_session_dir(sd, origin="windows")
+    assert session is not None
+    assert session.windows_cwd == "C:\\Users\\alice\\projects\\foo"
+    assert session.windows_git_root == "C:\\Users\\alice\\projects\\foo"
+
+
+def test_parse_session_dir_omits_windows_paths_for_non_windows_style_cwd(tmp_path: Path) -> None:
+    sd = tmp_path / "winsess-posix"
+    sd.mkdir()
+    (sd / "workspace.yaml").write_text(
+        "id: winsess-posix\ncwd: /usr/local/projects/foo\ngit_root: /usr/local/projects/foo\n"
+    )
+    session = _parse_session_dir(sd, origin="windows")
+    assert session is not None
+    assert session.windows_cwd is None
+    assert session.windows_git_root is None

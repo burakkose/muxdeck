@@ -656,6 +656,299 @@ class ReplayControllerTests(unittest.TestCase):
         assert state.insights is not None
         self.assertGreaterEqual(state.insights.error_count, 1)
 
+    def test_empty_transcript_initial_playback_returns_none(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_events(
+            bundle.session.id,
+            (Event(occurred_at=timestamp, kind="custom.note", payload_json='{"x":1}'),),
+        )
+
+        state = self.controller.load_state(session_id=bundle.session.id)
+        pb_state = self.controller.initial_playback(state)
+
+        self.assertIsNotNone(pb_state)
+
+    def test_jump_next_without_marker_returns_none(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_events(
+            bundle.session.id,
+            (Event(occurred_at=timestamp, kind="other_kind", payload_json='{"x":1}'),),
+        )
+
+        state = self.controller.load_state(session_id=bundle.session.id)
+        next_activity = self.controller.jump_to_next_activity(state)
+
+        self.assertIsNone(next_activity)
+
+    def test_playback_state_view_is_max_speed_property(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_events(
+            bundle.session.id,
+            (Event(occurred_at=timestamp, kind="custom.note", payload_json='{"x":1}'),),
+        )
+
+        state = self.controller.load_state(session_id=bundle.session.id)
+        pb_state = self.controller.initial_playback(state)
+
+        self.assertIsNotNone(pb_state)
+        assert pb_state is not None
+
+        synced = self.controller.apply_playback(state, pb_state)
+        pb_view = synced.playback
+        self.assertIsNotNone(pb_view)
+        assert pb_view is not None
+        self.assertFalse(pb_view.is_max_speed)
+
+    def test_toggle_bookmark_without_annotations_service_raises(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        controller_no_annot = ReplayController(self.replays, annotations=None)
+
+        with self.assertRaises(RuntimeError) as cm:
+            controller_no_annot.toggle_bookmark(bundle.session.id, 0)
+        self.assertIn("annotations service", str(cm.exception))
+
+    def test_add_note_without_annotations_service_raises(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        controller_no_annot = ReplayController(self.replays, annotations=None)
+
+        with self.assertRaises(RuntimeError) as cm:
+            controller_no_annot.add_note(bundle.session.id, 0, "test")
+        self.assertIn("annotations service", str(cm.exception))
+
+    def test_delete_annotation_without_annotations_service_raises(self) -> None:
+        controller_no_annot = ReplayController(self.replays, annotations=None)
+
+        with self.assertRaises(RuntimeError) as cm:
+            controller_no_annot.delete_annotation("anno-123")
+        self.assertIn("annotations service", str(cm.exception))
+
+    def test_playback_step_forward_and_backward(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_events(
+            bundle.session.id,
+            (
+                Event(occurred_at=timestamp, kind="custom.note", payload_json='{"x":1}'),
+                Event(
+                    occurred_at=datetime(2025, 1, 1, 12, 10, tzinfo=UTC),
+                    kind="custom.note",
+                    payload_json='{"x":2}',
+                ),
+            ),
+        )
+
+        state = self.controller.load_state(session_id=bundle.session.id)
+        pb_state = self.controller.initial_playback(state)
+
+        self.assertIsNotNone(pb_state)
+        assert pb_state is not None
+
+        synced, next_pb = self.controller.playback_step(state, pb_state, direction=1)
+        self.assertIsNotNone(synced.playback)
+        self.assertIsNotNone(next_pb)
+
+        synced2, next_pb2 = self.controller.playback_step(synced, next_pb, direction=-1)
+        self.assertIsNotNone(synced2.playback)
+
+    def test_playback_cycle_speed(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_events(
+            bundle.session.id,
+            (Event(occurred_at=timestamp, kind="custom.note", payload_json='{"x":1}'),),
+        )
+
+        state = self.controller.load_state(session_id=bundle.session.id)
+        pb_state = self.controller.initial_playback(state)
+
+        self.assertIsNotNone(pb_state)
+        assert pb_state is not None
+
+        synced, next_pb = self.controller.playback_cycle_speed(state, pb_state, direction=1)
+        self.assertIsNotNone(synced.playback)
+        self.assertIsNotNone(next_pb)
+
+    def test_playback_toggle_play(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_events(
+            bundle.session.id,
+            (Event(occurred_at=timestamp, kind="custom.note", payload_json='{"x":1}'),),
+        )
+
+        state = self.controller.load_state(session_id=bundle.session.id)
+        pb_state = self.controller.initial_playback(state)
+
+        self.assertIsNotNone(pb_state)
+        assert pb_state is not None
+
+        synced, next_pb = self.controller.playback_toggle(state, pb_state)
+        self.assertIsNotNone(synced.playback)
+
+    def test_playback_jump_to_target_timestamp(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamps = [
+            datetime(2025, 1, 1, 12, 5, tzinfo=UTC),
+            datetime(2025, 1, 1, 12, 10, tzinfo=UTC),
+            datetime(2025, 1, 1, 12, 15, tzinfo=UTC),
+        ]
+        self.sessions.append_events(
+            bundle.session.id,
+            tuple(
+                Event(occurred_at=ts, kind="custom.note", payload_json='{"x":1}')
+                for ts in timestamps
+            ),
+        )
+
+        state = self.controller.load_state(session_id=bundle.session.id)
+        pb_state = self.controller.initial_playback(state)
+
+        self.assertIsNotNone(pb_state)
+        assert pb_state is not None
+
+        target = datetime(2025, 1, 1, 12, 10, tzinfo=UTC)
+        synced, next_pb = self.controller.playback_jump_to(state, pb_state, target)
+        self.assertIsNotNone(synced.playback)
+
+    def test_jump_next_file_edit(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=("Editing file: src/auth.py",),
+            captured_at=timestamp,
+        )
+
+        state = self.controller.load_state(session_id=bundle.session.id)
+        result = self.controller.jump_to_next_file_edit(state)
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.selected_index, 1)
+
+    def test_jump_next_annotation(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_events(
+            bundle.session.id,
+            (Event(occurred_at=timestamp, kind="custom.note", payload_json='{"x":1}'),),
+        )
+        self.annotations.add_note(bundle.session.id, 1, "important note")
+
+        state = self.controller.load_state(session_id=bundle.session.id)
+        result = self.controller.jump_to_next_annotation(state)
+
+        self.assertIsNotNone(result)
+
+    def test_load_multi_state_requires_nonempty_session_ids(self) -> None:
+        with self.assertRaises(ValueError):
+            self.controller.load_multi_state(())
+
+    def test_fetch_annotation_views_without_service_returns_empty(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        controller_no_annot = ReplayController(self.replays, annotations=None)
+
+        state = controller_no_annot.load_state(session_id=bundle.session.id)
+
+        self.assertEqual(state.annotations, ())
+
+    def test_agent_alias_generation(self) -> None:
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        self._upsert_agent("agent-456", "%2")
+        bundle2 = self.sessions.create_session(
+            "agent-456",
+            occurred_at=datetime(2025, 1, 1, 12, 30, tzinfo=UTC),
+        )
+        timestamp = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+        self.sessions.append_events(
+            bundle.session.id,
+            (Event(occurred_at=timestamp, kind="custom.note", payload_json='{"x":1}'),),
+        )
+        self.sessions.append_events(
+            bundle2.session.id,
+            (
+                Event(
+                    occurred_at=datetime(2025, 1, 1, 12, 35, tzinfo=UTC),
+                    kind="custom.note",
+                    payload_json='{"x":2}',
+                ),
+            ),
+        )
+
+        state = self.controller.load_multi_state((bundle.session.id, bundle2.session.id))
+
+        self.assertEqual(len(state.agent_ids), 2)
+        self.assertIn("agent-123", state.agent_ids)
+        self.assertIn("agent-456", state.agent_ids)
+
+    def _upsert_agent(self, agent_id: str, pane_id: str) -> None:
+        self.store.upsert_agent(
+            Agent(
+                id=agent_id,
+                name=f"planner-{agent_id}",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@1",
+                tmux_pane_id=pane_id,
+                cwd=str(self.worktree_path),
+                repo_root=str(self.repo_root),
+                worktree_path=str(self.worktree_path),
+                branch="task/replay",
+                task_title="Replay",
+                copilot_session_id=f"copilot-{agent_id}",
+                status=AgentStatus.RUNNING,
+                started_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+                last_activity_at=datetime(2025, 1, 1, 12, 1, tzinfo=UTC),
+                last_seen_at=datetime(2025, 1, 1, 12, 2, tzinfo=UTC),
+                token_input=10,
+                token_output=5,
+                token_total=15,
+                estimated_cost_usd=Decimal("0.100000"),
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

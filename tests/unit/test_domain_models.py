@@ -196,5 +196,83 @@ class DomainModelTests(unittest.TestCase):
         self.assertIs(ExportedLogChunk, LogChunk)
 
 
+class DomainModelBranchTests(unittest.TestCase):
+    """Cover the negative branches of Agent / Worktree / Session validation."""
+
+    def _baseline_agent_kwargs(self) -> dict[str, object]:
+        started_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        return {
+            "id": "agent-1",
+            "name": "Planner",
+            "backend": "copilot_cli",
+            "tmux_session_name": "muxdeck",
+            "tmux_window_id": "@1",
+            "tmux_pane_id": "%1",
+            "cwd": "/repo",
+            "status": AgentStatus.RUNNING,
+            "started_at": started_at,
+            "last_seen_at": started_at,
+        }
+
+    def test_agent_rejects_unknown_backend(self) -> None:
+        kwargs = self._baseline_agent_kwargs()
+        kwargs["backend"] = "openai_cli"
+        with self.assertRaises(DomainValidationError):
+            Agent(**kwargs)  # type: ignore[arg-type]
+
+    def test_agent_status_must_be_enum(self) -> None:
+        kwargs = self._baseline_agent_kwargs()
+        kwargs["status"] = "running"  # plain string, not enum
+        with self.assertRaises(DomainValidationError):
+            Agent(**kwargs)  # type: ignore[arg-type]
+
+    def test_agent_last_activity_at_cannot_precede_started_at(self) -> None:
+        kwargs = self._baseline_agent_kwargs()
+        started = kwargs["started_at"]
+        assert isinstance(started, datetime)
+        kwargs["last_activity_at"] = started - timedelta(seconds=1)
+        with self.assertRaises(DomainValidationError):
+            Agent(**kwargs)  # type: ignore[arg-type]
+
+    def test_agent_last_seen_at_cannot_precede_started_at(self) -> None:
+        kwargs = self._baseline_agent_kwargs()
+        started = kwargs["started_at"]
+        assert isinstance(started, datetime)
+        kwargs["last_seen_at"] = started - timedelta(seconds=1)
+        with self.assertRaises(DomainValidationError):
+            Agent(**kwargs)  # type: ignore[arg-type]
+
+    def test_agent_last_seen_cannot_precede_last_activity(self) -> None:
+        kwargs = self._baseline_agent_kwargs()
+        started = kwargs["started_at"]
+        assert isinstance(started, datetime)
+        kwargs["last_activity_at"] = started + timedelta(seconds=10)
+        kwargs["last_seen_at"] = started + timedelta(seconds=5)
+        with self.assertRaises(DomainValidationError):
+            Agent(**kwargs)  # type: ignore[arg-type]
+
+    def test_worktree_last_seen_cannot_precede_created_at(self) -> None:
+        created_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        with self.assertRaises(DomainValidationError):
+            Worktree(
+                id="wt-1",
+                repo_root="/repo",
+                path="/repo/wt",
+                branch="main",
+                created_at=created_at,
+                last_seen_at=created_at - timedelta(seconds=1),
+            )
+
+    def test_session_ended_at_cannot_precede_created_at(self) -> None:
+        created_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        with self.assertRaises(DomainValidationError):
+            Session(
+                id="s-1",
+                agent_id="agent-1",
+                created_at=created_at,
+                ended_at=created_at - timedelta(seconds=1),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

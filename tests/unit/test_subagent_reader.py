@@ -770,3 +770,715 @@ class TestReadAgentInteractions:
         assert snap.result_content == "the answer"
         assert snap.total_tokens is None
         assert snap.error_message is None
+
+
+# ── invalidate, OSError + parsing edge branches ──────────────────────
+
+
+class TestInvalidate:
+    def test_invalidate_none_clears_all_session_state(self, tmp_path: Path) -> None:
+        for sid in ("s-a", "s-b"):
+            _write_events(
+                tmp_path / sid,
+                [_started_event(tool_call_id=f"tc-{sid}", timestamp="2026-01-01T00:00:00Z")],
+            )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        reader.read("s-a")
+        reader.read("s-b")
+        reader.invalidate(None)
+        assert reader._state == {}
+
+    def test_invalidate_specific_session_only(self, tmp_path: Path) -> None:
+        for sid in ("s-1", "s-2"):
+            _write_events(
+                tmp_path / sid,
+                [_started_event(tool_call_id=f"tc-{sid}", timestamp="2026-01-01T00:00:00Z")],
+            )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        reader.read("s-1")
+        reader.read("s-2")
+        reader.invalidate("s-1")
+        assert "s-1" not in reader._state
+        assert "s-2" in reader._state
+
+
+class TestReadResolution:
+    def test_returns_none_when_session_dir_does_not_exist(self, tmp_path: Path) -> None:
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        assert reader.read("does-not-exist") is None
+
+    def test_returns_none_when_stat_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events_path = _write_events(
+            tmp_path / "s-stat",
+            [_started_event(tool_call_id="t1", timestamp="2026-01-01T00:00:00Z")],
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        # First read primes the state, then we make stat raise.
+        reader.read("s-stat")
+
+        real_stat = Path.stat
+
+        def boom(self: Path, *args: object, **kwargs: object) -> object:
+            if self == events_path:
+                raise PermissionError("denied")
+            return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "stat", boom)
+        assert reader.read("s-stat") is None
+
+    def test_consume_new_bytes_swallows_open_oserror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events_path = _write_events(
+            tmp_path / "s-open-err",
+            [_started_event(tool_call_id="t1", timestamp="2026-01-01T00:00:00Z")],
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        # Patch Path.open to raise for our events file specifically.
+        real_open = Path.open
+
+        def boom(
+            self: Path,
+            *args: object,
+            **kwargs: object,
+        ) -> object:
+            if self == events_path:
+                raise PermissionError("blocked")
+            return real_open(self, *args, **kwargs)  # type: ignore[call-overload]
+
+        monkeypatch.setattr(Path, "open", boom)
+        # Should not raise — failure path is logged and skipped.
+        tree = reader.read("s-open-err")
+        assert tree is not None
+        # Empty parse: no started or recent.
+        assert tree.running == ()
+
+
+class TestParsing:
+    def test_blank_lines_and_invalid_json_are_skipped(self, tmp_path: Path) -> None:
+        events_path = tmp_path / "s-skip" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        # Mix blank lines and invalid JSON before a valid event.
+        events_path.write_text(
+            "\n\n{not-json}\n"
+            + _started_event(tool_call_id="ok-1", timestamp="2026-01-01T00:00:00Z")
+            + "\n",
+            encoding="utf-8",
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        tree = reader.read("s-skip")
+        assert tree is not None
+        assert tree.running[0].tool_call_id == "ok-1"
+
+    def test_partial_trailing_line_is_buffered_until_complete(self, tmp_path: Path) -> None:
+        events_path = tmp_path / "s-partial" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        # Write only a partial line — no newline.
+        events_path.write_text(
+            '{"type":"subagent.started","data":{"toolCallId":"p1",',
+            encoding="utf-8",
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        first = reader.read("s-partial")
+        assert first is not None
+        # No complete line yet — running is empty.
+        assert first.running == ()
+        # Complete the line + add a second event.
+        with events_path.open("a", encoding="utf-8") as fh:
+            fh.write('"agentName":"x"},"timestamp":"2026-01-01T00:00:00Z"}\n')
+            fh.write(_completed_event(tool_call_id="p1", timestamp="2026-01-01T00:00:01Z") + "\n")
+        second = reader.read("s-partial")
+        assert second is not None
+        # Both events processed: started/completed → recent contains the pair.
+        assert any(snap.tool_call_id == "p1" for snap in second.recent)
+
+    def test_event_with_non_dict_data_is_skipped(self, tmp_path: Path) -> None:
+        import json as _json
+
+        events_path = tmp_path / "s-baddata" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        events_path.write_text(
+            _json.dumps({"type": "subagent.started", "data": "not-a-dict"}) + "\n",
+            encoding="utf-8",
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        tree = reader.read("s-baddata")
+        assert tree is not None
+        assert tree.running == ()
+
+    def test_subagent_event_without_tool_call_id_is_skipped(self, tmp_path: Path) -> None:
+        import json as _json
+
+        events_path = tmp_path / "s-no-tcid" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        events_path.write_text(
+            _json.dumps(
+                {
+                    "type": "subagent.started",
+                    "data": {"agentName": "x"},
+                    "timestamp": "2026-01-01T00:00:00Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        tree = reader.read("s-no-tcid")
+        assert tree is not None
+        assert tree.running == ()
+
+    def test_subagent_started_without_timestamp_is_skipped(self, tmp_path: Path) -> None:
+        import json as _json
+
+        events_path = tmp_path / "s-no-ts" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        events_path.write_text(
+            _json.dumps(
+                {
+                    "type": "subagent.started",
+                    "data": {"toolCallId": "t1", "agentName": "x"},
+                    "timestamp": "",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        tree = reader.read("s-no-ts")
+        assert tree is not None
+        assert tree.running == ()
+
+    def test_completed_without_matching_started_creates_orphan_entry(self, tmp_path: Path) -> None:
+        # subagent.completed without a prior started event lands in
+        # ``completed`` as a synthesized snapshot (covers the
+        # ``existing is None`` branch in _apply_event).
+        events_path = tmp_path / "s-orphan" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        events_path.write_text(
+            _completed_event(
+                tool_call_id="orphan-1",
+                agent_name="ghost",
+                timestamp="2026-01-01T00:00:00Z",
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        tree = reader.read("s-orphan")
+        assert tree is not None
+        assert any(snap.tool_call_id == "orphan-1" for snap in tree.recent)
+
+
+class TestReadAgentEdgeCases:
+    def test_read_agent_start_without_tool_call_id_or_args_skipped(self, tmp_path: Path) -> None:
+        import json as _json
+
+        events_path = tmp_path / "s-ra-bad" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        # No toolCallId.
+        events_path.write_text(
+            _json.dumps(
+                {
+                    "type": "tool.execution_start",
+                    "data": {"toolName": "read_agent", "arguments": {}},
+                    "timestamp": "2026-01-01T00:00:00Z",
+                }
+            )
+            + "\n"
+            # Args not a dict.
+            + _json.dumps(
+                {
+                    "type": "tool.execution_start",
+                    "data": {
+                        "toolName": "read_agent",
+                        "toolCallId": "ra-1",
+                        "arguments": "not-a-dict",
+                    },
+                    "timestamp": "2026-01-01T00:00:01Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        tree = reader.read("s-ra-bad")
+        assert tree is not None
+
+    def test_read_agent_start_without_agent_id_or_timestamp_skipped(self, tmp_path: Path) -> None:
+        import json as _json
+
+        events_path = tmp_path / "s-ra-nots" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        events_path.write_text(
+            # No agent_id — return early.
+            _json.dumps(
+                {
+                    "type": "tool.execution_start",
+                    "data": {
+                        "toolName": "read_agent",
+                        "toolCallId": "ra-1",
+                        "arguments": {},
+                    },
+                    "timestamp": "2026-01-01T00:00:00Z",
+                }
+            )
+            + "\n"
+            # No parseable timestamp.
+            + _json.dumps(
+                {
+                    "type": "tool.execution_start",
+                    "data": {
+                        "toolName": "read_agent",
+                        "toolCallId": "ra-2",
+                        "arguments": {"agent_id": "child-1"},
+                    },
+                    "timestamp": "not-a-date",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        # No raise.
+        reader.read("s-ra-nots")
+
+    def test_subagent_failed_records_error_and_marks_failure(self, tmp_path: Path) -> None:
+        import json as _json
+
+        events_path = tmp_path / "s-fail" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        events_path.write_text(
+            _started_event(tool_call_id="t-fail", timestamp="2026-01-01T00:00:00Z")
+            + "\n"
+            + _json.dumps(
+                {
+                    "type": "subagent.failed",
+                    "data": {
+                        "toolCallId": "t-fail",
+                        "agentName": "general-purpose",
+                        "error": "model timeout",
+                        "totalTokens": 17,
+                        "durationMs": 5000,
+                        "totalToolCalls": 3,
+                        "model": "gpt-5.4",
+                    },
+                    "timestamp": "2026-01-01T00:00:05Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        tree = reader.read("s-fail")
+        assert tree is not None
+        snap = next(s for s in tree.recent if s.tool_call_id == "t-fail")
+        assert snap.success is False
+        assert snap.error_message == "model timeout"
+        assert snap.total_tokens == 17
+        assert snap.duration_ms == 5000
+        assert snap.total_tool_calls == 3
+        assert snap.model == "gpt-5.4"
+
+    def test_tool_execution_complete_with_string_result(self, tmp_path: Path) -> None:
+        import json as _json
+
+        events_path = tmp_path / "s-strresult" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        events_path.write_text(
+            _json.dumps(
+                {
+                    "type": "tool.execution_start",
+                    "data": {
+                        "toolName": "task",
+                        "toolCallId": "t-str",
+                        "arguments": {
+                            "name": "child",
+                            "agent_type": "general-purpose",
+                            "prompt": "do something",
+                        },
+                    },
+                    "timestamp": "2026-01-01T00:00:00Z",
+                }
+            )
+            + "\n"
+            + _json.dumps(
+                {
+                    "type": "tool.execution_complete",
+                    "data": {
+                        "toolCallId": "t-str",
+                        "result": "plain string result",
+                        "success": True,
+                    },
+                    "timestamp": "2026-01-01T00:00:05Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        # Doesn't matter that there is no started event for t-str — the
+        # detail is captured against the task tool-call id, just no
+        # snapshot will surface in recent. Still must not raise.
+        reader.read("s-strresult")
+
+    def test_tool_execution_complete_without_tool_call_id_skipped(self, tmp_path: Path) -> None:
+        import json as _json
+
+        events_path = tmp_path / "s-no-comp-id" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        events_path.write_text(
+            _json.dumps(
+                {
+                    "type": "tool.execution_complete",
+                    "data": {"result": "stuff"},
+                    "timestamp": "2026-01-01T00:00:00Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        # Must not raise and tree should be empty.
+        tree = reader.read("s-no-comp-id")
+        assert tree is not None
+        assert tree.running == ()
+        assert tree.recent == ()
+
+
+class TestExtractReadAgentResult:
+    def test_handles_dict_with_detailed_content(self) -> None:
+        from muxdeck.adapters.subagent_reader import _extract_read_agent_result
+
+        assert (
+            _extract_read_agent_result({"detailedContent": "deep", "content": "summary"}) == "deep"
+        )
+
+    def test_handles_dict_with_only_content(self) -> None:
+        from muxdeck.adapters.subagent_reader import _extract_read_agent_result
+
+        assert _extract_read_agent_result({"content": "summary"}) == "summary"
+
+    def test_handles_string_input(self) -> None:
+        from muxdeck.adapters.subagent_reader import _extract_read_agent_result
+
+        assert _extract_read_agent_result("just text") == "just text"
+        assert _extract_read_agent_result("") is None
+
+    def test_returns_none_for_unsupported_types(self) -> None:
+        from muxdeck.adapters.subagent_reader import _extract_read_agent_result
+
+        assert _extract_read_agent_result(None) is None
+        assert _extract_read_agent_result(42) is None
+
+    def test_truncates_long_results(self) -> None:
+        from muxdeck.adapters.subagent_reader import _extract_read_agent_result
+
+        long = "x" * 10_000
+        truncated = _extract_read_agent_result(long)
+        assert truncated is not None
+        assert truncated.endswith("…")
+        assert len(truncated) <= 2000
+
+
+class TestExtractReadAgentStatus:
+    def test_finds_status_in_dict_content(self) -> None:
+        from muxdeck.adapters.subagent_reader import _extract_read_agent_status
+
+        assert _extract_read_agent_status({"content": "ok status: completed yes"}) == "completed"
+
+    def test_finds_status_in_dict_detailed(self) -> None:
+        from muxdeck.adapters.subagent_reader import _extract_read_agent_status
+
+        result = _extract_read_agent_status(
+            {"content": None, "detailedContent": "running with status: running"}
+        )
+        assert result == "running"
+
+    def test_finds_status_in_string(self) -> None:
+        from muxdeck.adapters.subagent_reader import _extract_read_agent_status
+
+        assert _extract_read_agent_status("status: working") == "working"
+
+    def test_returns_none_when_no_status(self) -> None:
+        from muxdeck.adapters.subagent_reader import _extract_read_agent_status
+
+        assert _extract_read_agent_status({"content": "no status here"}) is None
+        assert _extract_read_agent_status(None) is None
+        assert _extract_read_agent_status(42) is None
+        # Non-string candidates are skipped.
+        assert _extract_read_agent_status({"content": 12, "detailedContent": []}) is None
+
+
+class TestSummariseReadAgentArgs:
+    def test_includes_known_keys_only_and_filters_unsupported_types(self) -> None:
+        from muxdeck.adapters.subagent_reader import _summarise_read_agent_args
+
+        args = {
+            "agent_id": "child-1",
+            "wait": True,
+            "timeout": 30,
+            "since_turn": 5,
+            "extra": "ignored",
+            "complex": {"nested": "skipped"},
+        }
+        out = _summarise_read_agent_args(args)
+        assert 'agent_id="child-1"' in out
+        assert "wait=true" in out
+        assert "timeout=30" in out
+        assert "since_turn=5" in out
+        assert "extra" not in out
+        assert "nested" not in out
+
+    def test_handles_false_bool_wait(self) -> None:
+        from muxdeck.adapters.subagent_reader import _summarise_read_agent_args
+
+        out = _summarise_read_agent_args({"agent_id": "c", "wait": False})
+        assert "wait=false" in out
+
+    def test_truncates_overlong_summary(self) -> None:
+        from muxdeck.adapters.subagent_reader import _summarise_read_agent_args
+
+        out = _summarise_read_agent_args({"agent_id": "x" * 500})
+        assert out.endswith("…")
+        assert len(out) <= 200
+
+
+class TestParseIsoAndAsInt:
+    def test_parse_iso_returns_none_for_invalid_or_blank(self) -> None:
+        from muxdeck.adapters.subagent_reader import _parse_iso
+
+        assert _parse_iso("") is None
+        assert _parse_iso(None) is None
+        assert _parse_iso(42) is None
+        assert _parse_iso("not-a-date") is None
+        parsed = _parse_iso("2026-01-15T10:00:00Z")
+        assert parsed is not None
+        assert parsed.tzinfo is not None
+
+    def test_as_int_handles_int_float_and_filters_bool(self) -> None:
+        from muxdeck.adapters.subagent_reader import _as_int
+
+        assert _as_int(7) == 7
+        assert _as_int(7.9) == 7
+        assert _as_int(True) is None
+        assert _as_int(False) is None
+        assert _as_int(None) is None
+        assert _as_int("not-a-num") is None
+
+
+class TestSafeIterRoots:
+    def test_dedups_extras_matching_primary(self, tmp_path: Path) -> None:
+        from muxdeck.adapters.subagent_reader import _safe_iter_roots
+
+        primary = tmp_path / "primary"
+        # Extras include the primary path → must be deduped.
+        extras = (
+            SessionStoreRoot(primary, "windows"),
+            SessionStoreRoot(tmp_path / "extra", "windows"),
+        )
+        roots = _safe_iter_roots(primary, extras)
+        # Primary kept exactly once, extra added.
+        paths = [root.path for root in roots]
+        assert paths == [primary, tmp_path / "extra"]
+
+
+class TestSnapshotEnrichmentInferredCompletion:
+    def test_running_snapshot_with_status_completed_moves_to_recent(self, tmp_path: Path) -> None:
+        # When latest_agent_status is something other than None/"running"
+        # and completed_at is None, the enrichment infers a completion
+        # time and the snapshot is treated as recent (covers branch in
+        # `_enrich`). Trigger it via a read_agent interaction whose
+        # result mentions ``status: completed``.
+        import json as _json
+
+        sd = tmp_path / "s-inferred"
+        sd.mkdir(parents=True)
+        events_path = sd / "events.jsonl"
+        lines = [
+            # Parent's task tool-call carrying a name="child-1".
+            _json.dumps(
+                {
+                    "type": "tool.execution_start",
+                    "data": {
+                        "toolName": "task",
+                        "toolCallId": "task-tcid",
+                        "arguments": {"name": "child-1", "agent_type": "general-purpose"},
+                    },
+                    "timestamp": "2026-01-01T00:00:00Z",
+                }
+            ),
+            # subagent.started keeps it in the running map.
+            _started_event(tool_call_id="task-tcid", timestamp="2026-01-01T00:00:01Z"),
+            # read_agent start references child-1.
+            _json.dumps(
+                {
+                    "type": "tool.execution_start",
+                    "data": {
+                        "toolName": "read_agent",
+                        "toolCallId": "ra-1",
+                        "arguments": {"agent_id": "child-1", "wait": True},
+                    },
+                    "timestamp": "2026-01-01T00:00:02Z",
+                }
+            ),
+            # read_agent complete with status: completed in result.
+            _json.dumps(
+                {
+                    "type": "tool.execution_complete",
+                    "data": {
+                        "toolCallId": "ra-1",
+                        "result": {"content": "all done — status: completed"},
+                    },
+                    "timestamp": "2026-01-01T00:00:03Z",
+                }
+            ),
+        ]
+        events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        tree = reader.read("s-inferred")
+        assert tree is not None
+        # Even though no terminal subagent.completed event, the inferred
+        # completion moves the snapshot into recent.
+        assert any(snap.tool_call_id == "task-tcid" for snap in tree.recent)
+
+
+class TestTrimAndCap:
+    def test_trim_completed_caps_completed_list_to_factor_limit(self, tmp_path: Path) -> None:
+        # recent_limit=2, factor=8 → cap = 16. Pump 30 distinct
+        # subagent.completed events to overflow the cap.
+        import json as _json
+
+        events_path = tmp_path / "s-trim" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        lines: list[str] = []
+        for i in range(30):
+            lines.append(
+                _json.dumps(
+                    {
+                        "type": "subagent.completed",
+                        "data": {
+                            "toolCallId": f"orphan-{i:03d}",
+                            "agentName": "x",
+                        },
+                        "timestamp": f"2026-01-01T00:00:{i:02d}Z",
+                    }
+                )
+            )
+        events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        reader = SubAgentReader(store=_FakeStore(tmp_path), recent_limit=2)  # type: ignore[arg-type]
+        tree = reader.read("s-trim")
+        assert tree is not None
+        # Internal state's completed list should be capped.
+        state = reader._state["s-trim"]
+        cap = max(reader.recent_limit * reader._completed_memory_factor, reader.recent_limit)
+        assert len(state.completed) <= cap
+
+
+class TestReadAgentInteractionTrim:
+    def test_read_agent_interactions_capped_at_max(self, tmp_path: Path) -> None:
+        import json as _json
+
+        events_path = tmp_path / "s-ra-trim" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        lines: list[str] = [
+            # Parent task with name="child-1".
+            _json.dumps(
+                {
+                    "type": "tool.execution_start",
+                    "data": {
+                        "toolName": "task",
+                        "toolCallId": "task-1",
+                        "arguments": {"name": "child-1", "agent_type": "general-purpose"},
+                    },
+                    "timestamp": "2026-01-01T00:00:00Z",
+                }
+            ),
+        ]
+        # Pump 60 read_agent interactions targeting child-1 → cap is 50.
+        for i in range(60):
+            lines.append(
+                _json.dumps(
+                    {
+                        "type": "tool.execution_start",
+                        "data": {
+                            "toolName": "read_agent",
+                            "toolCallId": f"ra-{i}",
+                            "arguments": {"agent_id": "child-1"},
+                        },
+                        "timestamp": f"2026-01-01T00:01:{i:02d}Z",
+                    }
+                )
+            )
+            lines.append(
+                _json.dumps(
+                    {
+                        "type": "tool.execution_complete",
+                        "data": {
+                            "toolCallId": f"ra-{i}",
+                            "result": {"content": "interim"},
+                        },
+                        "timestamp": f"2026-01-01T00:02:{i:02d}Z",
+                    }
+                )
+            )
+        events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        reader.read("s-ra-trim")
+        details = reader._state["s-ra-trim"].task_details["task-1"]
+        # Cap is module-level _MAX_READ_INTERACTIONS_PER_TASK = 50.
+        assert len(details.read_interactions) <= 50
+
+
+class TestApplyTaskCompleteWithDictResult:
+    def test_task_complete_extracts_content_and_detailed_content(self, tmp_path: Path) -> None:
+        import json as _json
+
+        events_path = tmp_path / "s-task-dict" / "events.jsonl"
+        events_path.parent.mkdir(parents=True)
+        events_path.write_text(
+            _json.dumps(
+                {
+                    "type": "tool.execution_start",
+                    "data": {
+                        "toolName": "task",
+                        "toolCallId": "t-dict",
+                        "arguments": {
+                            "name": "child",
+                            "agent_type": "general-purpose",
+                            "prompt": "do",
+                        },
+                    },
+                    "timestamp": "2026-01-01T00:00:00Z",
+                }
+            )
+            + "\n"
+            + _json.dumps(
+                {
+                    "type": "tool.execution_complete",
+                    "data": {
+                        "toolCallId": "t-dict",
+                        "result": {
+                            "content": "summary",
+                            "detailedContent": "deep details",
+                        },
+                        "success": True,
+                    },
+                    "timestamp": "2026-01-01T00:00:01Z",
+                }
+            )
+            + "\n"
+            + _started_event(tool_call_id="t-dict", timestamp="2026-01-01T00:00:02Z")
+            + "\n"
+            + _completed_event(tool_call_id="t-dict", timestamp="2026-01-01T00:00:03Z")
+            + "\n",
+            encoding="utf-8",
+        )
+        reader = SubAgentReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+        tree = reader.read("s-task-dict")
+        assert tree is not None
+        snap = next(s for s in tree.recent if s.tool_call_id == "t-dict")
+        # Detailed wins via _enrich.
+        assert snap.result_content == "deep details"
+        assert snap.success is True

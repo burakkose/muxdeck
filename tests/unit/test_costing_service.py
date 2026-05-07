@@ -17,6 +17,7 @@ from muxdeck.domain.enums import AgentStatus
 from muxdeck.domain.models import Agent, Session
 from muxdeck.domain.value_objects import CommandResult
 from muxdeck.services.costing_service import CostingService
+from muxdeck.types import JsonValue
 
 
 class CostingServiceTests(unittest.TestCase):
@@ -122,6 +123,146 @@ class CostingServiceTests(unittest.TestCase):
             [(bucket.currency, bucket.estimated) for bucket in session_summary.cost_buckets],
             [("USD", False), ("USD", True)],
         )
+
+    def test_cost_bucket_total_cost_sums_input_and_output(self) -> None:
+        from muxdeck.services.costing_service import CostBucket
+
+        bucket = CostBucket(
+            currency="USD",
+            estimated=False,
+            input_cost=Decimal("0.001"),
+            output_cost=Decimal("0.002"),
+        )
+        self.assertEqual(bucket.total_cost, Decimal("0.003"))
+
+    def test_record_usage_with_default_agent_id(self) -> None:
+        """Test recording evidence falls back to session's agent_id when not provided."""
+        evidence = self.adapter.interpret_output(
+            "\n".join(
+                (
+                    "Copilot session id: custom-session",
+                    "input_tokens: 100",
+                    "output_tokens: 50",
+                )
+            )
+        )
+
+        record = self.service.record_usage_evidence(
+            "session-123",
+            evidence,
+            observed_at=datetime(2025, 1, 1, 12, 30, tzinfo=UTC),
+        )
+
+        # Should use session's agent_id when not explicitly provided
+        self.assertEqual(record.fact.agent_id, "agent-123")
+        self.assertEqual(record.fact.input_tokens, 100)
+
+    def test_summarize_session_with_empty_events(self) -> None:
+        """Summarize session with no events should return zero aggregate."""
+        summary = self.service.summarize_session("session-123")
+
+        self.assertEqual(summary.evidence_count, 0)
+        self.assertEqual(summary.input_tokens, 0)
+        self.assertEqual(summary.output_tokens, 0)
+        self.assertEqual(summary.total_tokens, 0)
+        self.assertEqual(summary.cost_buckets, ())
+
+    def test_summarize_agent(self) -> None:
+        """Test summarizing costs by agent ID."""
+        evidence = self.adapter.interpret_output("input_tokens: 500\noutput_tokens: 250")
+
+        self.service.record_usage_evidence(
+            "session-123",
+            evidence,
+            observed_at=datetime(2025, 1, 1, 12, 30, tzinfo=UTC),
+        )
+
+        summary = self.service.summarize_agent("agent-123")
+        self.assertEqual(summary.input_tokens, 500)
+        self.assertEqual(summary.output_tokens, 250)
+        self.assertEqual(summary.total_tokens, 750)
+
+    def test_summarize_day(self) -> None:
+        """Test summarizing costs by day."""
+        evidence = self.adapter.interpret_output("input_tokens: 200\noutput_tokens: 100")
+
+        self.service.record_usage_evidence(
+            "session-123",
+            evidence,
+            observed_at=datetime(2025, 1, 1, 12, 30, tzinfo=UTC),
+        )
+
+        summary = self.service.summarize_day("2025-01-01")
+        self.assertEqual(summary.evidence_count, 1)
+        self.assertEqual(summary.input_tokens, 200)
+        self.assertEqual(summary.output_tokens, 100)
+
+    def test_deserialize_fact_with_wrong_event_kind_returns_none(self) -> None:
+        from muxdeck.domain.events import Event
+
+        event = Event(
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+            agent_id="agent-123",
+            session_id="session-123",
+            kind="other.event.kind",  # Not costing.usage_recorded
+            payload_json="{}",
+        )
+
+        result = self.service._deserialize_fact(event)
+        self.assertIsNone(result)
+
+    def test_payload_to_bucket_with_invalid_data_returns_none(self) -> None:
+        self.assertIsNone(self.service._payload_to_bucket(None))
+        self.assertIsNone(self.service._payload_to_bucket("not_a_dict"))
+        self.assertIsNone(self.service._payload_to_bucket({"currency": 123, "estimated": True}))
+        self.assertIsNone(
+            self.service._payload_to_bucket({"currency": "USD", "estimated": "not_bool"})
+        )
+
+    def test_payload_to_bucket_with_missing_costs_uses_zero(self) -> None:
+        payload: JsonValue = {
+            "currency": "USD",
+            "estimated": True,
+        }
+        bucket = self.service._payload_to_bucket(payload)
+
+        self.assertIsNotNone(bucket)
+        assert bucket is not None
+        self.assertEqual(bucket.input_cost, Decimal("0"))
+        self.assertEqual(bucket.output_cost, Decimal("0"))
+
+    def test_bucket_payload_returns_none_for_none_bucket(self) -> None:
+        result = self.service._bucket_payload(None)
+        self.assertIsNone(result)
+
+    def test_normalize_day_from_date(self) -> None:
+        from datetime import date
+
+        d = date(2025, 1, 15)
+        result = self.service._normalize_day(d)
+
+        self.assertEqual(result, d)
+
+    def test_normalize_day_from_datetime(self) -> None:
+        dt = datetime(2025, 1, 15, 14, 30, tzinfo=UTC)
+        result = self.service._normalize_day(dt)
+
+        self.assertEqual(result.year, 2025)
+        self.assertEqual(result.month, 1)
+        self.assertEqual(result.day, 15)
+
+    def test_normalize_day_from_iso_string(self) -> None:
+        result = self.service._normalize_day("2025-01-15")
+
+        self.assertEqual(result.year, 2025)
+        self.assertEqual(result.month, 1)
+        self.assertEqual(result.day, 15)
+
+    def test_optional_int_returns_int_or_none(self) -> None:
+        self.assertEqual(self.service._optional_int(42), 42)
+        self.assertIsNone(self.service._optional_int("not_int"))
+        self.assertIsNone(self.service._optional_int(None))
+        self.assertIsNone(self.service._optional_int(3.14))
 
 
 class _NoopRunner:

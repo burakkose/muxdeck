@@ -21,6 +21,7 @@ from muxdeck.services.playback_controller import (
     SPEED_QUAD,
     EmptyTimelineError,
     PlaybackState,
+    PlaybackSpeed,
     advance,
     cycle_speed,
     jump_to,
@@ -244,6 +245,144 @@ class PlaybackControllerTests(unittest.TestCase):
             end=base.end,
         )
         self.assertEqual(selected_ordinal(state, entries), entries[1].ordinal)
+
+    def test_progress_with_zero_duration(self) -> None:
+        """Progress should be 1.0 when total duration is zero."""
+        entries = _entries(0)
+        state = make_initial_state(entries)
+        # Start and end are the same, so duration is 0
+        self.assertEqual(state.progress, 1.0)
+
+    def test_make_initial_state_guards_backwards_timestamps(self) -> None:
+        """If end < start, it should be clamped to start."""
+        base = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        entries = (
+            _Entry(ordinal=0, timestamp=base + timedelta(seconds=100)),
+            _Entry(ordinal=1, timestamp=base),  # Out of order
+        )
+        state = make_initial_state(entries)
+        # end should be clamped to start when end < start
+        self.assertEqual(state.end, state.start)
+
+    def test_step_next_when_at_end_wraps_to_last(self) -> None:
+        """Step next when already at last entry should snap to last timestamp."""
+        entries = _entries(0, 10, 30)
+        base = make_initial_state(entries)
+        state = PlaybackState(
+            mode="paused",
+            speed=SPEED_NORMAL,
+            clock=entries[-1].timestamp,
+            start=base.start,
+            end=base.end,
+        )
+        stepped = step(state, entries, direction=1)
+        self.assertEqual(stepped.clock, entries[-1].timestamp)
+
+    def test_step_prev_when_at_start_wraps_to_first(self) -> None:
+        """Step prev when already at first entry should snap to first timestamp."""
+        entries = _entries(0, 10, 30)
+        base = make_initial_state(entries)
+        state = PlaybackState(
+            mode="paused",
+            speed=SPEED_NORMAL,
+            clock=entries[0].timestamp,
+            start=base.start,
+            end=base.end,
+        )
+        stepped = step(state, entries, direction=-1)
+        self.assertEqual(stepped.clock, entries[0].timestamp)
+
+    def test_step_with_empty_entries(self) -> None:
+        """Step with no entries should return unchanged state."""
+        entries = _entries(0, 10)
+        base = make_initial_state(entries)
+        state = PlaybackState(
+            mode="paused",
+            speed=SPEED_NORMAL,
+            clock=base.start + timedelta(seconds=5),
+            start=base.start,
+            end=base.end,
+        )
+        stepped = step(state, (), direction=1)
+        self.assertEqual(stepped, state)
+
+    def test_jump_to_ordinal_not_found(self) -> None:
+        """Jump to nonexistent ordinal should return unchanged state."""
+        entries = _entries(0, 10, 30)
+        base = make_initial_state(entries)
+        result = jump_to_ordinal(base, entries, ordinal=999)
+        self.assertEqual(result, base)
+
+    def test_cycle_speed_with_unknown_speed_resets_to_normal(self) -> None:
+        """Cycling from an unknown speed should reset to SPEED_NORMAL."""
+        entries = _entries(0, 10)
+        base = make_initial_state(entries)
+        # Create a state with a custom speed not in SPEED_ORDER
+        custom_state = PlaybackState(
+            mode="paused",
+            speed=PlaybackSpeed(label="custom", multiplier=3.0),
+            clock=base.start,
+            start=base.start,
+            end=base.end,
+        )
+        cycled = cycle_speed(custom_state)
+        self.assertIs(cycled.speed, SPEED_NORMAL)
+
+    def test_advance_with_zero_elapsed_time(self) -> None:
+        """Advance with zero elapsed time should be a no-op."""
+        entries = _entries(0, 100)
+        base = make_initial_state(entries)
+        state = PlaybackState(
+            mode="playing",
+            speed=SPEED_NORMAL,
+            clock=base.start,
+            start=base.start,
+            end=base.end,
+        )
+        advanced = advance(state, timedelta(seconds=0))
+        self.assertEqual(advanced, state)
+
+    def test_advance_max_speed_with_large_real_elapsed(self) -> None:
+        """Max speed should jump to end regardless of elapsed time."""
+        entries = _entries(0, 100)
+        base = make_initial_state(entries)
+        state = PlaybackState(
+            mode="playing",
+            speed=SPEED_MAX,
+            clock=base.start,
+            start=base.start,
+            end=base.end,
+        )
+        advanced = advance(state, timedelta(seconds=1000))
+        self.assertEqual(advanced.clock, base.end)
+        self.assertEqual(advanced.mode, "paused")
+
+    def test_selected_ordinal_with_empty_entries(self) -> None:
+        """Selected ordinal with no entries should return None."""
+        base = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        state = PlaybackState(
+            mode="paused",
+            speed=SPEED_NORMAL,
+            clock=base,
+            start=base,
+            end=base,
+        )
+        result = selected_ordinal(state, ())
+        self.assertIsNone(result)
+
+    def test_selected_ordinal_at_end(self) -> None:
+        """Selected ordinal at exactly end timestamp should return last ordinal."""
+        entries = _entries(0, 10, 30)
+        base = make_initial_state(entries)
+        state = PlaybackState(
+            mode="paused",
+            speed=SPEED_NORMAL,
+            clock=entries[-1].timestamp,
+            start=base.start,
+            end=base.end,
+        )
+        result = selected_ordinal(state, entries)
+        self.assertEqual(result, entries[-1].ordinal)
 
 
 if __name__ == "__main__":

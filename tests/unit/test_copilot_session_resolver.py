@@ -377,3 +377,229 @@ class TestEnumerationCache:
             for _ in range(10):
                 resolver.resolve(4242)
             assert spy.call_count == 1
+
+
+# ── _read_ppid / _read_cmdline / _read_environ edge cases ────────────
+
+
+class TestReadProcFiles:
+    def test_read_ppid_returns_none_when_status_missing(self, tmp_path: Path) -> None:
+        store = _FakeStore(session_state_dir=tmp_path / "sess")
+        resolver = InuseLockResolver(store=store, proc_dir=tmp_path / "proc")
+        # /proc/9999/status does not exist → OSError → None.
+        assert resolver._read_ppid(9999) is None
+
+    def test_read_ppid_returns_none_when_no_ppid_line(self, tmp_path: Path) -> None:
+        proc = tmp_path / "proc"
+        (proc / "100").mkdir(parents=True)
+        # No PPid: line at all — loop completes without finding it.
+        (proc / "100" / "status").write_text("Name:\tfoo\nState:\tR\n", encoding="utf-8")
+        store = _FakeStore(session_state_dir=tmp_path / "sess")
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver._read_ppid(100) is None
+
+    def test_read_ppid_returns_none_when_value_not_digit(self, tmp_path: Path) -> None:
+        proc = tmp_path / "proc"
+        (proc / "200").mkdir(parents=True)
+        # Malformed PPid value — must return None, not raise.
+        (proc / "200" / "status").write_text("PPid:\tnot-a-number\n", encoding="utf-8")
+        store = _FakeStore(session_state_dir=tmp_path / "sess")
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver._read_ppid(200) is None
+
+    def test_read_cmdline_returns_empty_string_for_kernel_thread(self, tmp_path: Path) -> None:
+        proc = tmp_path / "proc"
+        (proc / "300").mkdir(parents=True)
+        # Kernel threads / zombies have empty cmdline files.
+        (proc / "300" / "cmdline").write_bytes(b"")
+        store = _FakeStore(session_state_dir=tmp_path / "sess")
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver._read_cmdline(300) == ""
+
+    def test_read_cmdline_returns_none_when_missing(self, tmp_path: Path) -> None:
+        store = _FakeStore(session_state_dir=tmp_path / "sess")
+        resolver = InuseLockResolver(store=store, proc_dir=tmp_path / "proc")
+        assert resolver._read_cmdline(9999) is None
+
+    def test_read_environ_returns_empty_when_missing(self, tmp_path: Path) -> None:
+        store = _FakeStore(session_state_dir=tmp_path / "sess")
+        resolver = InuseLockResolver(store=store, proc_dir=tmp_path / "proc")
+        assert resolver._read_environ(9999) == {}
+
+    def test_read_environ_skips_chunks_without_equals(self, tmp_path: Path) -> None:
+        proc = tmp_path / "proc"
+        (proc / "400").mkdir(parents=True)
+        # "BARE" lacks '=' and must be skipped without raising.
+        (proc / "400" / "environ").write_bytes(b"FOO=bar\x00BARE\x00BAZ=qux\x00")
+        store = _FakeStore(session_state_dir=tmp_path / "sess")
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        env = resolver._read_environ(400)
+        assert env == {"FOO": "bar", "BAZ": "qux"}
+
+
+# ── _enumerate_locks OSError paths ───────────────────────────────────
+
+
+class TestEnumerateLocksErrors:
+    def test_iterdir_oserror_skips_root(self, tmp_path: Path) -> None:
+        # Provide a session_state_dir that *exists as a file* — iterdir
+        # raises NotADirectoryError (an OSError) which the loop swallows
+        # without surfacing.
+        not_a_dir = tmp_path / "not-a-dir"
+        not_a_dir.write_text("garbage")
+        store = _FakeStore(session_state_dir=not_a_dir)
+        resolver = InuseLockResolver(store=store, proc_dir=tmp_path / "proc")
+        assert list(resolver._enumerate_locks()) == []
+
+    def test_glob_oserror_inside_session_dir_is_swallowed(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        root = tmp_path / "sessions"
+        _make_session(root, "sess-a", lock_pid=4242)
+        store = _FakeStore(session_state_dir=root)
+        resolver = InuseLockResolver(store=store, proc_dir=tmp_path / "proc")
+
+        original_glob = Path.glob
+
+        def boom(self: Path, pattern: str, *args: object, **kwargs: object) -> object:
+            if pattern == "inuse.*.lock":
+                raise OSError("permission denied")
+            return original_glob(self, pattern, *args, **kwargs)  # type: ignore[arg-type]
+
+        with patch.object(Path, "glob", boom):
+            assert list(resolver._enumerate_locks()) == []
+
+
+# ── _parse_lock_pid edge cases ───────────────────────────────────────
+
+
+class TestParseLockPid:
+    def test_returns_none_for_unrelated_filenames(self) -> None:
+        from muxdeck.adapters.copilot_session_resolver import _parse_lock_pid
+
+        assert _parse_lock_pid("not-a-lock") is None
+        assert _parse_lock_pid("inuse.lock") is None
+        assert _parse_lock_pid("inuse.notdigit.lock") is None
+        assert _parse_lock_pid("inuse.123.lock") == 123
+
+
+# ── _looks_like_copilot edge cases ───────────────────────────────────
+
+
+class TestLooksLikeCopilot:
+    def test_empty_string_returns_false(self) -> None:
+        from muxdeck.adapters.copilot_session_resolver import _looks_like_copilot
+
+        assert _looks_like_copilot("") is False
+
+    def test_returns_true_for_install_path_substrings(self) -> None:
+        from muxdeck.adapters.copilot_session_resolver import _looks_like_copilot
+
+        assert (
+            _looks_like_copilot("/usr/local/lib/node_modules/@github/copilot/copilot --resume X")
+            is True
+        )
+
+    def test_returns_false_for_unrelated_command(self) -> None:
+        from muxdeck.adapters.copilot_session_resolver import _looks_like_copilot
+
+        assert _looks_like_copilot("/usr/bin/python my_copilot_helper.py") is False
+
+
+# ── _resolution_from_matches & _target_from_matches ──────────────────
+
+
+class TestResolutionAndTargetFromMatches:
+    def test_resolution_returns_missing_for_empty(self) -> None:
+        from muxdeck.adapters.copilot_session_resolver import _resolution_from_matches
+
+        assert _resolution_from_matches([]) == CopilotSessionResolution()
+
+    def test_resolution_dedups_same_session(self) -> None:
+        from muxdeck.adapters.copilot_session_resolver import _resolution_from_matches
+
+        result = _resolution_from_matches(
+            [
+                ResolvedCopilotTarget(session_id="s1"),
+                ResolvedCopilotTarget(session_id="s1", pane_id="%2"),
+            ]
+        )
+        assert result.state == "resolved"
+        assert result.session_id == "s1"
+
+    def test_target_from_matches_returns_none_for_empty(self) -> None:
+        from muxdeck.adapters.copilot_session_resolver import _target_from_matches
+
+        assert _target_from_matches([]) is None
+
+    def test_target_from_matches_returns_none_for_multiple_sessions(self) -> None:
+        from muxdeck.adapters.copilot_session_resolver import _target_from_matches
+
+        result = _target_from_matches(
+            [
+                ResolvedCopilotTarget(session_id="s1"),
+                ResolvedCopilotTarget(session_id="s2"),
+            ]
+        )
+        assert result is None
+
+    def test_target_from_matches_merges_pane_and_socket_for_same_session(self) -> None:
+        from muxdeck.adapters.copilot_session_resolver import _target_from_matches
+
+        socket = Path("/var/run/tmux-1000/default")
+        merged = _target_from_matches(
+            [
+                ResolvedCopilotTarget(session_id="s1", pane_id="%2", socket_path=None),
+                ResolvedCopilotTarget(session_id="s1", pane_id=None, socket_path=socket),
+            ]
+        )
+        assert merged is not None
+        assert merged.session_id == "s1"
+        assert merged.pane_id == "%2"
+        assert merged.socket_path == socket
+
+
+# ── resolve_target_for_pid edge cases ────────────────────────────────
+
+
+class TestResolveTargetForPid:
+    def test_returns_none_for_pane_pid_none_or_zero(self, tmp_path: Path) -> None:
+        store = _FakeStore(session_state_dir=tmp_path / "sess")
+        resolver = InuseLockResolver(store=store, proc_dir=tmp_path / "proc")
+        assert resolver.resolve_target_for_pid(None) is None
+        assert resolver.resolve_target_for_pid(0) is None
+        assert resolver.resolve_target_for_pid(-5) is None
+
+    def test_returns_none_when_two_distinct_sessions_match(self, tmp_path: Path) -> None:
+        # Two pids both descend from the pane and host different
+        # sessions → ambiguous → resolve_target_for_pid returns None
+        # (covers _target_from_matches "len(merged) != 1" branch).
+        root = tmp_path / "sessions"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(root, "sess-a", lock_pid=2001)
+        _make_session(root, "sess-b", lock_pid=2002)
+        _write_proc(proc, pid=2001, ppid=1234)
+        _write_proc(proc, pid=2002, ppid=1234)
+        _write_proc(proc, pid=1234, ppid=1)
+        store = _FakeStore(session_state_dir=root)
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.resolve_target_for_pid(1234) is None
+
+
+# ── _roots: extra_roots filtering ────────────────────────────────────
+
+
+class TestRoots:
+    def test_extra_roots_with_non_path_attributes_are_skipped(self, tmp_path: Path) -> None:
+        # Build an _enumerate_locks call that surfaces a non-Path
+        # ``path`` attribute on an extra root — the loop must skip it
+        # silently rather than yield an unusable entry.
+        @dataclass
+        class _BadRoot:
+            path: object  # not a Path
+
+        extras = (_BadRoot(path="not a path"),)
+        store = _FakeStore(session_state_dir=tmp_path / "sess", extra_roots=extras)  # type: ignore[arg-type]
+        resolver = InuseLockResolver(store=store, proc_dir=tmp_path / "proc")
+        assert list(resolver._enumerate_locks()) == []

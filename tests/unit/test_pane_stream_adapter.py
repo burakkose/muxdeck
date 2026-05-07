@@ -357,3 +357,79 @@ class TestTranslateTextualKey:
     )
     def test_unmapped_returns_none(self, key: str) -> None:
         assert translate_textual_key(key) is None
+
+
+# ── direct property + state edge tests for PaneRingReader / RingLineBuffer ──
+
+
+class TestPaneRingReaderDirect:
+    def test_path_property_returns_underlying_path(self, tmp_path: Path) -> None:
+        ring = tmp_path / "ring.log"
+        reader = PaneRingReader(ring)
+        assert reader.path == ring
+
+    def test_read_new_returns_empty_when_file_missing(self, tmp_path: Path) -> None:
+        reader = PaneRingReader(tmp_path / "nope.log")
+        assert reader.read_new() == ""
+
+    def test_read_new_swallows_stat_oserror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ring = tmp_path / "ring.log"
+        ring.write_text("alpha\n")
+        reader = PaneRingReader(ring)
+
+        real_stat = Path.stat
+
+        def boom(self: Path, *args: object, **kwargs: object) -> object:
+            if self == ring:
+                raise PermissionError("denied")
+            return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "stat", boom)
+        # Other OSError → empty string, no raise.
+        assert reader.read_new() == ""
+
+    def test_read_new_swallows_open_oserror(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        ring = tmp_path / "ring.log"
+        ring.write_text("hello\nworld\n")
+        reader = PaneRingReader(ring)
+
+        real_open = Path.open
+
+        def boom(self: Path, *args: object, **kwargs: object) -> object:
+            if self == ring:
+                raise PermissionError("blocked")
+            return real_open(self, *args, **kwargs)  # type: ignore[call-overload]
+
+        monkeypatch.setattr(Path, "open", boom)
+        assert reader.read_new() == ""
+
+    def test_reset_drops_state_and_re_reads_from_eof(self, tmp_path: Path) -> None:
+        ring = tmp_path / "ring.log"
+        ring.write_text("a\nb\n")
+        reader = PaneRingReader(ring)
+        first = reader.read_new()
+        assert first == "a\nb\n"
+        # Reset clears state — the next read sees the whole file again.
+        reader.reset()
+        again = reader.read_new()
+        assert again == "a\nb\n"
+
+
+class TestRingLineBufferDirect:
+    def test_replace_tail_text_with_empty_returns_empty_tuple(self) -> None:
+        buf = RingLineBuffer(max_lines=4)
+        buf.append_text("a\nb\n")
+        result = buf.replace_tail_text("")
+        assert result == ()
+        # Buffer is unchanged.
+        assert buf.lines() == ("a", "b")
+
+    def test_split_lines_preserves_input_without_trailing_newline(self) -> None:
+        buf = RingLineBuffer(max_lines=4)
+        added = buf.append_text("no-newline")
+        assert added == ("no-newline",)
+        assert buf.lines() == ("no-newline",)

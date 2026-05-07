@@ -97,5 +97,143 @@ class TaskModelTests(unittest.TestCase):
             )
 
 
+class TaskModelInvariantTests(unittest.TestCase):
+    """Cover the negative branches of Task.__post_init__ explicitly."""
+
+    def test_priority_must_be_task_priority_enum(self) -> None:
+        with self.assertRaises(DomainValidationError):
+            Task(title="Bad priority", priority="urgent")  # type: ignore[arg-type]
+
+    def test_status_must_be_task_status_enum(self) -> None:
+        with self.assertRaises(DomainValidationError):
+            Task(title="Bad status", status="running")  # type: ignore[arg-type]
+
+    def test_completed_at_cannot_precede_created_at(self) -> None:
+        created_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        with self.assertRaises(DomainValidationError):
+            Task(
+                title="Out-of-order completion",
+                status=TaskStatus.FAILED,
+                created_at=created_at,
+                completed_at=created_at - timedelta(seconds=1),
+            )
+
+    def test_completed_at_cannot_precede_started_at(self) -> None:
+        created_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        started_at = created_at + timedelta(minutes=5)
+        with self.assertRaises(DomainValidationError):
+            Task(
+                title="Bad timing",
+                status=TaskStatus.COMPLETED,
+                assigned_agent_id="agent-1",
+                created_at=created_at,
+                started_at=started_at,
+                completed_at=started_at - timedelta(seconds=1),
+            )
+
+    def test_pending_tasks_cannot_have_started_at(self) -> None:
+        created_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        with self.assertRaises(DomainValidationError):
+            Task(
+                title="Pending+started",
+                status=TaskStatus.PENDING,
+                created_at=created_at,
+                started_at=created_at + timedelta(seconds=1),
+            )
+
+    def test_pending_tasks_cannot_have_completed_at(self) -> None:
+        created_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        with self.assertRaises(DomainValidationError):
+            Task(
+                title="Pending+completed",
+                status=TaskStatus.PENDING,
+                created_at=created_at,
+                completed_at=created_at + timedelta(seconds=1),
+            )
+
+    def test_assigned_tasks_require_agent_or_worktree(self) -> None:
+        with self.assertRaises(DomainValidationError):
+            Task(title="Assigned no-one", status=TaskStatus.ASSIGNED)
+
+    def test_assigned_tasks_cannot_have_started_at(self) -> None:
+        created_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        with self.assertRaises(DomainValidationError):
+            Task(
+                title="Assigned+started",
+                status=TaskStatus.ASSIGNED,
+                assigned_agent_id="agent-1",
+                created_at=created_at,
+                started_at=created_at + timedelta(seconds=1),
+            )
+
+    def test_assigned_tasks_cannot_have_completed_at(self) -> None:
+        created_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        with self.assertRaises(DomainValidationError):
+            Task(
+                title="Assigned+completed",
+                status=TaskStatus.ASSIGNED,
+                assigned_agent_id="agent-1",
+                created_at=created_at,
+                completed_at=created_at + timedelta(seconds=1),
+            )
+
+    def test_running_tasks_cannot_have_completed_at(self) -> None:
+        created_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        started_at = created_at + timedelta(minutes=1)
+        with self.assertRaises(DomainValidationError):
+            Task(
+                title="Running+completed",
+                status=TaskStatus.RUNNING,
+                assigned_agent_id="agent-1",
+                created_at=created_at,
+                started_at=started_at,
+                completed_at=started_at + timedelta(minutes=1),
+            )
+
+    def test_paused_tasks_must_be_assigned_and_started(self) -> None:
+        created_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        with self.assertRaises(DomainValidationError):
+            Task(
+                title="Paused no assignment",
+                status=TaskStatus.PAUSED,
+                created_at=created_at,
+                started_at=created_at + timedelta(minutes=1),
+            )
+        with self.assertRaises(DomainValidationError):
+            Task(
+                title="Paused no started_at",
+                status=TaskStatus.PAUSED,
+                assigned_agent_id="agent-1",
+                created_at=created_at,
+            )
+
+    def test_completed_requires_completed_at(self) -> None:
+        created_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        started_at = created_at + timedelta(minutes=1)
+        with self.assertRaises(DomainValidationError):
+            Task(
+                title="Completed no completed_at",
+                status=TaskStatus.COMPLETED,
+                assigned_agent_id="agent-1",
+                created_at=created_at,
+                started_at=started_at,
+            )
+
+    def test_cancelled_requires_completed_at(self) -> None:
+        with self.assertRaises(DomainValidationError):
+            Task(title="Cancelled no completed_at", status=TaskStatus.CANCELLED)
+
+    def test_started_at_cannot_precede_created_at(self) -> None:
+        created_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        with self.assertRaises(DomainValidationError):
+            Task(
+                title="Out-of-order start",
+                status=TaskStatus.RUNNING,
+                assigned_agent_id="agent-1",
+                created_at=created_at,
+                started_at=created_at - timedelta(seconds=1),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

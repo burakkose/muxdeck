@@ -820,3 +820,215 @@ class TestResumeWindowsSession:
         (sent,) = tmux.send_keys_calls[0].keys
         # PowerShell single-quote escape doubles the quote.
         assert "o''brien" in sent
+
+
+# Additional tests for better coverage
+
+
+class TestKillPaneEdgeCases:
+    def test_kill_pane_not_exists(self) -> None:
+        tmux = FakeTmux(existing_panes=set())
+        svc = TmuxActionService(tmux)
+
+        result = svc.kill_pane("%99")
+
+        assert result.success is False
+        assert "does not exist" in result.message
+
+    def test_kill_pane_command_error(self) -> None:
+        from muxdeck.exceptions import TmuxCommandError
+
+        class FakeTmuxWithError:
+            def pane_exists(self, pane_id: str, /) -> bool:
+                return True
+
+            def kill_pane(self, pane_id: str, /) -> CommandResult:
+                raise TmuxCommandError("tmux kill-pane", exit_code=1)
+
+        svc = TmuxActionService(FakeTmuxWithError())  # type: ignore
+
+        result = svc.kill_pane("%5")
+
+        assert result.success is False
+        assert "failed to kill pane" in result.message
+
+    def test_kill_pane_value_error(self) -> None:
+        class FakeTmuxWithError:
+            def pane_exists(self, pane_id: str, /) -> bool:
+                return True
+
+            def kill_pane(self, pane_id: str, /) -> CommandResult:
+                raise ValueError("bad pane")
+
+        svc = TmuxActionService(FakeTmuxWithError())  # type: ignore
+
+        result = svc.kill_pane("%5")
+
+        assert result.success is False
+        assert "failed to kill pane" in result.message
+
+
+class TestRenameWindowEdgeCases:
+    def test_rename_window_command_error(self) -> None:
+        from muxdeck.exceptions import TmuxCommandError
+
+        class FakeTmuxWithError:
+            def rename_window(self, window_id: str, new_name: str) -> CommandResult:
+                raise TmuxCommandError("tmux rename-window", exit_code=1)
+
+        svc = TmuxActionService(FakeTmuxWithError())  # type: ignore
+
+        result = svc.rename_window("@2", "new-name")
+
+        assert result.success is False
+        assert "failed to rename window" in result.message
+
+    def test_rename_window_value_error(self) -> None:
+        class FakeTmuxWithError:
+            def rename_window(self, window_id: str, new_name: str) -> CommandResult:
+                raise ValueError("bad window")
+
+        svc = TmuxActionService(FakeTmuxWithError())  # type: ignore
+
+        result = svc.rename_window("@2", "new-name")
+
+        assert result.success is False
+        assert "failed to rename window" in result.message
+
+
+class TestMovePaneEdgeCases:
+    def test_move_pane_not_exists(self) -> None:
+        tmux = FakeTmux(existing_panes=set())
+        svc = TmuxActionService(tmux)
+
+        result = svc.move_pane_to_window("%99", new_window_name="new")
+
+        assert result.success is False
+        assert "does not exist" in result.message
+
+    def test_move_pane_no_target_or_new_name(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+
+        result = svc.move_pane_to_window("%5")
+
+        assert result.success is False
+        assert "must specify" in result.message
+
+    def test_move_pane_to_new_window_with_session(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+
+        result = svc.move_pane_to_window(
+            "%5",
+            new_window_name="new-window",
+            target_session="muxdeck",
+        )
+
+        assert result.success is True
+
+    def test_move_pane_break_pane_error(self) -> None:
+        class FakeTmuxWithError:
+            def pane_exists(self, pane_id: str, /) -> bool:
+                return True
+
+            def break_pane(
+                self,
+                source_pane: str,
+                /,
+                *,
+                window_name: str | None = None,
+                target_window: str | None = None,
+                detached: bool = True,
+            ) -> TmuxPaneMetadata:
+                raise ValueError("break failed")
+
+        svc = TmuxActionService(FakeTmuxWithError())  # type: ignore
+
+        result = svc.move_pane_to_window("%5", new_window_name="new")
+
+        assert result.success is False
+        assert "failed to move pane" in result.message
+
+
+class TestWindowChoicesError:
+    def test_window_choices_handles_command_error(self) -> None:
+        from muxdeck.exceptions import TmuxCommandError
+
+        class FakeTmuxError:
+            def list_windows(self) -> tuple[TmuxWindowInfo, ...]:
+                raise TmuxCommandError("tmux list-windows", exit_code=1)
+
+        svc = TmuxActionService(FakeTmuxError())  # type: ignore
+
+        result = svc.window_choices()
+
+        assert result == ()
+
+
+class TestExecuteIntentEdgeCases:
+    def test_execute_intent_unknown_kind(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+
+        result = svc.execute_intent(_intent("unknown_kind"))
+
+        assert result.success is False
+        assert "unknown intent kind" in result.message
+
+    def test_execute_intent_rename_window_no_window_id(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+
+        target = AgentTargetView(
+            agent_id="agent-1",
+            name="test-agent",
+            status=AgentStatus.RUNNING,
+            pane_target="%5",
+            tmux_session_name="muxdeck",
+            tmux_window_id=None,
+            worktree_path="/repo",
+            repo_root="/repo",
+            branch="main",
+            latest_session_id="sess-1",
+        )
+        intent = AgentIntentView(
+            kind="rename_window",  # type: ignore[arg-type]
+            agent=target,
+            label="Rename",
+            metadata=(("window_name", "new-name"),),
+        )
+
+        result = svc.execute_intent(intent)
+
+        assert result.success is False
+        assert "window metadata unavailable" in result.message
+
+    def test_execute_intent_restart_pane_not_found(self) -> None:
+        tmux = FakeTmux(existing_panes=set())
+        svc = TmuxActionService(tmux)
+
+        result = svc.execute_intent(_intent("restart"))
+
+        assert result.success is False
+        assert "not found" in result.message
+
+    def test_execute_intent_restart_with_task_no_model(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+
+        result = svc.execute_intent(_intent("restart", metadata=(("task_title", "my-task"),)))
+
+        assert result.success is True
+        call = tmux.send_keys_calls[1]
+        assert "copilot --resume" in next(iter(call.keys))
+
+    def test_execute_intent_restart_with_model_no_task(self) -> None:
+        tmux = FakeTmux(existing_panes={"%5"})
+        svc = TmuxActionService(tmux)
+
+        result = svc.execute_intent(_intent("restart", metadata=(("model", "gpt-5.4"),)))
+
+        assert result.success is True
+        call = tmux.send_keys_calls[1]
+        assert "gpt-5.4" in next(iter(call.keys))

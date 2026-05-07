@@ -1,4 +1,4 @@
-# ruff: noqa: E402,I001,PT009
+# ruff: noqa: E402,I001,PT009,PT027
 
 from __future__ import annotations
 
@@ -413,6 +413,116 @@ class WorktreeControllerTests(unittest.TestCase):
         assert summary.provenance is not None
         self.assertEqual(summary.provenance.kind, WorktreeProvenanceKind.SESSION)
         self.assertEqual(summary.provenance.agent_name, "Reviewer")
+
+    def test_list_worktrees_empty(self) -> None:
+        """Test list_worktrees returns empty tuple when no worktrees exist."""
+        result = self.controller.list_worktrees(repo_root=str(self.repo_root))
+
+        self.assertEqual(result, ())
+
+    def test_get_worktree_detail_with_full_branch_status(self) -> None:
+        """Test branch status rendering with tracking information."""
+        created = self.controller.create_worktree(
+            self.repo_root, task_title="Track Test", attach_agent_id="agent-1"
+        )
+        assert created.worktree is not None
+        worktree_path = Path(created.worktree.summary.path)
+        git_wt = next(wt for wt in self.git._worktrees if wt.path == worktree_path)
+        self.git._snapshots[worktree_path] = GitRepositorySnapshot(
+            repo_root=self.repo_root,
+            branch="feature/track",
+            is_dirty=False,
+            ahead_behind=AheadBehindCounts(recognized=True),
+            status_summary=GitStatusSummary(
+                entries=(),
+                branch_line="## feature/track...origin/feature/track [ahead 1, behind 2]",
+            ),
+            current_worktree=git_wt,
+            safety_issues=(),
+        )
+        self.git._recent_commits[worktree_path] = ()
+
+        detail = self.controller.get_worktree_detail(created.worktree.summary.worktree_id)
+
+        assert detail.branch_status is not None
+        self.assertIn("ahead 1", detail.branch_status)
+        self.assertIn("behind 2", detail.branch_status)
+        self.assertIn("origin/feature/track", detail.branch_status)
+
+    def test_get_worktree_detail_with_status_entries(self) -> None:
+        """Test status entries rendering with various file statuses."""
+        created = self.controller.create_worktree(
+            self.repo_root, task_title="Status Test", attach_agent_id="agent-1"
+        )
+        assert created.worktree is not None
+        worktree_path = Path(created.worktree.summary.path)
+        git_wt = next(wt for wt in self.git._worktrees if wt.path == worktree_path)
+        self.git._snapshots[worktree_path] = GitRepositorySnapshot(
+            repo_root=self.repo_root,
+            branch="status/test",
+            is_dirty=True,
+            ahead_behind=AheadBehindCounts(recognized=True),
+            status_summary=GitStatusSummary(
+                entries=(
+                    GitStatusEntry(
+                        index_status="M",
+                        worktree_status=" ",
+                        path="modified_staged.py",
+                    ),
+                    GitStatusEntry(
+                        index_status="?",
+                        worktree_status="?",
+                        path="untracked.txt",
+                        is_untracked=True,
+                    ),
+                ),
+            ),
+            current_worktree=git_wt,
+            safety_issues=(),
+        )
+        self.git._recent_commits[worktree_path] = ()
+
+        detail = self.controller.get_worktree_detail(created.worktree.summary.worktree_id)
+
+        self.assertEqual(len(detail.status_entries), 2)
+        codes = {entry.code for entry in detail.status_entries}
+        self.assertIn("M ", codes)
+        self.assertIn("??", codes)
+
+    def test_resolve_worktree_by_path_raises_unknown(self) -> None:
+        """Test that get_worktree_detail raises for unknown worktree path."""
+        from muxdeck.exceptions import PersistenceError
+
+        with self.assertRaises(PersistenceError) as cm:
+            self.controller.get_worktree_detail("/nonexistent/path")
+
+        self.assertIn("unknown worktree", str(cm.exception))
+
+    def test_attach_worktree_action(self) -> None:
+        """Test that attach_worktree returns proper action view."""
+        created = self.controller.create_worktree(self.repo_root, task_title="Attach Test")
+        assert created.worktree is not None
+        worktree_path = Path(created.worktree.summary.path)
+
+        # Make sure the git snapshot is set up for this path
+        if worktree_path not in self.git._snapshots:
+            git_wt = next(wt for wt in self.git._worktrees if wt.path == worktree_path)
+            self.git._snapshots[worktree_path] = GitRepositorySnapshot(
+                repo_root=self.repo_root,
+                branch="task/attach-test",
+                is_dirty=False,
+                ahead_behind=AheadBehindCounts(recognized=True),
+                status_summary=GitStatusSummary(entries=()),
+                current_worktree=git_wt,
+                safety_issues=(),
+            )
+
+        result = self.controller.attach_worktree(worktree_path, agent_id="agent-1")
+
+        self.assertEqual(result.action, "attach")
+        self.assertIn("attached", result.message)
+        assert result.worktree is not None
+        self.assertEqual(result.worktree.summary.assigned_agent_id, "agent-1")
 
 
 def _result(command: tuple[str, ...], *, cwd: Path) -> CommandResult:

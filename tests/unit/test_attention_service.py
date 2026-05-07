@@ -57,3 +57,44 @@ def test_attention_inbox_can_notify_again_after_resolution() -> None:
     result = service.synchronize((critical,))
 
     assert [note.alert_id for note in result.notifications] == ["agent-1:failed"]
+
+
+def test_attention_inbox_observe_alerts() -> None:
+    service = AttentionInboxService()
+    signal1 = AttentionSignal(
+        alert_id="alert-1",
+        severity="error",
+        title="failed",
+        message="error occurred",
+        occurred_at=_TS,
+    )
+    signal2 = AttentionSignal(
+        alert_id="alert-2",
+        severity="error",
+        title="failed2",
+        message="error occurred2",
+        occurred_at=_TS,
+    )
+
+    result = service.observe((signal1, signal2))
+
+    assert len(result) == 2
+    assert result[0].alert_id == "alert-1"
+    assert result[1].alert_id == "alert-2"
+
+
+def test_attention_inbox_mark_all_read() -> None:
+    service = AttentionInboxService()
+    signal = AttentionSignal(
+        alert_id="alert-1",
+        severity="error",
+        title="failed",
+        message="error occurred",
+        occurred_at=_TS,
+    )
+
+    service.synchronize((signal,))
+    service.mark_all_read()
+    result = service.synchronize((signal,))
+
+    assert "alert-1" not in result.unread_ids

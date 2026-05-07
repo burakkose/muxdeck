@@ -581,3 +581,752 @@ class SQLiteStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── extra tests targeting validators, replay annotations, edge branches ──
+
+
+def _row(**columns: object) -> sqlite3.Row:
+    """Build a one-row ``sqlite3.Row`` whose columns are the given kwargs."""
+    cols = list(columns.keys())
+    cn = sqlite3.connect(":memory:")
+    try:
+        cn.row_factory = sqlite3.Row
+        select = ", ".join(f"? AS {c}" for c in cols)
+        result: sqlite3.Row = cn.execute(f"SELECT {select}", tuple(columns.values())).fetchone()
+        return result
+    finally:
+        cn.close()
+
+
+class RowValidatorsTests(unittest.TestCase):
+    def test_row_value_missing_column_raises(self) -> None:
+        from muxdeck.adapters.sqlite_store import _row_value
+
+        row = _row(id="a")
+        with self.assertRaises(PersistenceError):
+            _row_value(row, "missing")
+
+    def test_require_text_rejects_non_text(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_text
+
+        row = _row(name=123)
+        with self.assertRaises(PersistenceError):
+            _require_text(row, "name")
+
+    def test_require_text_rejects_blank(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_text
+
+        row = _row(name="   ")
+        with self.assertRaises(PersistenceError):
+            _require_text(row, "name")
+
+    def test_require_text_returns_value(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_text
+
+        row = _row(name="hi")
+        self.assertEqual(_require_text(row, "name"), "hi")
+
+    def test_require_text_allow_empty_returns_blank(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_text_allow_empty
+
+        row = _row(body="")
+        self.assertEqual(_require_text_allow_empty(row, "body"), "")
+
+    def test_require_text_allow_empty_rejects_non_text(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_text_allow_empty
+
+        row = _row(body=42)
+        with self.assertRaises(PersistenceError):
+            _require_text_allow_empty(row, "body")
+
+    def test_optional_text_returns_none(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_text
+
+        row = _row(name=None)
+        self.assertIsNone(_optional_text(row, "name"))
+
+    def test_optional_text_rejects_non_text(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_text
+
+        row = _row(name=42)
+        with self.assertRaises(PersistenceError):
+            _optional_text(row, "name")
+
+    def test_optional_text_rejects_blank(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_text
+
+        row = _row(name="   ")
+        with self.assertRaises(PersistenceError):
+            _optional_text(row, "name")
+
+    def test_require_int_rejects_text(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_int
+
+        row = _row(n="x")
+        with self.assertRaises(PersistenceError):
+            _require_int(row, "n")
+
+    def test_require_int_returns_int(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_int
+
+        row = _row(n=7)
+        self.assertEqual(_require_int(row, "n"), 7)
+
+    def test_optional_int_returns_none(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_int
+
+        row = _row(n=None)
+        self.assertIsNone(_optional_int(row, "n"))
+
+    def test_optional_int_rejects_text(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_int
+
+        row = _row(n="boom")
+        with self.assertRaises(PersistenceError):
+            _optional_int(row, "n")
+
+    def test_require_bool_accepts_zero_and_one(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_bool
+
+        self.assertFalse(_require_bool(_row(b=0), "b"))
+        self.assertTrue(_require_bool(_row(b=1), "b"))
+
+    def test_require_bool_rejects_other_values(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_bool
+
+        with self.assertRaises(PersistenceError):
+            _require_bool(_row(b=2), "b")
+        with self.assertRaises(PersistenceError):
+            _require_bool(_row(b="true"), "b")
+
+    def test_require_datetime_rejects_non_text(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_datetime
+
+        with self.assertRaises(PersistenceError):
+            _require_datetime(_row(t=42), "t")
+
+    def test_require_datetime_rejects_invalid_iso(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_datetime
+
+        with self.assertRaises(PersistenceError):
+            _require_datetime(_row(t="not-a-date"), "t")
+
+    def test_require_datetime_rejects_naive_iso(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_datetime
+
+        with self.assertRaises(PersistenceError):
+            _require_datetime(_row(t="2025-01-01T00:00:00"), "t")
+
+    def test_require_datetime_returns_utc(self) -> None:
+        from muxdeck.adapters.sqlite_store import _require_datetime
+
+        parsed = _require_datetime(_row(t="2025-01-01T00:00:00+00:00"), "t")
+        self.assertEqual(parsed.tzinfo, UTC)
+
+    def test_optional_datetime_returns_none(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_datetime
+
+        self.assertIsNone(_optional_datetime(_row(t=None), "t"))
+
+    def test_optional_datetime_rejects_non_text(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_datetime
+
+        with self.assertRaises(PersistenceError):
+            _optional_datetime(_row(t=42), "t")
+
+    def test_optional_datetime_rejects_invalid_iso(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_datetime
+
+        with self.assertRaises(PersistenceError):
+            _optional_datetime(_row(t="not-a-date"), "t")
+
+    def test_optional_datetime_rejects_naive_iso(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_datetime
+
+        with self.assertRaises(PersistenceError):
+            _optional_datetime(_row(t="2025-01-01T00:00:00"), "t")
+
+    def test_optional_datetime_returns_utc(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_datetime
+
+        parsed = _optional_datetime(_row(t="2025-01-01T00:00:00+00:00"), "t")
+        assert parsed is not None
+        self.assertEqual(parsed.tzinfo, UTC)
+
+    def test_optional_decimal_returns_none(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_decimal
+
+        self.assertIsNone(_optional_decimal(_row(d=None), "d"))
+
+    def test_optional_decimal_rejects_unsupported_type(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_decimal
+
+        with self.assertRaises(PersistenceError):
+            _optional_decimal(_row(d=b"bytes"), "d")
+
+    def test_optional_decimal_rejects_invalid_decimal(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_decimal
+
+        with self.assertRaises(PersistenceError):
+            _optional_decimal(_row(d="not-a-number"), "d")
+
+    def test_optional_decimal_handles_string_int_float(self) -> None:
+        from muxdeck.adapters.sqlite_store import _optional_decimal
+
+        self.assertEqual(_optional_decimal(_row(d="1.5"), "d"), Decimal("1.5"))
+        self.assertEqual(_optional_decimal(_row(d=2), "d"), Decimal("2"))
+
+
+class RowToModelErrorTests(unittest.TestCase):
+    """Direct tests for `_row_to_*` PersistenceError branches."""
+
+    def test_row_to_agent_invalid_status_raises(self) -> None:
+        from muxdeck.adapters.sqlite_store import _row_to_agent
+
+        row = _row(
+            id="a-1",
+            name="x",
+            backend="copilot-cli",
+            tmux_session_name="s",
+            tmux_window_id="@1",
+            tmux_window_name=None,
+            tmux_pane_id="%1",
+            pane_tty=None,
+            cwd="/repo",
+            repo_root=None,
+            worktree_path=None,
+            branch=None,
+            task_title=None,
+            task_summary=None,
+            copilot_session_id=None,
+            pid=None,
+            status="not-a-real-status",
+            started_at="2025-01-01T00:00:00+00:00",
+            last_activity_at=None,
+            last_seen_at="2025-01-01T00:00:00+00:00",
+            idle_seconds=0,
+            needs_attention=0,
+            attention_reason=None,
+            token_input=None,
+            token_output=None,
+            token_total=None,
+            estimated_cost_usd=None,
+        )
+        with self.assertRaises(PersistenceError):
+            _row_to_agent(row)
+
+    def test_row_to_agent_domain_validation_raises(self) -> None:
+        from muxdeck.adapters.sqlite_store import _row_to_agent
+
+        # idle_seconds is required to be non-negative — pass -1 to trigger
+        # DomainValidationError handling.
+        row = _row(
+            id="a-2",
+            name="x",
+            backend="copilot-cli",
+            tmux_session_name="s",
+            tmux_window_id="@1",
+            tmux_window_name=None,
+            tmux_pane_id="%1",
+            pane_tty=None,
+            cwd="/repo",
+            repo_root=None,
+            worktree_path=None,
+            branch=None,
+            task_title=None,
+            task_summary=None,
+            copilot_session_id=None,
+            pid=None,
+            status="running",
+            started_at="2025-01-01T00:00:00+00:00",
+            last_activity_at=None,
+            last_seen_at="2025-01-01T00:00:00+00:00",
+            idle_seconds=-1,
+            needs_attention=0,
+            attention_reason=None,
+            token_input=None,
+            token_output=None,
+            token_total=None,
+            estimated_cost_usd=None,
+        )
+        with self.assertRaises(PersistenceError):
+            _row_to_agent(row)
+
+    def test_row_to_worktree_domain_validation_raises(self) -> None:
+        from muxdeck.adapters.sqlite_store import _row_to_worktree
+
+        # ahead_count is required to be >= 0 → triggers Domain error.
+        row = _row(
+            id="w-1",
+            repo_root="/repo",
+            path="/repo/x",
+            branch="b",
+            base_branch=None,
+            is_main_worktree=0,
+            is_dirty=0,
+            ahead_count=-1,
+            behind_count=None,
+            locked=0,
+            assigned_agent_id=None,
+            created_at=None,
+            last_seen_at="2025-01-01T00:00:00+00:00",
+        )
+        with self.assertRaises(PersistenceError):
+            _row_to_worktree(row)
+
+    def test_row_to_replay_annotation_invalid_kind_raises(self) -> None:
+        from muxdeck.adapters.sqlite_store import _row_to_replay_annotation
+
+        row = _row(
+            id="r-1",
+            session_id="s-1",
+            ordinal=1,
+            created_at="2025-01-01T00:00:00+00:00",
+            kind="bogus",
+            body="x",
+        )
+        with self.assertRaises(PersistenceError):
+            _row_to_replay_annotation(row)
+
+    def test_row_to_replay_annotation_value_error_raises(self) -> None:
+        from muxdeck.adapters.sqlite_store import _row_to_replay_annotation
+
+        # ordinal is required to be int; -1 triggers ValueError via domain.
+        row = _row(
+            id="r-2",
+            session_id="s-1",
+            ordinal=-1,
+            created_at="2025-01-01T00:00:00+00:00",
+            kind="bookmark",
+            body="",
+        )
+        with self.assertRaises(PersistenceError):
+            _row_to_replay_annotation(row)
+
+    def test_row_to_task_invalid_priority_raises(self) -> None:
+        from muxdeck.adapters.sqlite_store import _row_to_task
+
+        row = _row(
+            id="t-1",
+            title="hi",
+            summary=None,
+            description=None,
+            repo_root=None,
+            priority="not-a-real-priority",
+            status="assigned",
+            assigned_agent_id=None,
+            assigned_worktree_id=None,
+            created_at="2025-01-01T00:00:00+00:00",
+            started_at=None,
+            completed_at=None,
+            notes=None,
+        )
+        with self.assertRaises(PersistenceError):
+            _row_to_task(row)
+
+    def test_row_to_session_domain_validation_raises(self) -> None:
+        from muxdeck.adapters.sqlite_store import _row_to_session
+
+        # Missing/invalid agent_id triggers domain validation error.
+        row = _row(
+            id="s-1",
+            agent_id="   ",
+            copilot_session_id=None,
+            task_title=None,
+            created_at="2025-01-01T00:00:00+00:00",
+            ended_at=None,
+            exit_reason=None,
+        )
+        with self.assertRaises(PersistenceError):
+            _row_to_session(row)
+
+    def test_row_to_event_domain_validation_raises(self) -> None:
+        from muxdeck.adapters.sqlite_store import _row_to_event
+
+        # Empty kind → domain validation failure.
+        row = _row(
+            id="e-1",
+            occurred_at="2025-01-01T00:00:00+00:00",
+            agent_id=None,
+            session_id=None,
+            kind="   ",
+            severity="info",
+            payload_json="{}",
+        )
+        with self.assertRaises(PersistenceError):
+            _row_to_event(row)
+
+    def test_row_to_log_chunk_domain_validation_raises(self) -> None:
+        from muxdeck.adapters.sqlite_store import _row_to_log_chunk
+
+        # sequence_no is required >= 0 → DomainValidationError → PersistenceError.
+        row = _row(
+            id="l-1",
+            agent_id="a-1",
+            session_id="s-1",
+            source="stdout",
+            sequence_no=-1,
+            captured_at="2025-01-01T00:00:00+00:00",
+            content="hi",
+        )
+        with self.assertRaises(PersistenceError):
+            _row_to_log_chunk(row)
+
+    def test_row_to_session_context_domain_validation_raises(self) -> None:
+        from muxdeck.adapters.sqlite_store import _row_to_session_context
+
+        # session_id blank → DomainValidationError → PersistenceError.
+        # Use _require_text rejection path: blank session_id raises before
+        # SessionContextRecord is even constructed.
+        row = _row(
+            session_id="   ",
+            agent_id=None,
+            worktree_id=None,
+            tmux_pane_id=None,
+            pane_tty=None,
+            worktree_path=None,
+            copilot_session_id=None,
+            repo_root=None,
+            branch=None,
+            updated_at="2025-01-01T00:00:00+00:00",
+        )
+        with self.assertRaises(PersistenceError):
+            _row_to_session_context(row)
+
+
+class JsonAndSerializeHelperTests(unittest.TestCase):
+    def test_serialize_json_raises_on_non_serializable(self) -> None:
+        from muxdeck.adapters.sqlite_store import _serialize_json
+
+        with self.assertRaises(PersistenceError):
+            _serialize_json({"x": object()}, key_name="k")  # type: ignore[dict-item]
+
+    def test_deserialize_json_raises_on_invalid_json(self) -> None:
+        from muxdeck.adapters.sqlite_store import _deserialize_json
+
+        with self.assertRaises(PersistenceError):
+            _deserialize_json("{not-json", context="test")
+
+
+class StoreSettingsAndCacheBranchTests(SQLiteStoreTests):
+    def test_set_and_get_setting_round_trip(self) -> None:
+        self.store.set_setting("greeting", "hi")
+        self.assertEqual(self.store.get_setting("greeting"), "hi")
+
+    def test_get_setting_returns_none_for_missing(self) -> None:
+        self.assertIsNone(self.store.get_setting("missing"))
+
+    def test_set_setting_rejects_non_serializable(self) -> None:
+        with self.assertRaises(PersistenceError):
+            # object() isn't JSON serializable.
+            self.store.set_setting("k", object())  # type: ignore[arg-type]
+
+    def test_delete_setting_returns_false_when_missing(self) -> None:
+        self.assertFalse(self.store.delete_setting("nothing"))
+
+    def test_delete_setting_returns_true_after_set(self) -> None:
+        self.store.set_setting("k", 1)
+        self.assertTrue(self.store.delete_setting("k"))
+
+    def test_cache_entry_round_trip_and_expiry(self) -> None:
+        future = datetime.now(UTC) + timedelta(hours=1)
+        self.store.set_cache_entry("ns", "k", {"v": 1}, expires_at=future)
+        self.assertEqual(self.store.get_cache_entry("ns", "k"), {"v": 1})
+
+    def test_get_cache_entry_returns_none_when_expired(self) -> None:
+        past = datetime.now(UTC) - timedelta(hours=1)
+        self.store.set_cache_entry("ns", "expired", "v", expires_at=past)
+        self.assertIsNone(self.store.get_cache_entry("ns", "expired"))
+
+    def test_get_cache_entry_returns_none_when_missing(self) -> None:
+        self.assertIsNone(self.store.get_cache_entry("ns", "nope"))
+
+    def test_delete_cache_entry_returns_false_when_missing(self) -> None:
+        self.assertFalse(self.store.delete_cache_entry("ns", "nope"))
+
+    def test_purge_expired_cache_removes_expired_only(self) -> None:
+        future = datetime.now(UTC) + timedelta(hours=1)
+        past = datetime.now(UTC) - timedelta(hours=1)
+        self.store.set_cache_entry("ns", "fresh", 1, expires_at=future)
+        self.store.set_cache_entry("ns", "stale", 1, expires_at=past)
+        removed = self.store.purge_expired_cache()
+        self.assertGreaterEqual(removed, 1)
+        self.assertEqual(self.store.get_cache_entry("ns", "fresh"), 1)
+        self.assertIsNone(self.store.get_cache_entry("ns", "stale"))
+
+
+class StoreEventsValidationTests(SQLiteStoreTests):
+    def test_list_events_rejects_both_filters(self) -> None:
+        with self.assertRaises(PersistenceError):
+            self.store.list_events(agent_id="a", session_id="s")
+
+    def test_list_events_session_filter_calls_per_session_method(self) -> None:
+        # No data exists → expect empty tuple, not raise.
+        self.assertEqual(self.store.list_events(session_id="missing"), ())
+
+    def test_list_events_agent_filter_calls_per_agent_method(self) -> None:
+        self.assertEqual(self.store.list_events(agent_id="missing"), ())
+
+    def test_append_events_with_empty_sequence_is_noop(self) -> None:
+        # Should not raise; nothing changes.
+        self.store.append_events([])
+
+    def test_append_log_chunks_with_empty_sequence_is_noop(self) -> None:
+        self.store.append_log_chunks([])
+
+
+class ReplayAnnotationStoreTests(SQLiteStoreTests):
+    def _make_session_for_annotations(self) -> Session:
+        # ReplayAnnotation rows reference sessions(id) → seed an agent + session.
+        agent = self._make_agent(pane_id="%9")
+        self.store.upsert_agent(agent)
+        session = self._make_session()
+        self.store.upsert_session(session)
+        return session
+
+    def test_insert_list_and_find_bookmark(self) -> None:
+        from muxdeck.domain.replay_annotations import ReplayAnnotation
+
+        session = self._make_session_for_annotations()
+        bookmark = ReplayAnnotation(
+            session_id=session.id,
+            ordinal=3,
+            kind="bookmark",
+            body="",
+        )
+        note = ReplayAnnotation(
+            session_id=session.id,
+            ordinal=4,
+            kind="note",
+            body="follow up",
+        )
+        self.store.insert_replay_annotation(bookmark)
+        self.store.insert_replay_annotation(note)
+        listed = self.store.list_replay_annotations(session.id)
+        self.assertEqual(len(listed), 2)
+        # Ordered ascending by ordinal.
+        self.assertEqual(listed[0].ordinal, 3)
+        # find_replay_bookmark returns the bookmark only.
+        found = self.store.find_replay_bookmark(session.id, 3)
+        self.assertIsNotNone(found)
+        assert found is not None
+        self.assertEqual(found.kind, "bookmark")
+        # Missing ordinal → None.
+        self.assertIsNone(self.store.find_replay_bookmark(session.id, 999))
+
+    def test_update_replay_annotation_body_returns_true_when_present(self) -> None:
+        from muxdeck.domain.replay_annotations import ReplayAnnotation
+
+        session = self._make_session_for_annotations()
+        note = ReplayAnnotation(session_id=session.id, ordinal=2, kind="note", body="initial")
+        self.store.insert_replay_annotation(note)
+        self.assertTrue(self.store.update_replay_annotation_body(note.id, "updated"))
+        listed = self.store.list_replay_annotations(session.id)
+        self.assertEqual(listed[0].body, "updated")
+
+    def test_update_replay_annotation_body_returns_false_when_missing(self) -> None:
+        self.assertFalse(self.store.update_replay_annotation_body("does-not-exist", "x"))
+
+    def test_delete_replay_annotation_returns_true_on_success(self) -> None:
+        from muxdeck.domain.replay_annotations import ReplayAnnotation
+
+        session = self._make_session_for_annotations()
+        note = ReplayAnnotation(session_id=session.id, ordinal=1, kind="note", body="y")
+        self.store.insert_replay_annotation(note)
+        self.assertTrue(self.store.delete_replay_annotation(note.id))
+        self.assertEqual(self.store.list_replay_annotations(session.id), ())
+
+    def test_delete_replay_annotation_returns_false_on_missing(self) -> None:
+        self.assertFalse(self.store.delete_replay_annotation("missing-id"))
+
+
+class StoreContextHelpersTests(SQLiteStoreTests):
+    def _make_context(
+        self,
+        *,
+        session_id: str = "session-123",
+        worktree_id: str | None = "worktree-123",
+        tmux_pane_id: str | None = "%1",
+    ) -> object:
+        from muxdeck.adapters.sqlite_store import SessionContextRecord
+
+        return SessionContextRecord(
+            session_id=session_id,
+            agent_id="agent-123",
+            worktree_id=worktree_id,
+            tmux_pane_id=tmux_pane_id,
+            pane_tty="/dev/pts/1",
+            worktree_path="/repo/worktrees/x",
+            copilot_session_id="cp-1",
+            repo_root="/repo",
+            branch="b",
+            updated_at=datetime(2025, 1, 1, tzinfo=UTC),
+        )
+
+    def test_get_session_context_returns_none_for_missing(self) -> None:
+        self.assertIsNone(self.store.get_session_context("missing"))
+
+    def test_get_session_context_round_trip(self) -> None:
+        agent = self._make_agent()
+        self.store.upsert_agent(agent)
+        self.store.upsert_worktree(self._make_worktree())
+        self.store.upsert_session(self._make_session())
+        ctx = self._make_context()
+        self.store.upsert_session_context(ctx)  # type: ignore[arg-type]
+        fetched = self.store.get_session_context("session-123")
+        self.assertIsNotNone(fetched)
+
+    def test_get_session_context_by_tmux_pane_id_returns_none_for_missing(
+        self,
+    ) -> None:
+        self.assertIsNone(self.store.get_session_context_by_tmux_pane_id("missing"))
+
+    def test_list_session_contexts_for_worktree_empty_when_missing(self) -> None:
+        self.assertEqual(self.store.list_session_contexts_for_worktree("missing"), ())
+
+
+class StoreAgentReconcileTests(SQLiteStoreTests):
+    def test_upsert_agent_reconciles_pane_conflict(self) -> None:
+        # Insert agent A on pane %1 then insert agent B with same pane,
+        # which triggers tmux_pane_id integrity violation. The store must
+        # update the pane to point at agent B.
+        agent_a = self._make_agent(pane_id="%1")
+        self.store.upsert_agent(agent_a)
+        # New agent with different id but same pane.
+        started_at = datetime(2025, 1, 2, tzinfo=UTC)
+        agent_b = Agent(
+            id="agent-456",
+            name="planner-b",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_window_name="main",
+            tmux_pane_id="%1",
+            pane_tty="/dev/pts/1",
+            cwd="/repo",
+            repo_root="/repo",
+            worktree_path=None,
+            branch=None,
+            status=AgentStatus.RUNNING,
+            started_at=started_at,
+            last_seen_at=started_at,
+            idle_seconds=0,
+            needs_attention=False,
+        )
+        self.store.upsert_agent(agent_b)
+        # Reconcile must update the row keyed on pane to point at agent
+        # B (the most recently upserted row). The previous assertion
+        # accepted either id, so a regression that left agent-123 in
+        # place — exactly the bug this test claims to guard against —
+        # would have silently passed.
+        found = self.store.get_agent_by_pane_id("%1")
+        self.assertIsNotNone(found)
+        assert found is not None
+        self.assertEqual(found.id, "agent-456")
+        self.assertEqual(found.name, "planner-b")
+        # And there must be exactly one agent row for this pane.
+        listed_for_pane = [
+            agent for agent in self.store.list_agents() if agent.tmux_pane_id == "%1"
+        ]
+        self.assertEqual(len(listed_for_pane), 1)
+
+
+class StoreWorktreeReconcileTests(SQLiteStoreTests):
+    def test_upsert_worktree_reconciles_path_conflict(self) -> None:
+        # Two worktrees with different ids but same path → IntegrityError
+        # routes through the path-conflict reconciliation.
+        wt_a = Worktree(
+            id="worktree-A",
+            repo_root="/repo",
+            path="/repo/worktrees/shared",
+            branch="branch-a",
+            is_main_worktree=False,
+            is_dirty=False,
+            locked=False,
+            last_seen_at=datetime(2025, 1, 1, tzinfo=UTC),
+        )
+        wt_b = Worktree(
+            id="worktree-B",
+            repo_root="/repo",
+            path="/repo/worktrees/shared",
+            branch="branch-b",
+            is_main_worktree=False,
+            is_dirty=False,
+            locked=False,
+            last_seen_at=datetime(2025, 1, 2, tzinfo=UTC),
+        )
+        self.store.upsert_worktree(wt_a)
+        self.store.upsert_worktree(wt_b)
+        listed = self.store.list_worktrees()
+        # One row remains AND it carries wt_b's data — proving the
+        # path-conflict reconciliation actually replaced the row, not
+        # silently dropped wt_b. The earlier "len == 1" assertion would
+        # have passed even if wt_a survived unchanged.
+        self.assertEqual(len(listed), 1)
+        survivor = listed[0]
+        self.assertEqual(survivor.id, "worktree-B")
+        self.assertEqual(survivor.branch, "branch-b")
+
+
+class StorePragmaErrorTests(SQLiteStoreTests):
+    def test_journal_mode_returns_lowercase_string(self) -> None:
+        # The default journal mode set by SQLiteStore migration is "wal";
+        # the type guard already enforces str, so the previous
+        # ``isinstance(... str)`` assertion was redundant. Pin to the
+        # actual configured mode (lower-case) so a regression that
+        # changed the connection's journal_mode would surface.
+        mode = self.store.journal_mode
+        self.assertEqual(mode, mode.lower())
+        self.assertEqual(mode, "wal")
+
+    def test_foreign_keys_enabled_returns_bool(self) -> None:
+        # SQLiteStore enables foreign keys at startup. The earlier
+        # ``isinstance(... bool)`` assertion was structurally guaranteed
+        # by the method's return annotation.
+        self.assertIs(self.store.foreign_keys_enabled, True)
+
+
+class StoreCountAndOpenSessionTests(SQLiteStoreTests):
+    def test_count_sessions_for_agent_zero_when_missing(self) -> None:
+        self.assertEqual(self.store.count_sessions_for_agent("missing"), 0)
+
+    def test_count_sessions_for_agent_returns_count(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        self.assertEqual(self.store.count_sessions_for_agent("agent-123"), 1)
+
+    def test_get_open_session_for_agent_returns_open(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        open_session = Session(
+            id="session-open",
+            agent_id="agent-123",
+            created_at=datetime(2025, 1, 1, tzinfo=UTC),
+        )
+        self.store.upsert_session(open_session)
+        found = self.store.get_open_session_for_agent("agent-123")
+        self.assertIsNotNone(found)
+        assert found is not None
+        self.assertIsNone(found.ended_at)
+
+    def test_get_open_session_for_agent_returns_none_when_missing(self) -> None:
+        self.assertIsNone(self.store.get_open_session_for_agent("missing"))
+
+
+class StoreDatabasePathOverrideTests(unittest.TestCase):
+    def test_explicit_database_path_overrides_config(self) -> None:
+        runtime_dir = (
+            Path(__file__).resolve().parent
+            / "_runtime_sqlite_store"
+            / "test_explicit_database_path_overrides_config"
+        )
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            db_path = runtime_dir / "explicit.sqlite"
+            store = SQLiteStore(database_path=db_path)
+            try:
+                self.assertEqual(store.database_path, db_path.resolve())
+            finally:
+                store.close()
+        finally:
+            if runtime_dir.exists():
+                shutil.rmtree(runtime_dir)

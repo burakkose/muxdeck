@@ -162,3 +162,99 @@ def test_attention_controller_builds_inbox_and_unread_filter() -> None:
     unread_only = controller.build_state(filters=AttentionFilterState(unread_only=True))
 
     assert [item.agent_id for item in unread_only.items] == ["agent-2"]
+
+
+def test_attention_controller_observe_alerts() -> None:
+    from muxdeck.controllers.dashboard_controller import DashboardAlertView
+
+    controller = AttentionController(FakeDashboard(), AttentionInboxService())
+
+    alerts = (
+        DashboardAlertView(
+            agent_id="agent-1",
+            agent_name="Reviewer",
+            alert_id="alert-1",
+            severity="error",
+            title="failed",
+            message="tool failed",
+            occurred_at=_TS,
+        ),
+        DashboardAlertView(
+            agent_id="agent-2",
+            agent_name="Fixer",
+            alert_id="alert-2",
+            severity="warning",
+            title="warning",
+            message="something",
+            occurred_at=_TS,
+        ),
+    )
+
+    notifications = controller.observe_alerts(alerts)
+
+    assert len(notifications) == 1
+    assert notifications[0].alert_id == "alert-1"
+
+
+def test_attention_controller_builds_state_with_selected_agent() -> None:
+    controller = AttentionController(FakeDashboard(), AttentionInboxService())
+
+    state = controller.build_state(selected_agent_id="agent-2")
+
+    assert state.selected_agent_id == "agent-2"
+    assert state.selected_item is not None
+    assert state.selected_item.item.agent_id == "agent-2"
+
+
+def test_attention_controller_mark_read_and_count() -> None:
+    inbox = AttentionInboxService()
+    controller2 = AttentionController(FakeDashboard(), inbox)
+
+    state1 = controller2.build_state()
+    assert state1.summary.unread_items == 2
+
+    controller2.mark_read("agent-1:waiting_input")
+    state2 = controller2.build_state()
+    assert state2.summary.unread_items == 1
+
+
+def test_attention_controller_mark_all_read() -> None:
+    inbox = AttentionInboxService()
+    controller = AttentionController(FakeDashboard(), inbox)
+
+    state1 = controller.build_state()
+    assert state1.summary.unread_items == 2
+
+    controller.mark_all_read()
+    state2 = controller.build_state()
+    assert state2.summary.unread_items == 0
+
+
+def test_attention_controller_filters_unread_only() -> None:
+    inbox = AttentionInboxService()
+    controller = AttentionController(FakeDashboard(), inbox)
+
+    controller.build_state()
+    controller.mark_read("agent-1:waiting_input")
+    state2 = controller.build_state(filters=AttentionFilterState(unread_only=True))
+
+    assert len(state2.items) == 1
+    assert state2.items[0].agent_id == "agent-2"
+
+
+def test_attention_controller_selects_first_item_when_no_agent_specified() -> None:
+    controller = AttentionController(FakeDashboard(), AttentionInboxService())
+
+    state = controller.build_state()
+
+    assert state.selected_agent_id == "agent-1"
+
+
+def test_attention_controller_observe_dashboard_state() -> None:
+    controller = AttentionController(FakeDashboard(), AttentionInboxService())
+    dashboard = FakeDashboard()
+    dashboard_state = dashboard.build_state()
+
+    notifications = controller.observe_dashboard_state(dashboard_state)
+
+    assert len(notifications) == 0

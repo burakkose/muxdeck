@@ -167,6 +167,84 @@ class AgentControllerTests(unittest.TestCase):
         )
         self.assertEqual(kill_pane.metadata, (("pane_target", "%1"),))
 
+    def test_mark_complete_without_session(self) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        agent = Agent(
+            id="agent-1",
+            name="test",
+            tmux_pane_id="%1",
+            tmux_window_id="@1",
+            tmux_session_name="muxdeck",
+            cwd="/repo",
+            branch="main",
+            status=AgentStatus.RUNNING,
+        )
+        store = FakeAgentStore(agent)
+        sessions = FakeSessionService(store, now)
+        controller = AgentController(store, sessions, clock=lambda: now)
+
+        result = controller.mark_complete("agent-1")
+
+        self.assertFalse(result.session_ended)
+        self.assertIsNone(result.session_id)
+
+    def test_restart_intent_includes_model(self) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        agent = Agent(
+            id="agent-1",
+            name="test",
+            tmux_pane_id="%1",
+            tmux_window_id="@1",
+            tmux_session_name="muxdeck",
+            cwd="/repo",
+            branch="main",
+        )
+        store = FakeAgentStore(agent)
+        sessions = FakeSessionService(store, now)
+        controller = AgentController(store, sessions, clock=lambda: now)
+
+        intent = controller.restart_intent("agent-1", model="gpt-5.4")
+
+        self.assertIn(("model", "gpt-5.4"), intent.metadata)
+
+    def test_move_to_window_intent_with_session(self) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        agent = Agent(
+            id="agent-1",
+            name="test",
+            tmux_pane_id="%1",
+            tmux_window_id="@1",
+            tmux_session_name="muxdeck",
+            cwd="/repo",
+            branch="main",
+        )
+        store = FakeAgentStore(agent)
+        sessions = FakeSessionService(store, now)
+        controller = AgentController(store, sessions, clock=lambda: now)
+
+        intent = controller.move_to_window_intent("agent-1", target_window="@2")
+
+        self.assertIn(("session_target", "muxdeck"), intent.metadata)
+
+    def test_adopt_creates_new_session_with_task_title(self) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        agent = Agent(
+            id="agent-1",
+            name="test",
+            tmux_pane_id="%1",
+            tmux_window_id="@1",
+            tmux_session_name="muxdeck",
+            cwd="/repo",
+            branch="main",
+        )
+        store = FakeAgentStore(agent)
+        sessions = FakeSessionService(store, now)
+        controller = AgentController(store, sessions, clock=lambda: now)
+
+        result = controller.adopt("agent-1", task_title="important-task")
+
+        self.assertTrue(result.session_created)
+
 
 if __name__ == "__main__":
     unittest.main()

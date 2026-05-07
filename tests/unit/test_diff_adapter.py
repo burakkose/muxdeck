@@ -1,4 +1,4 @@
-# ruff: noqa: PT009
+# ruff: noqa: PT009, PT027
 
 from __future__ import annotations
 
@@ -94,6 +94,24 @@ class DiffAdapterTests(unittest.TestCase):
             adapter.diff_for_path(Path("/repo"), "src/foo.py", before=None, after=None),
             "",
         )
+
+    def test_constructor_rejects_non_positive_timeout(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            DiffAdapter(timeout_sec=0)
+        self.assertIn("timeout_sec", str(ctx.exception))
+
+        with self.assertRaises(ValueError):
+            DiffAdapter(timeout_sec=-1.0)
+
+    def test_diff_for_empty_path_short_circuits_without_invoking_git(self) -> None:
+        adapter = DiffAdapter()
+        with mock.patch(
+            "muxdeck.adapters.diff_adapter.subprocess.run",
+        ) as run:
+            text = adapter.diff_for_path(Path("/repo"), "", before=None, after=None)
+
+        self.assertEqual(text, "")
+        run.assert_not_called()
 
 
 if __name__ == "__main__":

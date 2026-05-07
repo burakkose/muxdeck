@@ -6,6 +6,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from muxdeck.adapters.copilot_activity_reader import CopilotActivityReader
 from muxdeck.adapters.copilot_session_store import SessionStoreRoot
 
@@ -371,3 +373,299 @@ def test_transcript_clears_on_file_truncation(tmp_path: Path) -> None:
     _write(events_path, [_assistant_message(ts="2026-01-02T00:00:00Z", content="fresh")])
     lines = reader.read_transcript("s-rot", limit=10)
     assert [ln.content for ln in lines] == ["fresh"]
+
+
+# ── invalidate, AgentActivity.has_signal, edge branches ──────────────
+
+
+def test_invalidate_clears_all_when_session_id_is_none(tmp_path: Path) -> None:
+    events_path = tmp_path / "sess-inv-1" / "events.jsonl"
+    _write(
+        events_path,
+        [_start(call_id="a", tool="bash", ts="2026-01-01T00:00:00Z", description="x")],
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    reader.read("sess-inv-1")
+    assert reader._state  # populated
+    reader.invalidate(None)
+    assert reader._state == {}
+
+
+def test_invalidate_drops_specific_session_only(tmp_path: Path) -> None:
+    for sid in ("alpha", "beta"):
+        _write(
+            tmp_path / sid / "events.jsonl",
+            [_start(call_id="x", tool="bash", ts="2026-01-01T00:00:00Z", description="x")],
+        )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    reader.read("alpha")
+    reader.read("beta")
+    reader.invalidate("alpha")
+    assert "alpha" not in reader._state
+    assert "beta" in reader._state
+
+
+def test_agent_activity_has_signal_property() -> None:
+    from muxdeck.adapters.copilot_activity_reader import AgentActivity
+
+    blank = AgentActivity(
+        intent=None,
+        tool_name=None,
+        tool_target=None,
+        summary=None,
+        waiting_for_user=False,
+        latest_at=None,
+    )
+    assert blank.has_signal is False
+
+    with_summary = AgentActivity(
+        intent=None,
+        tool_name="bash",
+        tool_target=None,
+        summary="running x",
+        waiting_for_user=False,
+        latest_at=None,
+    )
+    assert with_summary.has_signal is True
+
+    with_intent = AgentActivity(
+        intent="exploring",
+        tool_name=None,
+        tool_target=None,
+        summary=None,
+        waiting_for_user=False,
+        latest_at=None,
+    )
+    assert with_intent.has_signal is True
+
+
+def test_read_returns_none_when_stat_raises_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events_path = tmp_path / "sess-stat-err" / "events.jsonl"
+    _write(
+        events_path,
+        [_start(call_id="a", tool="bash", ts="2026-01-01T00:00:00Z", description="x")],
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    # Prime cache so _read_locked fast-path picks an existing state object.
+    reader.read("sess-stat-err")
+
+    real_stat = Path.stat
+
+    def boom(self: Path, *args: object, **kwargs: object) -> object:
+        if "sess-stat-err" in str(self):
+            raise PermissionError("denied")
+        return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", boom)
+    # Stat now fails — reader must return None instead of raising.
+    assert reader.read("sess-stat-err") is None
+
+
+def test_read_drops_state_on_filenotfound_and_returns_none(tmp_path: Path) -> None:
+    events_path = tmp_path / "sess-fnf" / "events.jsonl"
+    _write(
+        events_path,
+        [_start(call_id="a", tool="bash", ts="2026-01-01T00:00:00Z", description="x")],
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    reader.read("sess-fnf")
+    events_path.unlink()
+    assert reader.read("sess-fnf") is None
+    # State for this session was dropped so the next read re-resolves.
+    assert "sess-fnf" not in reader._state
+
+
+def test_read_returns_cached_snapshot_when_no_new_bytes(tmp_path: Path) -> None:
+    events_path = tmp_path / "sess-cache" / "events.jsonl"
+    _write(
+        events_path,
+        [_start(call_id="a", tool="bash", ts="2026-01-01T00:00:00Z", description="x")],
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    first = reader.read("sess-cache")
+    second = reader.read("sess-cache")  # no file change → cached snapshot
+    assert first is not None
+    assert second is not None
+    assert first.summary == second.summary
+
+
+def test_read_skips_blank_lines_and_invalid_json(tmp_path: Path) -> None:
+    events_path = tmp_path / "sess-skip" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    valid = json.dumps(
+        _start(call_id="z", tool="bash", ts="2026-01-01T00:00:00Z", description="ok"),
+    )
+    # Mix in blank lines (line 274) and malformed JSON (lines 277-278).
+    events_path.write_text("\n\n{not-json}\n" + valid + "\n")
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    activity = reader.read("sess-skip")
+    assert activity is not None
+    assert activity.tool_name == "bash"
+
+
+def test_read_skips_event_with_non_dict_data(tmp_path: Path) -> None:
+    events_path = tmp_path / "sess-baddata" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events_path.write_text(
+        json.dumps({"type": "tool.execution_start", "data": "not-a-dict"}) + "\n"
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    activity = reader.read("sess-baddata")
+    assert activity is not None
+    # Non-dict data is silently dropped — no pending tool surfaces.
+    assert activity.tool_name is None
+
+
+def test_read_drops_tool_start_without_required_fields(tmp_path: Path) -> None:
+    events_path = tmp_path / "sess-missing-fields" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    # Missing toolName / toolCallId / timestamp → silently dropped.
+    events_path.write_text(
+        json.dumps(
+            {
+                "type": "tool.execution_start",
+                "timestamp": "",
+                "data": {},
+            }
+        )
+        + "\n"
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    activity = reader.read("sess-missing-fields")
+    assert activity is not None
+    assert activity.tool_name is None
+
+
+def test_report_intent_without_intent_field_does_not_set_intent(tmp_path: Path) -> None:
+    events_path = tmp_path / "sess-noimitent" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events_path.write_text(
+        json.dumps(
+            {
+                "type": "tool.execution_start",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "data": {"toolCallId": "i", "toolName": "report_intent", "arguments": {}},
+            }
+        )
+        + "\n"
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    activity = reader.read("sess-noimitent")
+    assert activity is not None
+    assert activity.intent is None
+    assert activity.summary is None
+
+
+def test_tool_complete_without_tool_call_id_is_safe_noop(tmp_path: Path) -> None:
+    events_path = tmp_path / "sess-completeless" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events_path.write_text(
+        json.dumps(
+            {
+                "type": "tool.execution_complete",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "data": {},
+            }
+        )
+        + "\n"
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    # Must not raise; activity is None-summary because nothing pending.
+    activity = reader.read("sess-completeless")
+    assert activity is not None
+
+
+def test_read_transcript_returns_empty_when_limit_is_non_positive(tmp_path: Path) -> None:
+    events_path = tmp_path / "sess-limit-zero" / "events.jsonl"
+    _write(
+        events_path,
+        [_assistant_message(ts="2026-01-01T00:00:00Z", content="hello")],
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    assert reader.read_transcript("sess-limit-zero", limit=0) == ()
+    assert reader.read_transcript("sess-limit-zero", limit=-3) == ()
+
+
+def test_assistant_message_with_non_string_content_is_skipped(tmp_path: Path) -> None:
+    events_path = tmp_path / "sess-nonstring-content" / "events.jsonl"
+    events_path.parent.mkdir(parents=True)
+    events_path.write_text(
+        json.dumps(
+            {
+                "type": "assistant.message",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "data": {"content": ["chunk-1", "chunk-2"]},
+            }
+        )
+        + "\n"
+    )
+    reader = CopilotActivityReader(store=_FakeStore(tmp_path))  # type: ignore[arg-type]
+    transcript = reader.read_transcript("sess-nonstring-content", limit=10)
+    assert transcript == ()
+
+
+def test_format_target_basenames_paths_and_truncates_long_strings(tmp_path: Path) -> None:
+    from muxdeck.adapters.copilot_activity_reader import _format_target
+
+    # Path target → basenamed.
+    assert _format_target("view", {"path": "/a/b/c/file.py"}) == "file.py"
+    # Unknown tool → None.
+    assert _format_target("unknown_tool", {"path": "x"}) is None
+    # Missing arg → None.
+    assert _format_target("view", {}) is None
+    # Non-string arg → None.
+    assert _format_target("view", {"path": 12}) is None
+    # Long value gets truncated with ellipsis.
+    long_value = "x" * 200
+    truncated = _format_target("bash", {"description": long_value})
+    assert truncated is not None
+    assert truncated.endswith("…")
+    assert len(truncated) <= 80
+
+
+def test_format_summary_returns_none_when_nothing_pending() -> None:
+    from muxdeck.adapters.copilot_activity_reader import _format_summary
+
+    assert _format_summary(None, None) is None
+
+
+def test_truncate_handles_short_and_long_values() -> None:
+    from muxdeck.adapters.copilot_activity_reader import _truncate
+
+    assert _truncate("short", 100) == "short"
+    long = _truncate("x" * 50, 10)
+    assert long.endswith("…")
+    assert len(long) == 10
+
+
+def test_parse_iso_returns_none_for_non_string_or_invalid() -> None:
+    from muxdeck.adapters.copilot_activity_reader import _parse_iso
+
+    assert _parse_iso(None) is None
+    assert _parse_iso("") is None
+    assert _parse_iso(123) is None
+    assert _parse_iso("not-a-date") is None
+    parsed = _parse_iso("2026-01-15T10:00:00Z")
+    assert parsed is not None
+
+
+def test_as_str_returns_none_for_blank_or_non_string() -> None:
+    from muxdeck.adapters.copilot_activity_reader import _as_str
+
+    assert _as_str(None) is None
+    assert _as_str("") is None
+    assert _as_str(42) is None
+    assert _as_str("hi") == "hi"
+
+
+def test_read_head_returns_empty_on_oserror(tmp_path: Path) -> None:
+    from muxdeck.adapters.copilot_activity_reader import _read_head
+
+    # Missing file → empty bytes (OSError swallowed).
+    assert _read_head(tmp_path / "missing") == b""
+    # Real file → leading bytes.
+    real = tmp_path / "head.txt"
+    real.write_text("ABCDE")
+    assert _read_head(real) == b"ABCDE"

@@ -193,5 +193,194 @@ unexpected = 1
         )
 
 
+class ConfigValidationBranchTests(unittest.TestCase):
+    """Cover specific validation branches in config parsing."""
+
+    def setUp(self) -> None:
+        self.runtime_dir = Path(__file__).resolve().parent / "_runtime_config_branches"
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(self._cleanup)
+
+    def _cleanup(self) -> None:
+        if self.runtime_dir.exists():
+            shutil.rmtree(self.runtime_dir)
+
+    def _write(self, name: str, body: str) -> Path:
+        path = self.runtime_dir / name
+        path.write_text(body.strip() + "\n", encoding="utf-8")
+        return path
+
+    def test_capture_interval_must_be_positive(self) -> None:
+        path = self._write(
+            "bad-capture.toml",
+            """
+            [general]
+            capture_interval_sec = 0
+            """,
+        )
+        with self.assertRaises(ConfigValidationError):
+            load_config(path)
+
+    def test_idle_threshold_must_be_positive(self) -> None:
+        path = self._write(
+            "bad-idle.toml",
+            """
+            [general]
+            idle_threshold_sec = 0
+            """,
+        )
+        with self.assertRaises(ConfigValidationError):
+            load_config(path)
+
+    def test_dead_grace_period_must_be_positive(self) -> None:
+        path = self._write(
+            "bad-grace.toml",
+            """
+            [general]
+            dead_grace_period_sec = 0
+            """,
+        )
+        with self.assertRaises(ConfigValidationError):
+            load_config(path)
+
+    def test_log_preview_lines_must_be_positive(self) -> None:
+        path = self._write(
+            "bad-preview.toml",
+            """
+            [general]
+            log_preview_lines = 0
+            """,
+        )
+        with self.assertRaises(ConfigValidationError):
+            load_config(path)
+
+    def test_max_runtime_minutes_must_be_positive_int(self) -> None:
+        path = self._write(
+            "bad-runtime.toml",
+            """
+            [general]
+            max_runtime_minutes = 0
+            """,
+        )
+        with self.assertRaises(ConfigValidationError):
+            load_config(path)
+
+    def test_naming_pattern_requires_repo_and_slug(self) -> None:
+        path = self._write(
+            "bad-naming.toml",
+            """
+            [naming]
+            worktree_pattern = "no-placeholders"
+            """,
+        )
+        with self.assertRaises(ConfigValidationError):
+            load_config(path)
+
+    def test_invalid_toml_raises_config_error(self) -> None:
+        from muxdeck.exceptions import ConfigError
+
+        path = self._write("bad.toml", "this = is = not = valid")
+        with self.assertRaises(ConfigError):
+            load_config(path)
+
+    def test_general_section_must_be_table(self) -> None:
+        path = self._write(
+            "table-shape.toml",
+            """
+            general = "not-a-table"
+            """,
+        )
+        # Missing-section means ``general`` resolves to a string and
+        # ``_require_table`` raises.
+        with self.assertRaises(ConfigValidationError):
+            load_config(path)
+
+    def test_string_field_must_be_non_empty(self) -> None:
+        path = self._write(
+            "blank-string.toml",
+            """
+            [general]
+            default_base_branch = "   "
+            """,
+        )
+        with self.assertRaises(ConfigValidationError):
+            load_config(path)
+
+    def test_max_cost_negative_rejected(self) -> None:
+        from muxdeck.exceptions import ValidationError
+
+        path = self._write(
+            "neg-cost.toml",
+            """
+            [general]
+            max_cost_usd = -1
+            """,
+        )
+        # Note: this currently bubbles ``DomainValidationError`` (from the
+        # underlying ``ensure_non_negative_decimal``) rather than
+        # ``ConfigValidationError``. Both inherit from ``ValidationError``.
+        with self.assertRaises(ValidationError):
+            load_config(path)
+
+
+class ParseHelperTests(unittest.TestCase):
+    """Direct tests of internal config parsers."""
+
+    def test_parse_optional_decimal_returns_none_for_none(self) -> None:
+        from muxdeck.config import _parse_optional_decimal
+
+        self.assertIsNone(_parse_optional_decimal(None, field_name="x"))
+
+    def test_parse_optional_decimal_rejects_bool_and_non_numeric(self) -> None:
+        from muxdeck.config import _parse_optional_decimal
+
+        with self.assertRaises(ConfigValidationError):
+            _parse_optional_decimal(True, field_name="x")
+        with self.assertRaises(ConfigValidationError):
+            _parse_optional_decimal(["nope"], field_name="x")
+
+    def test_parse_optional_decimal_accepts_numeric_string(self) -> None:
+        from muxdeck.config import _parse_optional_decimal
+
+        self.assertEqual(_parse_optional_decimal("0.5", field_name="x"), Decimal("0.500000"))
+
+    def test_parse_optional_positive_int_returns_none_for_none(self) -> None:
+        from muxdeck.config import _parse_optional_positive_int
+
+        self.assertIsNone(_parse_optional_positive_int(None, field_name="x"))
+
+    def test_parse_optional_positive_int_validates_when_present(self) -> None:
+        from muxdeck.config import _parse_optional_positive_int
+
+        self.assertEqual(_parse_optional_positive_int(5, field_name="x"), 5)
+        with self.assertRaises(ConfigValidationError):
+            _parse_optional_positive_int(0, field_name="x")
+        with self.assertRaises(ConfigValidationError):
+            _parse_optional_positive_int(True, field_name="x")
+
+    def test_require_table_rejects_non_dict(self) -> None:
+        from muxdeck.config import _require_table
+
+        self.assertEqual(_require_table(None, section="x"), {})
+        with self.assertRaises(ConfigValidationError):
+            _require_table([], section="x")
+
+    def test_require_non_empty_string_rejects_blank(self) -> None:
+        from muxdeck.config import _require_non_empty_string
+
+        with self.assertRaises(ConfigValidationError):
+            _require_non_empty_string("   ", field_name="x")
+        with self.assertRaises(ConfigValidationError):
+            _require_non_empty_string(123, field_name="x")
+        self.assertEqual(_require_non_empty_string("  hi  ", field_name="x"), "hi")
+
+    def test_require_bool_rejects_non_bool(self) -> None:
+        from muxdeck.config import _require_bool
+
+        with self.assertRaises(ConfigValidationError):
+            _require_bool("yes", field_name="x")
+        self.assertTrue(_require_bool(True, field_name="x"))
+
+
 if __name__ == "__main__":
     unittest.main()

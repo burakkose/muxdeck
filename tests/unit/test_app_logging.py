@@ -16,9 +16,9 @@ class _FakeClosable:
 
 
 class _FakeRuntime:
-    def __init__(self) -> None:
+    def __init__(self, *, sync_store: _FakeClosable | None = None) -> None:
         self.store = _FakeClosable()
-        self.sync_store = _FakeClosable()
+        self.sync_store = sync_store
 
 
 class _FakeMuxdeckApp:
@@ -59,7 +59,7 @@ def _install_run_app_fakes(
 def test_run_app_skips_console_logging_without_muxdeck_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime = _FakeRuntime()
+    runtime = _FakeRuntime(sync_store=_FakeClosable())
     basic_config_calls: list[dict[str, object]] = []
     monkeypatch.delenv("MUXDECK_LOG", raising=False)
     _install_run_app_fakes(monkeypatch, runtime, basic_config_calls)
@@ -67,13 +67,14 @@ def test_run_app_skips_console_logging_without_muxdeck_log(
     assert run_app() == 0
     assert basic_config_calls == []
     assert runtime.store.closed is True
+    assert runtime.sync_store is not None
     assert runtime.sync_store.closed is True
 
 
 def test_run_app_configures_console_logging_when_muxdeck_log_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime = _FakeRuntime()
+    runtime = _FakeRuntime(sync_store=_FakeClosable())
     basic_config_calls: list[dict[str, object]] = []
     monkeypatch.setenv("MUXDECK_LOG", "1")
     _install_run_app_fakes(monkeypatch, runtime, basic_config_calls)
@@ -86,3 +87,18 @@ def test_run_app_configures_console_logging_when_muxdeck_log_enabled(
             "datefmt": "%H:%M:%S",
         }
     ]
+
+
+def test_run_app_skips_sync_store_close_when_runtime_lacks_sync_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # When ``runtime.sync_store`` is None, the ``close`` call must be skipped
+    # without raising an ``AttributeError`` in the ``finally`` block.
+    runtime = _FakeRuntime(sync_store=None)
+    basic_config_calls: list[dict[str, object]] = []
+    monkeypatch.delenv("MUXDECK_LOG", raising=False)
+    _install_run_app_fakes(monkeypatch, runtime, basic_config_calls)
+
+    assert run_app() == 0
+    assert runtime.store.closed is True
+    assert runtime.sync_store is None

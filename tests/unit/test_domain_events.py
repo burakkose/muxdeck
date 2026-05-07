@@ -75,5 +75,76 @@ class DomainEventTests(unittest.TestCase):
             )
 
 
+class DomainEventBranchTests(unittest.TestCase):
+    """Cover the typed-id branches of ``_normalize_id`` and severity validation."""
+
+    def test_event_accepts_agent_id_event_id_session_id_wrappers(self) -> None:
+        from muxdeck.domain.value_objects import AgentId, EventId, SessionId
+
+        evt = Event(
+            id=cast(str, EventId(value="event-x")),
+            agent_id=cast(str, AgentId(value="agent-x")),
+            session_id=cast(str, SessionId(value="session-x")),
+            kind="ok",
+            occurred_at=datetime(2025, 1, 1, tzinfo=UTC),
+            payload_json="{}",
+        )
+        self.assertEqual(evt.id, "event-x")
+        self.assertEqual(evt.agent_id, "agent-x")
+        self.assertEqual(evt.session_id, "session-x")
+
+    def test_log_chunk_accepts_log_chunk_id_and_session_id_wrappers(self) -> None:
+        from muxdeck.domain.value_objects import LogChunkId, SessionId
+
+        chunk = LogChunk(
+            id=cast(str, LogChunkId(value="logchunk-x")),
+            agent_id="agent-x",
+            session_id=cast(str, SessionId(value="session-x")),
+            captured_at=datetime(2025, 1, 1, tzinfo=UTC),
+            content="hi",
+        )
+        self.assertEqual(chunk.id, "logchunk-x")
+        self.assertEqual(chunk.session_id, "session-x")
+
+    def test_event_invalid_severity_raises(self) -> None:
+        with self.assertRaises(DomainValidationError):
+            Event(
+                id="event-x",
+                kind="ok",
+                severity=cast(Literal["debug"], "loud"),
+                occurred_at=datetime(2025, 1, 1, tzinfo=UTC),
+                payload_json="{}",
+            )
+
+    def test_log_chunk_negative_sequence_no_raises(self) -> None:
+        with self.assertRaises(DomainValidationError):
+            LogChunk(
+                id="logchunk-x",
+                agent_id="agent-x",
+                source="stdout",
+                sequence_no=-1,
+                captured_at=datetime(2025, 1, 1, tzinfo=UTC),
+                content="hi",
+            )
+
+    def test_log_chunk_empty_content_raises(self) -> None:
+        with self.assertRaises(DomainValidationError):
+            LogChunk(
+                id="logchunk-x",
+                agent_id="agent-x",
+                source="stdout",
+                captured_at=datetime(2025, 1, 1, tzinfo=UTC),
+                content="   ",
+            )
+
+    def test_log_chunk_default_factories_generate_ids(self) -> None:
+        chunk = LogChunk(
+            captured_at=datetime(2025, 1, 1, tzinfo=UTC),
+            content="hi",
+        )
+        self.assertTrue(chunk.id.startswith("logchunk-"))
+        self.assertTrue(chunk.agent_id.startswith("agent-"))
+
+
 if __name__ == "__main__":
     unittest.main()

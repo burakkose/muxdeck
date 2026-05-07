@@ -13,6 +13,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+
 from muxdeck.adapters.copilot_adapter import CopilotCommandDetection
 from muxdeck.adapters.copilot_session_resolver import CopilotSessionResolution
 from muxdeck.adapters.sqlite_store import SessionContextRecord
@@ -26,7 +27,7 @@ from muxdeck.services.discovery_service import (
     PaneDiscoveryReport,
 )
 from muxdeck.services.monitoring_service import MonitoringDiscovery, MonitoringReport
-from muxdeck.services.runtime_service import RuntimeSynchronizer
+from muxdeck.services.runtime_service import RuntimeSynchronizer, RuntimeSyncReport
 from muxdeck.services.subtask_registry import SubTaskRegistry
 
 
@@ -531,6 +532,144 @@ class RuntimeSynchronizerTests(unittest.TestCase):
         assert resolver.calls == [7272]
         assert reader.calls == []
         assert subtask_registry.get_tasks("%27") == ()
+
+    def test_runtime_sync_report_properties_when_none(self) -> None:
+        """Test RuntimeSyncReport properties handle None reports gracefully."""
+        report = RuntimeSyncReport()
+        assert report.observed_panes == 0
+        assert report.discovered_agents == 0
+        assert report.persisted_agents == 0
+
+    def test_format_git_error_uses_stderr(self) -> None:
+        """_format_git_error should use stderr when available."""
+        from muxdeck.exceptions import GitCommandError
+
+        exc = GitCommandError("git", stderr="  error: bad branch  ")
+        synchronizer = RuntimeSynchronizer(
+            FakeDiscovery(None),
+            FakeMonitoring(datetime(2025, 1, 1, 12, tzinfo=UTC)),
+            FakeGit(),
+        )
+
+        msg = synchronizer._format_git_error(exc)
+        assert msg == "git context unavailable: error: bad branch"
+
+    def test_is_non_repository_error(self) -> None:
+        """_is_non_repository_error should detect various non-repo patterns."""
+        from muxdeck.exceptions import GitCommandError
+
+        synchronizer = RuntimeSynchronizer(
+            FakeDiscovery(None),
+            FakeMonitoring(datetime(2025, 1, 1, 12, tzinfo=UTC)),
+            FakeGit(),
+        )
+
+        assert synchronizer._is_non_repository_error(
+            GitCommandError("git", stderr="not a git repository")
+        )
+        assert synchronizer._is_non_repository_error(
+            GitCommandError("git", stderr="outside repository")
+        )
+        assert synchronizer._is_non_repository_error(GitCommandError("git", stderr="cannot chdir"))
+        assert synchronizer._is_non_repository_error(
+            GitCommandError("git", stderr="no such file or directory")
+        )
+        assert not synchronizer._is_non_repository_error(
+            GitCommandError("git", stderr="permission denied")
+        )
+
+    def test_infer_capture_branch_empty_output(self) -> None:
+        """_infer_capture_branch with None should return None."""
+        from muxdeck.services.runtime_service import _infer_capture_branch
+
+        assert _infer_capture_branch(None) is None
+
+    def test_infer_capture_branch_no_matches(self) -> None:
+        """_infer_capture_branch with no matching patterns should return None."""
+        from muxdeck.services.runtime_service import _infer_capture_branch
+
+        output = "some random text\nno patterns here\n"
+        assert _infer_capture_branch(output) is None
+
+    def test_infer_capture_branch_whitespace_lines_ignored(self) -> None:
+        """_infer_capture_branch should skip empty/whitespace lines."""
+        from muxdeck.services.runtime_service import _infer_capture_branch
+
+        output = "\n   \n\n[⎇ main]\n"
+        branch = _infer_capture_branch(output)
+        assert branch == "main"
+
+    def test_task_evidence_from_tree_failed_status(self) -> None:
+        """_task_evidence_from_tree should set 'failed' when success=False."""
+        from muxdeck.services.runtime_service import _task_evidence_from_tree
+
+        datetime(2025, 1, 1, 12, tzinfo=UTC)
+
+        class FakeSnapshot:
+            task_name = "task"
+            prompt = None
+            description = None
+            display_name = "Agent"
+            agent_name = "test-agent"
+            model = "gpt-5"
+            is_running = False
+            success = False
+            error_message = None
+
+        class FakeTree:
+            running = ()
+            recent = (FakeSnapshot(),)
+
+        tasks = _task_evidence_from_tree(FakeTree())
+        assert len(tasks) == 1
+        assert tasks[0].status == "failed"
+
+    def test_task_evidence_from_tree_completed_status(self) -> None:
+        """_task_evidence_from_tree should set 'completed' when is_running=False."""
+        from muxdeck.services.runtime_service import _task_evidence_from_tree
+
+        datetime(2025, 1, 1, 12, tzinfo=UTC)
+
+        class FakeSnapshot:
+            task_name = "task"
+            prompt = None
+            description = None
+            display_name = "Agent"
+            agent_name = "test-agent"
+            model = "gpt-5"
+            is_running = False
+            success = True
+            error_message = None
+
+        class FakeTree:
+            running = ()
+            recent = (FakeSnapshot(),)
+
+        tasks = _task_evidence_from_tree(FakeTree())
+        assert len(tasks) == 1
+        assert tasks[0].status == "completed"
+
+    def test_unique_session_ids_deduplicates(self) -> None:
+        """_unique_session_ids should remove duplicates while preserving order."""
+        from muxdeck.services.runtime_service import _unique_session_ids
+
+        ids = _unique_session_ids(("session-1", "session-2", "session-1", "session-3", "session-2"))
+        assert ids == ("session-1", "session-2", "session-3")
+
+    def test_normalize_capture_branch_empty_value(self) -> None:
+        """_normalize_capture_branch with empty/whitespace should return None."""
+        from muxdeck.services.runtime_service import _normalize_capture_branch
+
+        assert _normalize_capture_branch("") is None
+        assert _normalize_capture_branch("   ") is None
+
+    def test_normalize_capture_branch_strips_decoration(self) -> None:
+        """_normalize_capture_branch should strip trailing decoration chars."""
+        from muxdeck.services.runtime_service import _normalize_capture_branch
+
+        assert _normalize_capture_branch("branch*") == "branch"
+        assert _normalize_capture_branch("branch%") == "branch"
+        assert _normalize_capture_branch("branch+!") == "branch"
 
 
 if __name__ == "__main__":

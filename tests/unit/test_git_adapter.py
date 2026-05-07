@@ -487,7 +487,426 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TranslateWindowsDrivePathTests(unittest.TestCase):
+class GitWorktreeCreateRequestValidationTests(unittest.TestCase):
+    def test_create_branch_requires_branch(self) -> None:
+        with self.assertRaises(ValueError):
+            GitWorktreeCreateRequest(path="/p", branch=None, create_branch=True)
+
+    def test_detach_with_create_branch_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            GitWorktreeCreateRequest(path="/p", branch="b", create_branch=True, detach=True)
+
+    def test_detach_with_branch_is_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            GitWorktreeCreateRequest(path="/p", branch="b", detach=True)
+
+
+class GitAdapterConstructorTests(unittest.TestCase):
+    def test_zero_or_negative_timeout_rejected(self) -> None:
+        with self.assertRaises(ValueError):
+            GitAdapter(FakeRunner(()), timeout_sec=0)
+        with self.assertRaises(ValueError):
+            GitAdapter(FakeRunner(()), timeout_sec=-0.1)
+
+
+class BuildCreateCommandDetachTests(unittest.TestCase):
+    def test_detach_appends_detach_and_skips_branch(self) -> None:
+        adapter = GitAdapter(FakeRunner(()))
+        request = GitWorktreeCreateRequest(path="/repo/wt-detached", detach=True)
+        cmd = adapter.build_create_worktree_command(request)
+        assert "--detach" in cmd
+        # Last arg is the path; no branch token follows.
+        assert cmd[-1] == "/repo/wt-detached"
+
+
+class ListRecentCommitsEdgeTests(unittest.TestCase):
+    def test_zero_or_negative_limit_returns_empty(self) -> None:
+        adapter = GitAdapter(FakeRunner(()))
+        assert adapter.list_recent_commits("/repo", limit=0) == ()
+        assert adapter.list_recent_commits("/repo", limit=-1) == ()
+
+    def test_no_history_swallows_known_snippets(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "log"),
+                    exit_code=128,
+                    stderr="fatal: your current branch 'main' does not have any commits yet",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        assert adapter.list_recent_commits("/repo", limit=5) == ()
+
+    def test_re_raises_on_unexpected_failure(self) -> None:
+        runner = FakeRunner(
+            (_result(("git", "log"), exit_code=128, stderr="fatal: not a git repository"),)
+        )
+        adapter = GitAdapter(runner)
+        with self.assertRaises(GitCommandError):
+            adapter.list_recent_commits("/repo", limit=5)
+
+    def test_malformed_log_line_raises_with_unexpected_output(self) -> None:
+        # log returns a line with no separator → raise.
+        runner = FakeRunner((_result(("git", "log"), stdout="single-token-no-separator\n"),))
+        adapter = GitAdapter(runner)
+        with self.assertRaises(GitCommandError) as ctx:
+            adapter.list_recent_commits("/repo", limit=5)
+        assert "unexpected git log output" in (ctx.exception.stderr or "")
+
+    def test_blank_log_line_is_skipped(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "log"),
+                    stdout="\n\nabc1234\x1f1 hour ago\x1ffix it\n",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        commits = adapter.list_recent_commits("/repo", limit=5)
+        assert len(commits) == 1
+        assert commits[0].short_sha == "abc1234"
+
+
+class AheadBehindFallbackTests(unittest.TestCase):
+    def test_rev_list_fallback_for_no_upstream_returns_empty(self) -> None:
+        # 1) status (porcelain --branch) returns line without ahead/behind data
+        # 2) current_branch returns "main"
+        # 3) rev-list fails with no-upstream snippet
+        runner = FakeRunner(
+            (
+                _result(("git", "status"), stdout="## main\n"),
+                _result(("git", "branch", "--show-current"), stdout="main\n"),
+                _result(
+                    ("git", "rev-list"),
+                    exit_code=128,
+                    stderr="fatal: no upstream configured for branch 'main'",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        counts = adapter.ahead_behind_counts("/repo")
+        assert counts.ahead == 0
+        assert counts.behind == 0
+
+    def test_rev_list_fallback_uses_supplied_branch(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(("git", "status"), stdout="## main\n"),
+                _result(("git", "rev-list"), stdout="2\t3\n"),
+            )
+        )
+        adapter = GitAdapter(runner)
+        counts = adapter.ahead_behind_counts("/repo", branch="main")
+        assert counts.ahead == 2
+        assert counts.behind == 3
+
+    def test_rev_list_re_raises_unrelated_error(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(("git", "status"), stdout="## main\n"),
+                _result(("git", "branch", "--show-current"), stdout="main\n"),
+                _result(("git", "rev-list"), exit_code=128, stderr="fatal: bad revision"),
+            )
+        )
+        adapter = GitAdapter(runner)
+        with self.assertRaises(GitCommandError):
+            adapter.ahead_behind_counts("/repo")
+
+    def test_returns_empty_when_no_branch_and_no_summary(self) -> None:
+        # No branch line and current_branch returns empty.
+        runner = FakeRunner(
+            (
+                _result(("git", "status"), stdout=""),
+                _result(("git", "branch", "--show-current"), stdout="\n"),
+            )
+        )
+        adapter = GitAdapter(runner)
+        counts = adapter.ahead_behind_counts("/repo")
+        assert counts.ahead == 0
+        assert counts.behind == 0
+
+
+class RemoveWorktreeUnregisteredAndLockedTests(unittest.TestCase):
+    def test_remove_worktree_path_not_registered_raises(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "rev-parse", "--show-toplevel"),
+                    stdout="/repo\n",
+                ),
+                _result(
+                    ("git", "rev-parse", "--git-common-dir"),
+                    stdout="/repo/.git\n",
+                ),
+                _result(
+                    ("git", "worktree", "list", "--porcelain"),
+                    stdout="\n".join(
+                        (
+                            "worktree /repo",
+                            "HEAD 1111",
+                            "branch refs/heads/main",
+                            "",
+                        )
+                    ),
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        with self.assertRaises(GitCommandError) as ctx:
+            adapter.remove_worktree("/repo/worktrees/missing")
+        assert "not registered" in (ctx.exception.stderr or "")
+
+    def test_remove_worktree_locked_without_force_raises(self) -> None:
+        # worktree list reports a locked worktree with reason → must
+        # require force=True.
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "rev-parse", "--show-toplevel"),
+                    stdout="/repo\n",
+                ),
+                _result(
+                    ("git", "rev-parse", "--git-common-dir"),
+                    stdout="/repo/.git\n",
+                ),
+                _result(
+                    ("git", "worktree", "list", "--porcelain"),
+                    stdout="\n".join(
+                        (
+                            "worktree /repo",
+                            "HEAD 0000",
+                            "branch refs/heads/main",
+                            "",
+                            "worktree /repo/worktrees/locked",
+                            "HEAD ffff",
+                            "branch refs/heads/locked",
+                            "locked do-not-delete",
+                            "",
+                        )
+                    ),
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        with self.assertRaises(GitCommandError) as ctx:
+            adapter.remove_worktree("/repo/worktrees/locked")
+        msg = (ctx.exception.stderr or "").lower()
+        assert "do-not-delete" in msg or "locked" in msg
+
+
+class RunCommandFailureTests(unittest.TestCase):
+    def test_non_zero_exit_raises_git_command_error_via_run_command(self) -> None:
+        # discover_repo_root failure path returns succeeded=False which
+        # routes through _raise_git_error in _run_command.
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "rev-parse", "--show-toplevel"),
+                    exit_code=1,
+                    stderr="fatal: nope",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        with self.assertRaises(GitCommandError):
+            adapter.discover_repo_root("/repo")
+
+
+class RemoveWorktreeUnmergedAndDirtyTests(unittest.TestCase):
+    def test_remove_worktree_dirty_without_force_raises(self) -> None:
+        # Path-find via discover + list returns the registered worktree;
+        # status returns dirty entries → must require force=True.
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "rev-parse", "--show-toplevel"),
+                    stdout="/repo\n",
+                ),
+                _result(
+                    ("git", "rev-parse", "--git-common-dir"),
+                    stdout="/repo/.git\n",
+                ),
+                _result(
+                    ("git", "worktree", "list", "--porcelain"),
+                    stdout="\n".join(
+                        (
+                            "worktree /repo",
+                            "HEAD 0000",
+                            "branch refs/heads/main",
+                            "",
+                            "worktree /repo/wt/dirty",
+                            "HEAD ffff",
+                            "branch refs/heads/dirty",
+                            "",
+                        )
+                    ),
+                ),
+                _result(
+                    ("git", "status", "--short", "--branch", "--untracked-files=all"),
+                    # ` M file.py` — modified in worktree (porcelain v1, 2 chars + space + path)
+                    stdout=" M file.py\n",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        with self.assertRaises(GitCommandError) as ctx:
+            adapter.remove_worktree("/repo/wt/dirty")
+        assert "uncommitted changes" in (ctx.exception.stderr or "")
+
+    def test_remove_worktree_unmerged_without_force_raises(self) -> None:
+        # Use a status entry containing a conflict marker (DD/AA/UU) → unmerged.
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "rev-parse", "--show-toplevel"),
+                    stdout="/repo\n",
+                ),
+                _result(
+                    ("git", "rev-parse", "--git-common-dir"),
+                    stdout="/repo/.git\n",
+                ),
+                _result(
+                    ("git", "worktree", "list", "--porcelain"),
+                    stdout="\n".join(
+                        (
+                            "worktree /repo",
+                            "HEAD 0000",
+                            "branch refs/heads/main",
+                            "",
+                            "worktree /repo/wt/conflict",
+                            "HEAD ffff",
+                            "branch refs/heads/conflict",
+                            "",
+                        )
+                    ),
+                ),
+                _result(
+                    ("git", "status", "--short", "--branch", "--untracked-files=all"),
+                    # `UU file.py` — unmerged
+                    stdout="UU file.py\n",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        with self.assertRaises(GitCommandError) as ctx:
+            adapter.remove_worktree("/repo/wt/conflict")
+        assert "merge conflict" in (ctx.exception.stderr or "").lower()
+
+
+class PruneWorktreesTests(unittest.TestCase):
+    def test_prune_worktrees_returns_outcome_with_remaining(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(("git", "rev-parse", "--show-toplevel"), stdout="/repo\n"),
+                _result(("git", "rev-parse", "--git-common-dir"), stdout="/repo/.git\n"),
+                _result(("git", "worktree", "prune"), stdout=""),
+                _result(
+                    ("git", "worktree", "list", "--porcelain"),
+                    stdout="\n".join(
+                        (
+                            "worktree /repo",
+                            "HEAD 0000",
+                            "branch refs/heads/main",
+                            "",
+                        )
+                    ),
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        outcome = adapter.prune_worktrees("/repo", dry_run=False)
+        assert outcome.dry_run is False
+        assert len(outcome.worktrees) == 1
+
+
+class DiscoverRepoRootEdgeTests(unittest.TestCase):
+    def test_blank_common_dir_raises(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "rev-parse", "--show-toplevel"),
+                    stdout="/repo\n",
+                ),
+                _result(
+                    ("git", "rev-parse", "--git-common-dir"),
+                    stdout="\n",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        with self.assertRaises(GitCommandError) as ctx:
+            adapter.discover_repo_root("/repo")
+        assert "common directory" in (ctx.exception.stderr or "")
+
+    def test_blank_worktree_root_raises(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "rev-parse", "--show-toplevel"),
+                    stdout="\n",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        with self.assertRaises(GitCommandError) as ctx:
+            adapter.discover_repo_root("/repo")
+        assert "worktree root" in (ctx.exception.stderr or "")
+
+    def test_common_dir_without_git_suffix_returns_worktree_root(self) -> None:
+        # When git-common-dir doesn't end in ".git", the function returns
+        # the worktree root from rev-parse --show-toplevel instead of
+        # common_dir.parent. (Covers the else branch on line 216.)
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "rev-parse", "--show-toplevel"),
+                    stdout="/repo\n",
+                ),
+                _result(
+                    ("git", "rev-parse", "--git-common-dir"),
+                    stdout="/repo/some-other-dir\n",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        repo_root = adapter.discover_repo_root("/repo")
+        assert repo_root == Path("/repo")
+
+
+class IsDirtyHelperTests(unittest.TestCase):
+    def test_is_dirty_returns_true_when_status_has_entries(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "status"),
+                    stdout=" M file.py\n",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        assert adapter.is_dirty("/repo") is True
+
+    def test_is_dirty_returns_false_when_clean(self) -> None:
+        runner = FakeRunner((_result(("git", "status"), stdout="## main\n"),))
+        adapter = GitAdapter(runner)
+        assert adapter.is_dirty("/repo") is False
+
+
+class CurrentBranchTests(unittest.TestCase):
+    def test_current_branch_returns_none_when_blank(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "branch", "--show-current"),
+                    stdout="\n",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+        assert adapter.current_branch("/repo") is None
+
     def test_translates_forward_slash_drive_path(self) -> None:
         assert _translate_windows_drive_path("Q:/pm2") == "/mnt/q/pm2"
 

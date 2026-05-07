@@ -111,6 +111,93 @@ class ProcessAdapterTests(unittest.TestCase):
         assert stdout_lines[1] == str(temp_path.resolve())
         assert result.cwd == temp_path.resolve()
 
+    def test_run_rejects_empty_command(self) -> None:
+        adapter = ProcessAdapter()
+        with pytest.raises(ValueError, match="command must not be empty"):
+            adapter.run(())
+
+    def test_run_rejects_zero_or_negative_timeout(self) -> None:
+        adapter = ProcessAdapter()
+        with pytest.raises(ValueError, match="timeout_sec must be greater than zero"):
+            adapter.run(("python3", "-c", "pass"), timeout_sec=0)
+        with pytest.raises(ValueError, match="timeout_sec must be greater than zero"):
+            adapter.run(("python3", "-c", "pass"), timeout_sec=-1.0)
+
+    def test_constructor_rejects_zero_or_negative_default_timeout(self) -> None:
+        with pytest.raises(ValueError, match="timeout_sec must be greater than zero"):
+            ProcessAdapter(default_timeout_sec=0)
+        with pytest.raises(ValueError, match="timeout_sec must be greater than zero"):
+            ProcessAdapter(default_timeout_sec=-3.0)
+
+    def test_get_child_cmdlines_returns_empty_for_unknown_pid(self) -> None:
+        adapter = ProcessAdapter()
+        # PID 0 is the scheduler; /proc/0/task/0/children doesn't exist
+        # on Linux, so the adapter must swallow the OSError and return ().
+        assert adapter.get_child_cmdlines(0) == ()
+
+    def test_get_child_cmdlines_returns_self_descendants(self) -> None:
+        # The current Python process has PID > 0 and a /proc entry on
+        # Linux. The pytest worker doesn't usually fork children, so the
+        # result is typically empty — but the call must not raise. This
+        # exercises the happy-path read of /proc/<pid>/task/<pid>/children.
+        import os as _os
+
+        adapter = ProcessAdapter()
+        result = adapter.get_child_cmdlines(_os.getpid())
+        assert isinstance(result, tuple)
+        for entry in result:
+            assert isinstance(entry, str)
+
+    def test_get_child_cmdlines_handles_non_int_tokens_and_unreadable_cmdline(self) -> None:
+        # Build a fake /proc tree under a temp dir. process_adapter
+        # constructs Path(f"/proc/...") directly, so we monkey-patch
+        # the module-level Path symbol with a wrapper that rewrites
+        # absolute /proc paths into our temp tree.
+        import muxdeck.adapters.process_adapter as mod
+
+        with TemporaryDirectory(dir=Path.cwd()) as tmp_dir:
+            base = Path(tmp_dir)
+            # Set up children file for pid=100 with a non-int token,
+            # an empty-cmdline child, an unreadable-cmdline child, and
+            # a healthy child.
+            (base / "proc" / "100" / "task" / "100").mkdir(parents=True)
+            (base / "proc" / "100" / "task" / "100" / "children").write_text(
+                "not-a-pid 200 300 400\n"
+            )
+
+            # pid=200 → empty cmdline (should be skipped)
+            (base / "proc" / "200").mkdir(parents=True)
+            (base / "proc" / "200" / "cmdline").write_text("")
+            # pid=200 has no children file → OSError when recursing.
+
+            # pid=300 → cmdline cannot be read (no file)
+            (base / "proc" / "300").mkdir(parents=True)
+
+            # pid=400 → healthy command line, no further children
+            (base / "proc" / "400").mkdir(parents=True)
+            (base / "proc" / "400" / "cmdline").write_text("real-cmd\0--flag\0value")
+
+            real_path_cls = mod.Path  # type: ignore[attr-defined]
+
+            def _path_factory(arg: object, /) -> Path:
+                text = str(arg)
+                if text.startswith("/proc/"):
+                    return base / text.lstrip("/")
+                return real_path_cls(arg)  # type: ignore[arg-type, no-any-return]
+
+            try:
+                mod.Path = _path_factory  # type: ignore[attr-defined, assignment, misc]
+                adapter = ProcessAdapter()
+                result = adapter.get_child_cmdlines(100)
+            finally:
+                mod.Path = real_path_cls  # type: ignore[attr-defined, misc]
+
+            # Only the healthy child contributes a cmdline; the empty
+            # and unreadable children are silently skipped.
+            assert "real-cmd --flag value" in result
+            # Empty pid=200 cmdline must NOT appear as a blank entry.
+            assert "" not in result
+
 
 if __name__ == "__main__":
     unittest.main()

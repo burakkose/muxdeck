@@ -55,3 +55,32 @@ def test_symbol_helpers_respect_ascii_and_reduced_modes() -> None:
     assert pipe_separator(preferences) == " | "
     assert item_separator(preferences) == " / "
     assert status_glyph_char(AgentStatus.RUNNING, preferences=preferences) == "o"
+
+
+def test_default_preferences_have_no_badges_and_are_default() -> None:
+    prefs = UiPreferences()
+    assert prefs.mode_badges() == ()
+    assert prefs.is_default is True
+    assert "ux-nowrap-logs" in prefs.css_classes()
+
+
+def test_resolve_ui_preferences_returns_app_value_when_set() -> None:
+    target = UiPreferences(density=UiDensity.COMFORTABLE)
+
+    class _AppLike:
+        ui_preferences = target
+
+    class _Node:
+        app = _AppLike()
+
+    assert resolve_ui_preferences(_Node()) is target  # type: ignore[arg-type]
+
+
+def test_resolve_ui_preferences_falls_back_when_attr_wrong_type() -> None:
+    class _AppLike:
+        ui_preferences = "not a UiPreferences"
+
+    class _Node:
+        app = _AppLike()
+
+    assert resolve_ui_preferences(_Node()) == UiPreferences()  # type: ignore[arg-type]
