@@ -384,5 +384,80 @@ class TestWorktreeSync(unittest.TestCase):
         assert store.get_worktree("wt-1") is not None
 
 
+class TestKnownRepoRoots(unittest.TestCase):
+    """Tests for WorktreeService.known_repo_roots."""
+
+    def test_returns_empty_tuple_when_store_empty(self) -> None:
+        service, _ = _make_service()
+        assert service.known_repo_roots() == ()
+
+    def test_returns_distinct_repo_roots_sorted(self) -> None:
+        store = FakeWorktreeStore()
+        # Three worktrees across two distinct repo roots, inserted out of order
+        # to confirm dedup + sort.
+        store.upsert_worktree(
+            Worktree(
+                id="wt-c",
+                repo_root="/zebra/repo",
+                path="/zebra/repo/wt-c",
+                branch="c",
+                created_at=datetime(2025, 1, 1, tzinfo=UTC),
+            ),
+        )
+        store.upsert_worktree(
+            Worktree(
+                id="wt-a1",
+                repo_root="/alpha/repo",
+                path="/alpha/repo",
+                branch="main",
+                created_at=datetime(2025, 1, 1, tzinfo=UTC),
+            ),
+        )
+        store.upsert_worktree(
+            Worktree(
+                id="wt-a2",
+                repo_root="/alpha/repo",
+                path="/alpha/repo/wt-a2",
+                branch="feat",
+                created_at=datetime(2025, 1, 1, tzinfo=UTC),
+            ),
+        )
+        service, _ = _make_service(store=store)
+
+        roots = service.known_repo_roots()
+
+        assert roots == (Path("/alpha/repo"), Path("/zebra/repo"))
+
+    def test_result_can_seed_sync_to_rediscover_external_worktrees(self) -> None:
+        """End-to-end: a worktree added externally to a known repo
+        appears after re-running sync against ``known_repo_roots``."""
+        repo = "/home/user/repo"
+        store = FakeWorktreeStore()
+        store.upsert_worktree(
+            Worktree(
+                id="wt-main",
+                repo_root=repo,
+                path=repo,
+                branch="main",
+                created_at=datetime(2025, 1, 1, tzinfo=UTC),
+            ),
+        )
+        # Git now reports a second worktree that muxdeck never knew about.
+        git_wts = (
+            _make_git_worktree(repo, repo, "main", is_main=True),
+            _make_git_worktree(repo, f"{repo}/wt-feat", "feat/login"),
+        )
+        service, _ = _make_service({repo: git_wts}, store=store)
+
+        # The runtime would call this after enumerating known roots.
+        report = service.sync_worktrees_from_git(service.known_repo_roots())
+
+        assert report.repo_roots_scanned == 1
+        assert {wt.path for wt in store.list_worktrees()} == {
+            repo,
+            f"{repo}/wt-feat",
+        }
+
+
 if __name__ == "__main__":
     unittest.main()

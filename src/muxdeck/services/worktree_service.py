@@ -547,7 +547,6 @@ class WorktreeService:
 
         Stale DB entries (paths no longer reported by git) are deleted so
         the list stays in sync after external prunes or manual removals.
-
         Agent assignments are preserved for existing records.
         """
         now = self._clock()
@@ -630,6 +629,19 @@ class WorktreeService:
                 self._worktrees.delete_worktree(db_wt.id)
                 removed += 1
         return removed
+
+    def known_repo_roots(self) -> tuple[Path, ...]:
+        """Return distinct repo roots already tracked by the store.
+
+        Sorted for deterministic ordering. Used by the runtime sync to
+        keep worktrees fresh for repos with no live tmux pane: once a
+        repo has any tracked worktree, ``git worktree add`` events on
+        that repo will surface in muxdeck on the next sync cycle.
+        """
+        seen: set[Path] = set()
+        for worktree in self._worktrees.list_worktrees():
+            seen.add(Path(worktree.repo_root))
+        return tuple(sorted(seen))
 
     def _reconcile_worktrees_with_git(
         self,

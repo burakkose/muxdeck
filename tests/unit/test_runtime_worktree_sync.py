@@ -62,8 +62,9 @@ class FakeGit:
 
 
 class FakeWorktreeSync:
-    def __init__(self) -> None:
+    def __init__(self, known: Sequence[Path] = ()) -> None:
         self.called_with: list[Sequence[Path]] = []
+        self._known = tuple(known)
 
     def sync_worktrees_from_git(
         self,
@@ -71,6 +72,9 @@ class FakeWorktreeSync:
     ) -> object:
         self.called_with.append(list(repo_roots))
         return None
+
+    def known_repo_roots(self) -> Sequence[Path]:
+        return self._known
 
 
 def _make_pane(
@@ -165,6 +169,9 @@ class TestRuntimeWorktreeSync(unittest.TestCase):
                 msg = "sync failed"
                 raise RuntimeError(msg)
 
+            def known_repo_roots(self) -> Sequence[Path]:
+                return ()
+
         sync = RuntimeSynchronizer(
             FakeDiscovery(report),
             FakeMonitoring(now),
@@ -181,6 +188,133 @@ class TestRuntimeWorktreeSync(unittest.TestCase):
         assert any("worktree sync failed" in m for m in warning_msgs), (
             f"Expected worktree sync warning, got: {warning_msgs}"
         )
+
+    def test_worktree_sync_includes_known_db_roots_without_active_pane(self) -> None:
+        """Repos with stored worktrees but no live pane must still be
+        scanned. Without this, ``git worktree add`` from outside muxdeck
+        never appears in the worktree screen — the user-reported bug."""
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        # No panes at all -> tmux discovery yields no repo roots.
+        report = PaneDiscoveryReport(
+            discovered_at=now,
+            panes=(),
+            managed_agents=(),
+            unmanaged_probable_agents=(),
+            non_agent_panes=(),
+        )
+        wt_sync = FakeWorktreeSync(known=(Path("/mnt/q/src/CosmosDB"),))
+        sync = RuntimeSynchronizer(
+            FakeDiscovery(report),
+            FakeMonitoring(now),
+            FakeGit("/repo"),
+            worktree_sync=wt_sync,
+        )
+
+        sync.refresh()
+
+        assert len(wt_sync.called_with) == 1, (
+            "sync should run even with no tmux panes, so the screen "
+            "stays in sync for repos discovered earlier"
+        )
+        roots = [str(r) for r in wt_sync.called_with[0]]
+        assert "/mnt/q/src/CosmosDB" in roots
+
+    def test_worktree_sync_unions_pane_and_known_roots_without_duplicates(
+        self,
+    ) -> None:
+        """Tmux roots and DB roots are merged into a single deduped
+        set so the same repo isn't scanned twice in one cycle."""
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        pane = _make_pane(cwd="/repo/worktrees/task")
+        report = PaneDiscoveryReport(
+            discovered_at=now,
+            panes=(pane,),
+            managed_agents=(),
+            unmanaged_probable_agents=(pane,),
+            non_agent_panes=(),
+        )
+        wt_sync = FakeWorktreeSync(
+            known=(Path("/repo"), Path("/mnt/q/src/CosmosDB")),
+        )
+        sync = RuntimeSynchronizer(
+            FakeDiscovery(report),
+            FakeMonitoring(now),
+            FakeGit("/repo"),
+            worktree_sync=wt_sync,
+        )
+
+        sync.refresh()
+
+        roots = [str(r) for r in wt_sync.called_with[0]]
+        # Both sources contributed; /repo only appears once.
+        assert roots.count("/repo") == 1
+        assert "/mnt/q/src/CosmosDB" in roots
+
+    def test_worktree_sync_known_roots_failure_does_not_crash_sync(self) -> None:
+        """If enumerating known repo roots raises, fall back to
+        tmux-only sync rather than failing the entire refresh."""
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        pane = _make_pane(cwd="/repo/worktrees/task")
+        report = PaneDiscoveryReport(
+            discovered_at=now,
+            panes=(pane,),
+            managed_agents=(),
+            unmanaged_probable_agents=(pane,),
+            non_agent_panes=(),
+        )
+
+        class _PartialFailingSync:
+            def __init__(self) -> None:
+                self.called_with: list[Sequence[Path]] = []
+
+            def sync_worktrees_from_git(self, repo_roots: Sequence[Path]) -> object:
+                self.called_with.append(list(repo_roots))
+                return None
+
+            def known_repo_roots(self) -> Never:
+                msg = "DB unreachable"
+                raise RuntimeError(msg)
+
+        wt_sync = _PartialFailingSync()
+        sync = RuntimeSynchronizer(
+            FakeDiscovery(report),
+            FakeMonitoring(now),
+            FakeGit("/repo"),
+            worktree_sync=wt_sync,
+        )
+
+        result = sync.refresh()
+
+        # Sync still ran with the tmux-derived root; no crash.
+        assert len(wt_sync.called_with) == 1
+        assert any(str(r) == "/repo" for r in wt_sync.called_with[0])
+        # No worktree-sync-failed warning because the actual sync
+        # call succeeded — only the auxiliary lookup failed.
+        warning_msgs = [w.message for w in result.warnings]
+        assert not any("worktree sync failed" in m for m in warning_msgs)
+
+    def test_worktree_sync_known_only_no_tmux_no_known(self) -> None:
+        """Empty pane discovery + empty known roots = no sync call.
+        Must not pass an empty list (would cost a no-op for nothing)."""
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        report = PaneDiscoveryReport(
+            discovered_at=now,
+            panes=(),
+            managed_agents=(),
+            unmanaged_probable_agents=(),
+            non_agent_panes=(),
+        )
+        wt_sync = FakeWorktreeSync(known=())
+        sync = RuntimeSynchronizer(
+            FakeDiscovery(report),
+            FakeMonitoring(now),
+            FakeGit("/repo"),
+            worktree_sync=wt_sync,
+        )
+
+        sync.refresh()
+
+        assert wt_sync.called_with == [], "no roots from either source -> sync should be skipped"
 
 
 if __name__ == "__main__":

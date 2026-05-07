@@ -78,6 +78,16 @@ class RuntimeWorktreeSyncPort(Protocol):
     ) -> object:
         """Discover and upsert worktrees from git for the given repo roots."""
 
+    def known_repo_roots(self) -> Sequence[Path]:
+        """Return distinct repo roots already tracked by the worktree store.
+
+        Used by the runtime sync to keep already-known repos in sync even
+        when no tmux pane is currently running in any of their worktrees.
+        Without this the screen only shows worktrees that were last
+        actively used; new ``git worktree add`` events on a known repo
+        never appear until the user opens a pane there.
+        """
+
 
 @runtime_checkable
 class RuntimeSubAgentSnapshot(Protocol):
@@ -327,18 +337,37 @@ class RuntimeSynchronizer:
         *,
         warnings: list[RuntimeSyncWarning],
     ) -> None:
-        """Sync git worktrees into the store from discovered repo roots."""
+        """Sync git worktrees into the store from discovered repo roots.
+
+        Combines tmux-discovered repo roots with repo roots already in
+        the worktree store so worktrees stay in sync even when there's
+        no live tmux pane in any of them. Without the second source the
+        screen only ever sees worktrees that were created/attached
+        through muxdeck or that had an agent pane at discovery time:
+        a ``git worktree add`` from outside muxdeck would never appear.
+        """
         if self._worktree_sync is None:
             return
-        repo_roots: list[Path] = []
+        repo_roots: set[Path] = set()
         for ctx in git_context_cache.values():
             if ctx is not None:
-                repo_roots.append(Path(ctx.repo_root))
+                repo_roots.add(Path(ctx.repo_root))
+        # Keep already-tracked repos in sync. ``known_repo_roots`` is
+        # cheap (DB query) and ``sync_worktrees_from_git`` deduplicates
+        # roots before shelling out to git, so the cost is bounded by
+        # the number of distinct repos in the store.
+        try:
+            known = tuple(self._worktree_sync.known_repo_roots())
+        except Exception:
+            _log.exception("worktree sync: failed to enumerate known repo roots")
+            known = ()
+        for root in known:
+            repo_roots.add(Path(root))
         if not repo_roots:
             return
         try:
             with timed("sync.worktrees"):
-                self._worktree_sync.sync_worktrees_from_git(repo_roots)
+                self._worktree_sync.sync_worktrees_from_git(sorted(repo_roots))
         except Exception:
             _log.exception("worktree sync failed")
             warnings.append(RuntimeSyncWarning(message="worktree sync failed"))
