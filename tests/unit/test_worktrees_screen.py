@@ -22,7 +22,7 @@ from muxdeck.controllers.worktree_controller import (
     WorktreeStartAgentIntent,
     WorktreeSummaryView,
 )
-from muxdeck.exceptions import DomainValidationError
+from muxdeck.exceptions import DomainValidationError, PersistenceError
 from muxdeck.screens.worktree_input import (
     AttachWorktreeResult,
     CreateWorktreeResult,
@@ -1139,6 +1139,324 @@ class WorktreesDetailWorkerRaceTests(unittest.TestCase):
         assert target_id == "wt-1"
         assert detail is captured_detail
         assert intent is captured_intent
+
+
+class WorktreesLoadWorkerResilienceTests(unittest.TestCase):
+    """Exercise the ``_load`` body inside ``refresh_data``.
+
+    A regression bug let a single exception from ``get_worktree_detail``
+    or ``start_agent_intent`` blank the entire worktree list because the
+    worker errored out before ``_apply_loaded_state`` ever ran. These
+    tests pin the contract that the list survives partial failures.
+    """
+
+    @staticmethod
+    def _capture_load(screen: WorktreesScreen) -> Callable[[], _LoadedWorktreesState]:
+        """Intercept ``screen.run_worker`` and return the captured ``_load`` callable."""
+        captured: list[Callable[[], object]] = []
+
+        def _record(fn: Callable[[], object], *a: object, **kw: object) -> None:
+            captured.append(fn)
+
+        screen.run_worker = _record  # type: ignore[assignment, method-assign]
+        screen.refresh_data()
+        assert captured, "refresh_data did not schedule a worker"
+        return cast(Callable[[], _LoadedWorktreesState], captured[-1])
+
+    def test_load_worker_returns_full_state_in_happy_path(self) -> None:
+        """Sanity check: when nothing fails the worker returns the list,
+        the auto-selected detail, and the start intent. Pins that
+        future broad-except changes don't hide a real regression."""
+        summary = _summary(worktree_id="wt-1")
+        captured_detail = _detail(summary=summary)
+        captured_intent = _intent()
+
+        async def scenario() -> _LoadedWorktreesState:
+            wts = _RecordingWorktreeService(
+                summaries=(summary,),
+                detail=captured_detail,
+                intent=captured_intent,
+            )
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                load = self._capture_load(screen)
+                return load()
+
+        state = asyncio.run(scenario())
+        assert state.worktrees == (summary,)
+        assert state.detail is captured_detail
+        assert state.start_intent is captured_intent
+        assert state.selected_worktree_id == "wt-1"
+        assert state.warning_message is None
+
+    def test_load_worker_keeps_list_when_get_worktree_detail_raises(self) -> None:
+        """The reproducer for the user-reported bug: a single exception
+        from ``get_worktree_detail`` previously took down the whole
+        worker, leaving the list panel empty even though
+        ``list_worktrees()`` succeeded. The fix degrades gracefully:
+        list survives, detail/intent are cleared, warning is set."""
+        summary_a = _summary(worktree_id="wt-a", path="/repo/wt-a")
+        summary_b = _summary(worktree_id="wt-b", path="/repo/wt-b")
+        intent_calls: list[str] = []
+
+        class _DetailRaisingService(_RecordingWorktreeService):
+            def get_worktree_detail(self, worktree_id: str) -> WorktreeDetailView | None:
+                raise PersistenceError(f"unknown worktree: {worktree_id}")
+
+            def start_agent_intent(  # type: ignore[override]
+                self,
+                worktree_id: str,
+                *,
+                prompt: str | None = None,
+                model: str | None = None,
+                target_session_name: str | None = None,
+                window_name: str | None = None,
+            ) -> WorktreeStartAgentIntent:
+                intent_calls.append(worktree_id)
+                return _intent()
+
+        async def scenario() -> _LoadedWorktreesState:
+            wts = _DetailRaisingService(summaries=(summary_a, summary_b))
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                load = self._capture_load(screen)
+                return load()
+
+        state = asyncio.run(scenario())
+        assert state.worktrees == (summary_a, summary_b), "list must survive a detail failure"
+        assert state.selected_worktree_id == "wt-a"
+        assert state.detail is None
+        assert state.start_intent is None
+        assert state.warning_message is not None
+        assert "detail unavailable" in state.warning_message
+        # Skipping intent after detail failure mirrors _update_selected_detail
+        # and prevents redundant log spam from the same root cause.
+        assert intent_calls == [], (
+            f"start_agent_intent should not be called after detail failure, got {intent_calls!r}"
+        )
+
+    def test_load_worker_keeps_list_and_detail_when_intent_raises(self) -> None:
+        """If only the start-intent lookup fails we still surface the
+        list and the loaded detail. The intent panel is cleared and
+        the warning explains what's missing."""
+        summary_a = _summary(worktree_id="wt-a", path="/repo/wt-a")
+        summary_b = _summary(worktree_id="wt-b", path="/repo/wt-b")
+        captured_detail = _detail(summary=summary_a)
+
+        class _IntentRaisingService(_RecordingWorktreeService):
+            def start_agent_intent(  # type: ignore[override]
+                self,
+                worktree_id: str,
+                *,
+                prompt: str | None = None,
+                model: str | None = None,
+                target_session_name: str | None = None,
+                window_name: str | None = None,
+            ) -> WorktreeStartAgentIntent:
+                raise PersistenceError(f"intent gone: {worktree_id}")
+
+        async def scenario() -> _LoadedWorktreesState:
+            wts = _IntentRaisingService(
+                summaries=(summary_a, summary_b),
+                detail=captured_detail,
+            )
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                load = self._capture_load(screen)
+                return load()
+
+        state = asyncio.run(scenario())
+        assert state.worktrees == (summary_a, summary_b)
+        assert state.detail is captured_detail
+        assert state.start_intent is None
+        assert state.warning_message is not None
+        assert "intent unavailable" in state.warning_message
+
+    def test_load_worker_keeps_list_when_detail_raises_unexpected_exception(
+        self,
+    ) -> None:
+        """The boundary catch must absorb non-``MuxdeckError`` exceptions
+        too — e.g. ``OSError`` from a stale Windows drive mount or
+        ``RuntimeError`` from a corrupted git index. Without this, the
+        worker dies and the user is back to an empty list with no list
+        rendered at all."""
+        summary = _summary(worktree_id="wt-only")
+
+        class _OSErrorService(_RecordingWorktreeService):
+            def get_worktree_detail(self, worktree_id: str) -> WorktreeDetailView | None:
+                raise OSError("transport endpoint is not connected")
+
+        async def scenario() -> _LoadedWorktreesState:
+            wts = _OSErrorService(summaries=(summary,))
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                load = self._capture_load(screen)
+                return load()
+
+        state = asyncio.run(scenario())
+        assert state.worktrees == (summary,)
+        assert state.detail is None
+        assert state.warning_message is not None
+        assert "transport endpoint" in state.warning_message
+
+    def test_load_worker_empty_list_skips_enrichment_calls(self) -> None:
+        """When ``list_worktrees()`` returns nothing we must NOT call
+        detail/intent (there's no selection). The state has no warning
+        because there's no failure — just nothing to show."""
+        detail_calls: list[str] = []
+        intent_calls: list[str] = []
+
+        class _RecordingService(_RecordingWorktreeService):
+            def get_worktree_detail(self, worktree_id: str) -> WorktreeDetailView | None:
+                detail_calls.append(worktree_id)
+                return None
+
+            def start_agent_intent(  # type: ignore[override]
+                self,
+                worktree_id: str,
+                *,
+                prompt: str | None = None,
+                model: str | None = None,
+                target_session_name: str | None = None,
+                window_name: str | None = None,
+            ) -> WorktreeStartAgentIntent:
+                intent_calls.append(worktree_id)
+                return _intent()
+
+        async def scenario() -> _LoadedWorktreesState:
+            wts = _RecordingService(summaries=())
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                load = self._capture_load(screen)
+                return load()
+
+        state = asyncio.run(scenario())
+        assert state.worktrees == ()
+        assert state.selected_worktree_id is None
+        assert state.detail is None
+        assert state.start_intent is None
+        assert state.warning_message is None
+        assert detail_calls == []
+        assert intent_calls == []
+
+    def test_apply_loaded_state_surfaces_warning_message(self) -> None:
+        """``_apply_loaded_state`` must prefer the warning message over
+        the default ``"N worktrees loaded"`` count so the user notices
+        when detail/intent silently failed."""
+        summary = _summary(worktree_id="wt-1")
+
+        async def scenario() -> str:
+            wts = _RecordingWorktreeService()
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._loading = True
+                state = _LoadedWorktreesState(
+                    worktrees=(summary,),
+                    detail=None,
+                    start_intent=None,
+                    selected_worktree_id="wt-1",
+                    warning_message="worktree detail unavailable: simulated",
+                )
+                screen.on_worker_state_changed(
+                    _worker_event(name=_WORKER_NAME, state=WorkerState.SUCCESS, result=state)
+                )
+                await pilot.pause()
+                return screen._status
+
+        assert "detail unavailable" in asyncio.run(scenario())
+
+    def test_apply_loaded_state_pending_status_overrides_warning(self) -> None:
+        """The user-action pending status (e.g. ``✓ created …``) is
+        what triggered the refresh and must outrank the warning so
+        the user sees the result of THEIR action, not a worker hint."""
+        summary = _summary(worktree_id="wt-1")
+
+        async def scenario() -> str:
+            wts = _RecordingWorktreeService()
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._loading = True
+                screen._pending_status_after_refresh = "✓ created /repo/wt-1"
+                state = _LoadedWorktreesState(
+                    worktrees=(summary,),
+                    detail=None,
+                    start_intent=None,
+                    selected_worktree_id="wt-1",
+                    warning_message="worktree detail unavailable: simulated",
+                )
+                screen.on_worker_state_changed(
+                    _worker_event(name=_WORKER_NAME, state=WorkerState.SUCCESS, result=state)
+                )
+                await pilot.pause()
+                return screen._status
+
+        status = asyncio.run(scenario())
+        assert status == "✓ created /repo/wt-1"
+
+    def test_load_worker_through_full_pipeline_renders_list_on_partial_failure(
+        self,
+    ) -> None:
+        """End-to-end: run the actual worker via ``app.run_test`` and
+        assert the list panel displays both rows when detail loading
+        raises. This is the test that would have caught the original
+        production regression — the unit-level closure tests above
+        could pass even if the worker plumbing itself was broken."""
+        summary_a = _summary(worktree_id="wt-a", path="/repo/wt-a")
+        summary_b = _summary(worktree_id="wt-b", path="/repo/wt-b")
+
+        class _DetailRaisingService(_RecordingWorktreeService):
+            def get_worktree_detail(self, worktree_id: str) -> WorktreeDetailView | None:
+                raise PersistenceError(f"unknown worktree: {worktree_id}")
+
+        async def scenario() -> tuple[int, bool, str]:
+            wts = _DetailRaisingService(summaries=(summary_a, summary_b))
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                # Wait for the load worker to finish (worker is threaded;
+                # poll with a deterministic upper bound rather than a
+                # fixed sleep).
+                for _ in range(60):
+                    await pilot.pause()
+                    if screen._loaded_once and not screen._loading:
+                        break
+                panel = screen.query_one(WorktreeListPanel)
+                return (len(panel._worktrees), screen._loaded_once, screen._status)
+
+        rendered, loaded_once, status = asyncio.run(scenario())
+        assert rendered == 2, "list panel must render both rows even on detail failure"
+        assert loaded_once is True
+        assert "detail unavailable" in status
 
 
 class WorktreesRefreshFlowTests(unittest.TestCase):

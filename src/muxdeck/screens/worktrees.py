@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -40,6 +41,8 @@ if TYPE_CHECKING:
     from muxdeck.app import MuxdeckApp, MuxdeckRuntime
 
 
+_log = logging.getLogger(__name__)
+
 _WORKER_NAME = "worktrees_load"
 _DETAIL_WORKER_NAME = "worktrees_detail"
 
@@ -50,6 +53,11 @@ class _LoadedWorktreesState:
     detail: WorktreeDetailView | None
     start_intent: WorktreeStartAgentIntent | None
     selected_worktree_id: str | None
+    # When detail/intent enrichment fails for the selected worktree we
+    # still want to render the list. The fatal error is surfaced via
+    # this field so the user sees a status hint instead of an empty
+    # screen and a swallowed exception.
+    warning_message: str | None = None
 
 
 class WorktreesScreen(ShellScreen):
@@ -126,24 +134,52 @@ class WorktreesScreen(ShellScreen):
             self.begin_loading(*self._loading_widgets())
 
         def _load() -> _LoadedWorktreesState:
-            worktrees = worktree_service.list_worktrees()
+            worktrees = tuple(worktree_service.list_worktrees())
             effective_selected = selected_id
             ids = {w.worktree_id for w in worktrees}
             if effective_selected is None or effective_selected not in ids:
                 effective_selected = worktrees[0].worktree_id if worktrees else None
             detail: WorktreeDetailView | None = None
             start_intent: WorktreeStartAgentIntent | None = None
+            warning: str | None = None
             if effective_selected is not None:
-                detail = worktree_service.get_worktree_detail(effective_selected)
-                start_intent = worktree_service.start_agent_intent(
-                    effective_selected,
-                    model=configured_model,
-                )
+                # Detail and intent enrichment shell out to git and read
+                # on-disk worktree metadata. They can fail for many
+                # reasons that should NOT take down the whole screen:
+                # the row was deleted mid-flight, the repo path is
+                # offline (WSL/Windows mount), git refuses to operate,
+                # and so on. We catch broadly here precisely because
+                # this is the worker boundary: if we let the exception
+                # escape, the worker errors out and the user sees an
+                # empty list with no recourse. The full exception is
+                # logged so the swallowed error is debuggable.
+                try:
+                    detail = worktree_service.get_worktree_detail(effective_selected)
+                except Exception as exc:
+                    _log.exception(
+                        "worktree detail load failed for %s",
+                        effective_selected,
+                    )
+                    warning = f"worktree detail unavailable: {str(exc).splitlines()[0]}"
+                if detail is not None:
+                    try:
+                        start_intent = worktree_service.start_agent_intent(
+                            effective_selected,
+                            model=configured_model,
+                        )
+                    except Exception as exc:
+                        _log.exception(
+                            "worktree start_agent_intent failed for %s",
+                            effective_selected,
+                        )
+                        if warning is None:
+                            warning = f"start intent unavailable: {str(exc).splitlines()[0]}"
             return _LoadedWorktreesState(
-                worktrees=tuple(worktrees),
+                worktrees=worktrees,
                 detail=detail,
                 start_intent=start_intent,
                 selected_worktree_id=effective_selected,
+                warning_message=warning,
             )
 
         self._loading = True
@@ -184,6 +220,9 @@ class WorktreesScreen(ShellScreen):
         if self._pending_status_after_refresh is not None:
             self.set_status(self._pending_status_after_refresh)
             self._pending_status_after_refresh = None
+            return
+        if state.warning_message is not None:
+            self.set_status(state.warning_message)
             return
         self.set_status(
             "no worktrees discovered"
@@ -239,22 +278,30 @@ class WorktreesScreen(ShellScreen):
         self.muxdeck_app.remember_worktree_selection(target_id)
 
         def _load() -> tuple[str, WorktreeDetailView | None, WorktreeStartAgentIntent | None]:
-            # The user can delete or prune the worktree between the
-            # moment the worker is scheduled and the moment it runs.
-            # When that happens, the controller raises PersistenceError
-            # for a now-missing row. Swallow that here so the worker
-            # exits cleanly instead of bubbling a fatal error to the
-            # app; the stale-result guard below will discard the empty
-            # payload if the user has already moved on.
+            # Detail and intent calls shell out to git and may fail for
+            # transient reasons unrelated to the screen (deleted row,
+            # offline mount, git refusing). We MUST keep the worker
+            # alive so the screen doesn't crash on selection change;
+            # the stale-result guard below will discard the empty
+            # payload if the user has already moved on. Exceptions
+            # are logged so the swallow is debuggable.
             try:
                 detail = worktree_service.get_worktree_detail(target_id)
             except PersistenceError:
+                # Most common race: worktree was deleted mid-flight.
+                # Quiet path; not worth a stack trace.
+                return (target_id, None, None)
+            except Exception:
+                _log.exception("worktree detail load failed for %s", target_id)
                 return (target_id, None, None)
             try:
                 start_intent = worktree_service.start_agent_intent(
                     target_id, model=configured_model
                 )
             except PersistenceError:
+                start_intent = None
+            except Exception:
+                _log.exception("worktree start_agent_intent failed for %s", target_id)
                 start_intent = None
             return (target_id, detail, start_intent)
 
