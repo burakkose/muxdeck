@@ -1583,7 +1583,7 @@ async def test_sessions_screen_open_replay_uses_selected_session() -> None:
             assert "replay" in rendered_text(app.screen.query_one("#sessions-actions")).lower()
 
             await pilot.press("j")
-            await pilot.pause()
+            await pilot.pause(0.2)
             assert "session-2" in rendered_text(app.screen.query_one("#sessions-detail"))
 
             await pilot.press("enter")

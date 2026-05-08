@@ -32,6 +32,7 @@ from muxdeck.screens.sessions import (
     _LoadedSessionsState,
 )
 from muxdeck.services.action_service import ActionResult
+from muxdeck.widgets.sessions import SessionDetailPanel
 
 
 def _list_item(
@@ -620,6 +621,157 @@ class SessionsActionTests(unittest.TestCase):
         assert "hide-done" in status
 
 
+class SessionsCursorDebounceTests(unittest.TestCase):
+    """Verify cursor moves don't trigger gratuitous detail repaints.
+
+    The detail panel + action bar repaint is debounced behind a 120ms
+    timer. Holding ``j``/``k`` should never cause more than a single
+    Static.update for the position the user finally settles on. The
+    underlying ``_selected_detail`` field stays synchronously fresh so
+    actions like "copy details" remain consistent with the cursor.
+    """
+
+    def test_rapid_session_selections_collapse_to_one_panel_repaint(self) -> None:
+        async def scenario() -> tuple[list[str | None], str | None, str | None]:
+            from muxdeck.widgets.sessions import SessionSelected
+
+            items = tuple(_list_item(session_id=f"s-{i}") for i in range(5))
+            state = _state(sessions=items, selected_id="s-0", selected=_detail(session_id="s-0"))
+            ctrl = _RecordingSessionsCtrl(state=state, detail=_detail(session_id="s-4"))
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._apply_state(state)
+                await pilot.pause()
+                detail_calls_after_apply = list(ctrl.detail_calls)
+                rendered_before = screen._rendered_detail_session_id
+                # Simulate typematic key repeat: rapid cursor moves
+                # land messages back-to-back. Each call eagerly refreshes
+                # ``_selected_detail`` (so actions stay consistent) but
+                # the panel repaint is deferred behind the 120ms debounce.
+                for sid in ("s-1", "s-2", "s-3", "s-4"):
+                    screen.on_session_selected(SessionSelected(sid))
+                # Detail data is fresh immediately for the LAST id.
+                assert screen._selected_detail is not None
+                assert screen._selected_detail.session_id == "s-4"
+                # But the rendered panel hasn't moved yet — repaint is
+                # still queued behind the timer.
+                assert screen._rendered_detail_session_id == rendered_before
+                # Wait past the debounce horizon for the trailing repaint.
+                await pilot.pause(0.4)
+                return (
+                    ctrl.detail_calls[len(detail_calls_after_apply) :],
+                    rendered_before,
+                    screen._rendered_detail_session_id,
+                )
+
+        new_calls, rendered_before, rendered_after = asyncio.run(scenario())
+        # One synchronous load per selection (not collapsed — the data
+        # load is cheap and must stay current for downstream actions).
+        assert new_calls == ["s-1", "s-2", "s-3", "s-4"], new_calls
+        # Panel state moved exactly once: from baseline directly to s-4,
+        # with no transient repaints to s-1/s-2/s-3.
+        assert rendered_before == "s-0"
+        assert rendered_after == "s-4"
+
+    def test_repaint_skips_when_session_already_rendered(self) -> None:
+        async def scenario() -> int:
+            ctrl = _RecordingSessionsCtrl(
+                state=_state(),
+                detail=_detail(session_id="s-1"),
+            )
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._state = _state()
+                screen._selected_session_id = "s-1"
+                # First load + paint puts s-1 on screen.
+                screen._load_selected_detail()
+                screen._repaint_selected_detail()
+                # Second invocation for the same session must be a
+                # no-op (e.g. cursor bounced back to the rendered row).
+                set_detail_calls = 0
+                original_set_detail = screen.query_one(SessionDetailPanel).set_detail
+
+                def counting_set_detail(detail: SessionDetailView | None) -> None:
+                    nonlocal set_detail_calls
+                    set_detail_calls += 1
+                    original_set_detail(detail)
+
+                screen.query_one(SessionDetailPanel).set_detail = (  # type: ignore[method-assign]
+                    counting_set_detail
+                )
+                screen._repaint_selected_detail()
+                await pilot.pause()
+                return set_detail_calls
+
+        assert asyncio.run(scenario()) == 0
+
+    def test_apply_state_seeds_rendered_session_id(self) -> None:
+        """``_apply_state`` paints the detail panel directly; the next
+        ``_repaint_selected_detail`` for the same id must short-circuit.
+        """
+
+        async def scenario() -> tuple[str | None, int]:
+            items = (_list_item(session_id="s-1"),)
+            detail = _detail(session_id="s-1")
+            state = _state(sessions=items, selected_id="s-1", selected=detail)
+            ctrl = _RecordingSessionsCtrl(state=state, detail=detail)
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._apply_state(state)
+                # The detail came from ``state.selected``; the
+                # controller hook should not have been called yet.
+                assert ctrl.detail_calls == []
+                # ``_apply_state`` records what it just rendered so a
+                # subsequent debounce-driven repaint can short-circuit.
+                rendered = screen._rendered_detail_session_id
+                set_detail_calls = 0
+                original_set_detail = screen.query_one(SessionDetailPanel).set_detail
+
+                def counting_set_detail(detail: SessionDetailView | None) -> None:
+                    nonlocal set_detail_calls
+                    set_detail_calls += 1
+                    original_set_detail(detail)
+
+                screen.query_one(SessionDetailPanel).set_detail = (  # type: ignore[method-assign]
+                    counting_set_detail
+                )
+                screen._repaint_selected_detail()
+                await pilot.pause()
+                return rendered, set_detail_calls
+
+        rendered_id, repaints = asyncio.run(scenario())
+        assert rendered_id == "s-1"
+        assert repaints == 0
+
+    def test_apply_state_with_no_selection_clears_rendered_id(self) -> None:
+        async def scenario() -> str | None:
+            ctrl = _RecordingSessionsCtrl(state=_state())
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._rendered_detail_session_id = "leftover"
+                screen._apply_state(_state())
+                await pilot.pause()
+                return screen._rendered_detail_session_id
+
+        assert asyncio.run(scenario()) is None
+
+
 class _SessionTargetStub:
     def __init__(
         self,
@@ -989,7 +1141,7 @@ class SessionsSelectionTests(unittest.TestCase):
         # No state change → no remembered selection update happens.
         assert asyncio.run(scenario()) == 0
 
-    def test_update_selected_detail_no_controller_returns(self) -> None:
+    def test_load_selected_detail_no_controller_returns(self) -> None:
         async def scenario() -> SessionDetailView | None:
             runtime = _runtime_with(sessions_ctrl=None)
             app = _Harness(runtime)
@@ -998,14 +1150,14 @@ class SessionsSelectionTests(unittest.TestCase):
                 await app.push_screen(screen)
                 await pilot.pause()
                 screen._selected_detail = _detail()
-                screen._update_selected_detail()
+                screen._load_selected_detail()
                 await pilot.pause()
                 return screen._selected_detail
 
         # Without a controller the helper short-circuits before mutating state.
         assert asyncio.run(scenario()) is not None
 
-    def test_update_selected_detail_no_state_returns(self) -> None:
+    def test_repaint_selected_detail_no_state_returns(self) -> None:
         async def scenario() -> SessionDetailView | None:
             ctrl = _RecordingSessionsCtrl(state=_state())
             runtime = _runtime_with(sessions_ctrl=ctrl)
@@ -1018,13 +1170,13 @@ class SessionsSelectionTests(unittest.TestCase):
                 # yet received a state snapshot.
                 screen._state = None
                 screen._selected_detail = _detail()
-                screen._update_selected_detail()
+                screen._repaint_selected_detail()
                 await pilot.pause()
                 return screen._selected_detail
 
         assert asyncio.run(scenario()) is not None
 
-    def test_update_selected_detail_reads_controller_and_paints(self) -> None:
+    def test_load_selected_detail_reads_controller_and_paint_renders(self) -> None:
         async def scenario() -> tuple[SessionDetailView | None, list[str | None]]:
             other_detail = _detail(session_id="session-2", summary="Other")
             ctrl = _RecordingSessionsCtrl(
@@ -1037,7 +1189,8 @@ class SessionsSelectionTests(unittest.TestCase):
                 await app.push_screen(screen)
                 await pilot.pause()
                 screen._selected_session_id = "session-2"
-                screen._update_selected_detail()
+                screen._load_selected_detail()
+                screen._repaint_selected_detail()
                 await pilot.pause()
                 return screen._selected_detail, list(ctrl.detail_calls)
 

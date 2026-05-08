@@ -63,6 +63,11 @@ class SessionsScreen(ShellScreen):
         self._loading: bool = False
         self._refresh_pending: bool = False
         self._selected_detail: SessionDetailView | None = None
+        # Tracks which session is currently rendered in the detail
+        # panel + action bar so cursor moves that bounce back to the
+        # same id (or refreshes that re-select the active row) skip the
+        # detail repaint entirely.
+        self._rendered_detail_session_id: str | None = None
         self._live_session_ids: frozenset[str] = frozenset()
         self._live_targets: dict[str, _LiveSessionTarget] = {}
         self._skip_next_show_refresh: bool = True
@@ -254,6 +259,9 @@ class SessionsScreen(ShellScreen):
             filter_text=self._filter_text,
             show_completed=self._show_completed,
         )
+        self._rendered_detail_session_id = (
+            self._selected_detail.session_id if self._selected_detail else None
+        )
 
         summary = self.query_one(SessionSummaryBar)
         summary.set_counts(
@@ -275,23 +283,50 @@ class SessionsScreen(ShellScreen):
             return
         self._selected_session_id = event.session_id
         self.muxdeck_app.remember_session_selection(event.session_id)
+        # Refresh ``_selected_detail`` synchronously so any user action
+        # that races a cursor move (e.g. pressing ``y`` to copy details
+        # right after ``j``) sees the up-to-date payload. The warm-cache
+        # lookup behind ``get_session_detail`` is O(1) — sub-ms in
+        # practice — so it does not contribute to perceived lag.
+        self._load_selected_detail()
         if self._detail_timer is not None:
             self._detail_timer.stop()
-        self._detail_timer = self.set_timer(0.05, self._update_selected_detail)
+        # Detail/action-bar repaint debounce. Each ``Static.update`` on
+        # those panels triggers ``refresh(layout=True)``, which is the
+        # actual source of cursor-movement lag at scale. Coalescing
+        # repaints to the trailing edge of typematic key repeat keeps
+        # held-down j/k feeling smooth while a deliberate single tap
+        # still updates the panels in 120ms.
+        self._detail_timer = self.set_timer(0.12, self._repaint_selected_detail)
 
-    def _update_selected_detail(self) -> None:
-        """Lightweight update — only refresh detail panel for cursor movement."""
-        if self.runtime.sessions_ctrl is None or self._state is None:
+    def _load_selected_detail(self) -> None:
+        """Refresh ``_selected_detail`` from the controller (no paint)."""
+        if self.runtime.sessions_ctrl is None:
             return
-        detail = self.runtime.sessions_ctrl.get_session_detail(
+        self._selected_detail = self.runtime.sessions_ctrl.get_session_detail(
             self._selected_session_id,
             live_session_ids=self._live_session_ids,
         )
-        self._selected_detail = detail
+
+    def _repaint_selected_detail(self) -> None:
+        """Paint the latest ``_selected_detail`` into the side panels.
+
+        The data load is split into ``_load_selected_detail`` so this
+        method can short-circuit when the requested session is already
+        on screen, avoiding redundant ``Static.update`` / layout passes
+        when the cursor bounces back to a previously-rendered row.
+        """
+        if self._state is None:
+            return
+        selected = self._selected_session_id
+        if selected is not None and selected == self._rendered_detail_session_id:
+            return
+        detail = self._selected_detail
+        self._rendered_detail_session_id = detail.session_id if detail is not None else None
         self.query_one(SessionDetailPanel).set_detail(detail)
         self.query_one(SessionActionBar).set_state(
             detail,
-            has_live_pane=self._selected_session_id in self._live_targets,
+            has_live_pane=selected in self._live_targets,
             filter_text=self._filter_text,
             show_completed=self._show_completed,
         )
@@ -370,10 +405,16 @@ class SessionsScreen(ShellScreen):
             return
         self._selected_session_id = selected_session_id
         self.muxdeck_app.remember_session_selection(selected_session_id)
-        self._update_selected_detail()
+        self._load_selected_detail()
         if self._selected_detail is None:
             self.set_status("no session detail loaded")
             return
+        # Flush any pending debounced repaint so the rendered detail
+        # panel reflects the session we're about to copy.
+        if self._detail_timer is not None:
+            self._detail_timer.stop()
+            self._detail_timer = None
+        self._repaint_selected_detail()
         self.copy_rendered_text("session details", self.query_one(SessionDetailPanel))
 
     def action_focus_pane(self) -> None:
