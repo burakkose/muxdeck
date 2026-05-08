@@ -141,15 +141,15 @@ _HEALTH_TONE_STYLES: dict[str, tuple[str, str]] = {
 }
 
 _LIST_STATUS_LABELS: dict[OperatorStatusKind, str] = {
-    OperatorStatusKind.STARTING: "launching",
-    OperatorStatusKind.WORKING: "active",
-    OperatorStatusKind.WAITING_INPUT: "needs input",
-    OperatorStatusKind.BLOCKED: "blocked",
-    OperatorStatusKind.REVIEW_READY: "needs review",
-    OperatorStatusKind.FAILED: "failed",
-    OperatorStatusKind.TERMINATED: "ended",
-    OperatorStatusKind.STALE: "stale",
-    OperatorStatusKind.COMPLETED: "done",
+    OperatorStatusKind.STARTING: "STARTING",
+    OperatorStatusKind.WORKING: "RUNNING",
+    OperatorStatusKind.WAITING_INPUT: "WAITING",
+    OperatorStatusKind.BLOCKED: "BLOCKED",
+    OperatorStatusKind.REVIEW_READY: "NEEDS REVIEW",
+    OperatorStatusKind.FAILED: "FAILED",
+    OperatorStatusKind.TERMINATED: "DONE",
+    OperatorStatusKind.STALE: "STALE",
+    OperatorStatusKind.COMPLETED: "DONE",
 }
 
 _LOG_SOURCE_STYLES: dict[str, str] = {
@@ -216,7 +216,7 @@ def _status_display(agent: DashboardAgentListItemView) -> tuple[str, str]:
         OperatorStatusKind.STALE: f"bold {YELLOW}",
         OperatorStatusKind.COMPLETED: FG4,
     }
-    return (operator_status.label, style_lookup[operator_status.kind])
+    return (operator_status.display_label, style_lookup[operator_status.kind])
 
 
 _STATUS_DOT_COLORS: dict[OperatorStatusKind, str] = {
@@ -292,6 +292,42 @@ def _focus_summary(agent: DashboardAgentListItemView) -> tuple[str, str]:
         summary = agent.current_activity or agent.task_title or operator_status.headline
         style = FG1
     return _truncate(summary, 56), style
+
+
+def _detail_subtitle(
+    item: DashboardAgentListItemView,
+    operator_status: OperatorStatus,
+) -> str:
+    """Pick the single-line subtitle for the dominant detail banner.
+
+    Operator priority order: attention reason (when present and the
+    agent needs review/intervention) outranks current tool activity,
+    which outranks the high-level task title. Falls back to the
+    operator status headline ("running"/"waiting"/…) so the line
+    never renders empty when there is enough room for it.
+    """
+    if (
+        item.needs_attention
+        and item.attention_reason
+        and operator_status.kind
+        in {
+            OperatorStatusKind.WAITING_INPUT,
+            OperatorStatusKind.BLOCKED,
+            OperatorStatusKind.REVIEW_READY,
+            OperatorStatusKind.FAILED,
+            OperatorStatusKind.STALE,
+        }
+    ):
+        return _truncate(item.attention_reason, 72)
+    activity = (item.current_activity or "").strip()
+    if activity:
+        return _truncate(activity, 72)
+    title = (item.task_title or "").strip()
+    if title:
+        return _truncate(title, 72)
+    if operator_status.reason:
+        return _truncate(operator_status.reason, 72)
+    return ""
 
 
 def _display_name(
@@ -1095,8 +1131,8 @@ class AgentDetailPanel(Static):
     def set_agent(self, agent: DashboardSelectedAgentView | None) -> None:
         preferences = resolve_ui_preferences(self)
         result = Text()
-        _section_header(result, "agent detail", preferences=preferences)
         if agent is None:
+            _section_header(result, "agent detail", preferences=preferences)
             result.append("  no agent selected\n", style=FG4)
             self.update(result)
             return
@@ -1106,28 +1142,61 @@ class AgentDetailPanel(Static):
         bold_status_style = (
             status_style if status_style.startswith("bold ") else f"bold {status_style}"
         )
+        plain_status_style = status_style.removeprefix("bold ").strip() or FG2
 
-        # ── header: name + status on one line ──
+        # ── dominant banner: agent identity + canonical status ──
+        # Operators reported the previous one-line "name | status"
+        # header was visually indistinguishable from the metadata rows
+        # below it, so the eye had to scan the whole panel to figure
+        # out *which* agent was selected and *what* it was doing. A
+        # heavier banner (large glyph, all-caps name, uppercase
+        # canonical status, severity-colored bar) makes the answer
+        # obvious before the eye reaches the body fields.
         glyph_char, glyph_color = status_glyph_parts(item.status, preferences=preferences)
-        result.append(f"  {glyph_char} ", style=f"bold {glyph_color}")
-        result.append(item.name, style=f"bold {FG}")
-        result.append("  ")
-        result.append(operator_status.headline, style=bold_status_style)
+        bar_glyph = "│" if preferences.glyphs is UiGlyphs.RICH else "|"
+        result.append(f" {bar_glyph} ", style=f"bold {plain_status_style}")
+        result.append(f"{glyph_char} ", style=f"bold {glyph_color}")
+        result.append(item.name.upper(), style=f"bold {FG}")
+        result.append("   ")
+        result.append(operator_status.display_label, style=bold_status_style)
+        result.append("\n")
+
+        # ── secondary line: short context (task, activity, reason) ──
+        # Picks the most operator-relevant string in priority order so
+        # the banner subtitle answers "what is this agent doing right
+        # now?" without forcing the operator to read further.
+        subtitle = _detail_subtitle(item, operator_status)
+        if subtitle:
+            result.append(f" {bar_glyph} ", style=f"bold {plain_status_style}")
+            result.append(subtitle, style=FG1)
+            result.append("\n")
+
+        # ── task line: high-level work the agent was assigned ──
+        # Operators want a separate "Task:" field so they can read
+        # "what is this agent supposed to be doing" independent of
+        # the live tool activity. Only render when the title is
+        # genuinely distinct from the subtitle (which usually carries
+        # the live activity), otherwise we duplicate the same text.
+        task_title = (item.task_title or "").strip()
+        if task_title and task_title != subtitle:
+            result.append(f" {bar_glyph} ", style=f"bold {plain_status_style}")
+            result.append("Task: ", style=FG4)
+            result.append(_truncate(task_title, 64), style=FG3)
+            result.append("\n")
+
         usage_badges = _usage_badges(item)
         if usage_badges:
-            result.append(item_separator(preferences), style=FG4)
+            result.append(f" {bar_glyph} ", style=f"bold {plain_status_style}")
             _append_badges(result, usage_badges, separator=item_separator(preferences))
-        # The task_title is the high-level work ("Investigating cache
-        # bug"). Only render it on the header when it genuinely differs
-        # from the tool-level activity we show below — otherwise we
-        # duplicate the same text twice on consecutive lines.
-        if item.task_title and item.task_title != item.current_activity:
-            result.append(f"  {item.task_title}", style=FG3)
+            result.append("\n")
         result.append("\n")
 
         # ── activity line (pulled from former ActivityPanel) ──
+        # Only show when activity differs from the banner subtitle and
+        # the task title above so we don't duplicate the same string
+        # in three consecutive lines.
         activity = item.current_activity or operator_status.reason
-        if activity:
+        if activity and activity != subtitle and activity != task_title:
             result.append("  ")
             result.append(
                 f"{ui_symbol('detail-arrow', preferences=preferences)} ",
@@ -1142,7 +1211,12 @@ class AgentDetailPanel(Static):
         # confirmation", "merge conflict", "runaway cost"). Surface the
         # reason on its own line so the user can act without scrolling
         # through the recent events list.
-        if item.needs_attention and item.attention_reason and item.attention_reason != activity:
+        if (
+            item.needs_attention
+            and item.attention_reason
+            and item.attention_reason != activity
+            and item.attention_reason != subtitle
+        ):
             result.append("  ")
             result.append("! ", style=f"bold {status_style}")
             result.append(item.attention_reason, style=status_style)

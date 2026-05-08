@@ -360,6 +360,13 @@ class _Harness(App[None]):
         self.last_sync_report = None
         self.last_dashboard_state: DashboardState | None = None
         self.selected_agent_id: str | None = None
+        # Mirrors ``MuxdeckApp.sync_attempted``. Defaulting to True
+        # means the test harness skips the new "wait for first sync"
+        # gate in ``DashboardScreen.refresh_data`` and falls through
+        # to the local build path the existing tests exercise. The
+        # cold-start gating logic is covered by a dedicated test that
+        # explicitly sets this flag to ``False``.
+        self.sync_attempted: bool = True
 
     def compose(self) -> ComposeResult:
         return iter(())
@@ -2772,6 +2779,110 @@ class DashboardLiveTailTests(unittest.TestCase):
             assert screen._live_tail_timer is not None
 
         self._run(runtime, body, seed_state=st)
+
+
+class DashboardScreenColdStartGateTests(unittest.TestCase):
+    """Cold-start refresh defers local build until the synchronizer reports.
+
+    The previous behaviour ran ``dashboard.build_state`` against the
+    SQLite store on first paint, exposing the operator to a moment of
+    stale agent status (e.g. an agent that's actually completed shown
+    as "active") before the sync worker delivered fresh truth ~1s
+    later. The new gate keeps the loading overlay up until
+    ``MuxdeckApp.sync_attempted`` flips True so first-paint state is
+    always authoritative.
+    """
+
+    def _build_runtime(
+        self,
+        *,
+        synchronizer: object | None,
+    ) -> MuxdeckRuntime:
+        attrs: dict[str, Any] = {
+            "config": _MinimalConfig(),
+            "dashboard": _RecordingDashboardCtrl(state_to_return=_state()),
+            "sync_dashboard": _RecordingDashboardCtrl(state_to_return=_state()),
+            "agents": _RecordingAgents(),
+            "actions": None,
+            "pane_stream": None,
+            "session_resolver": None,
+            "tmux": None,
+            "store": object(),
+            "sync_store": None,
+            "synchronizer": synchronizer,
+            "attention": type(
+                "_FakeAttention",
+                (),
+                {"observe_dashboard_state": lambda self, state: ()},
+            )(),
+        }
+        return cast(MuxdeckRuntime, type("_FakeRuntime", (), attrs)())
+
+    def _run(
+        self,
+        runtime: MuxdeckRuntime,
+        body: ScreenBody,
+        *,
+        sync_attempted: bool,
+    ) -> tuple[_Harness, DashboardScreen]:
+        captured: dict[str, Any] = {}
+
+        async def scenario() -> None:
+            app = _Harness(runtime)
+            app.sync_attempted = sync_attempted
+            captured["app"] = app
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = DashboardScreen(runtime)
+                screen._skip_next_show_refresh = True
+                await app.push_screen(screen)
+                await pilot.pause()  # type: ignore[attr-defined]
+                captured["screen"] = screen
+                await body(app, screen, pilot)
+
+        asyncio.run(scenario())
+        return captured["app"], captured["screen"]
+
+    def test_first_load_with_pending_synchronizer_defers_local_build(self) -> None:
+        """When sync hasn't reported yet, local build is suppressed."""
+        runtime = self._build_runtime(synchronizer=object())
+
+        async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
+            screen._state = None  # simulate cold open
+            screen.refresh_data()
+            await pilot.pause()  # type: ignore[attr-defined]
+            # Status reflects the deferred-build copy and no controller
+            # call was issued.
+            assert "syncing fleet" in (screen._status or "").lower()
+            calls = cast(_RecordingDashboardCtrl, runtime.sync_dashboard).build_calls
+            assert calls == 0, "local build should be skipped on cold open"
+
+        self._run(runtime, body, sync_attempted=False)
+
+    def test_first_load_after_sync_runs_local_build(self) -> None:
+        """Once the sync worker has reported, the local fallback is allowed."""
+        runtime = self._build_runtime(synchronizer=object())
+
+        async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
+            screen._state = None
+            screen.refresh_data()
+            await pilot.pause()  # type: ignore[attr-defined]
+            calls = cast(_RecordingDashboardCtrl, runtime.sync_dashboard).build_calls
+            assert calls >= 1, "local build should run once sync_attempted is set"
+
+        self._run(runtime, body, sync_attempted=True)
+
+    def test_first_load_without_synchronizer_runs_local_build(self) -> None:
+        """No synchronizer -> no waiting; local build runs immediately."""
+        runtime = self._build_runtime(synchronizer=None)
+
+        async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
+            screen._state = None
+            screen.refresh_data()
+            await pilot.pause()  # type: ignore[attr-defined]
+            calls = cast(_RecordingDashboardCtrl, runtime.sync_dashboard).build_calls
+            assert calls >= 1, "local build should run when no synchronizer is wired"
+
+        self._run(runtime, body, sync_attempted=False)
 
 
 if __name__ == "__main__":

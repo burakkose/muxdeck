@@ -190,16 +190,33 @@ class DashboardScreen(ShellScreen):
             self.query_one(AlertPanel),
         )
         first_load = self._state is None
+        # Cold open: when the synchronizer is configured but hasn't
+        # delivered a sync result yet, the SQLite store may still hold
+        # last-session agents whose status (active/working/idle) no
+        # longer reflects the running tmux fleet. The previous
+        # behaviour kicked off a local build anyway and painted that
+        # stale state for ~1 second before the sync result arrived,
+        # which made the dashboard show wrong status on first paint.
+        # Defer the local build so the loading overlay stays up until
+        # the sync worker delivers ``last_dashboard_state`` via
+        # ``_refresh_screen_widgets``. The synchronizer always runs
+        # ``call_after_refresh`` from app.on_mount, so we know it's
+        # already in flight by the time we get here.
+        #
+        # ``sync_attempted`` flips True after the first sync finishes
+        # (success or failure). If the sync errored we still fall
+        # back to the local build so the dashboard isn't stuck on
+        # "syncing fleet…" forever.
+        synchronizer_pending = (
+            first_load
+            and not self.muxdeck_app.sync_attempted
+            and getattr(self.runtime, "synchronizer", None) is not None
+        )
         if first_load:
-            # Show a loading overlay immediately. We still kick off a
-            # local build below — even if the synchronizer hasn't run
-            # yet, the on-disk store typically has agents from the prior
-            # session (or the previous sync cycle). Painting that data
-            # in ~50ms beats waiting 5+ seconds for synchronizer.refresh
-            # (tmux discovery + monitoring + worktree sync) to deliver
-            # fresh state on a "loading…" screen.
-            self.set_status("loading dashboard…")
+            self.set_status("syncing fleet…" if synchronizer_pending else "loading dashboard…")
             self.begin_loading(*loading_widgets)
+        if synchronizer_pending:
+            return
 
         # Snapshot inputs so the worker doesn't read mutable UI state.
         # ``sync_dashboard`` uses the thread-safe SQLite connection;

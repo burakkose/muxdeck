@@ -629,7 +629,7 @@ class DashboardController:
         agents: Sequence[DashboardAgentListItemView],
         sort: DashboardSort,
     ) -> tuple[DashboardAgentListItemView, ...]:
-        key_lookup: dict[
+        secondary_lookup: dict[
             DashboardSortField,
             Callable[[DashboardAgentListItemView], tuple[Any, ...]],
         ] = {
@@ -640,8 +640,31 @@ class DashboardController:
             "idle_seconds": lambda item: (item.idle_seconds, item.last_seen_at, item.agent_id),
             "started_at": lambda item: (item.started_at, item.last_seen_at, item.agent_id),
         }
-        sorter = key_lookup[sort.field]
-        return tuple(sorted(agents, key=sorter, reverse=sort.descending))
+        secondary = secondary_lookup[sort.field]
+
+        # Severity-first sort. Operators reported the previous "pure
+        # last_seen / pure status" sort buried failed/blocked/waiting
+        # agents below quietly-working ones, so the eye had to scan
+        # the whole list to find what needed attention. Layer
+        # severity_rank as the primary key so urgent agents always
+        # bubble to the top, with the user-chosen sort field as the
+        # tiebreaker among rows that share severity. Severity does
+        # not invert with ``descending`` — danger always sorts to top.
+        def _key(item: DashboardAgentListItemView) -> tuple[Any, ...]:
+            severity = _resolve_severity_rank(item)
+            tail = secondary(item)
+            if sort.descending:
+                # Negate the secondary tuple by reversing the natural
+                # ordering for the descending path. We can't simply
+                # ``reverse=True`` the whole sort because severity
+                # must always sort ascending (lowest rank == top).
+                # Wrap each comparable in a small sentinel that
+                # inverts comparison so we can still use a single
+                # ``sorted`` call.
+                tail = tuple(_ReverseKey(value) for value in tail)
+            return (severity, *tail)
+
+        return tuple(sorted(agents, key=_key))
 
     def _select_agent(
         self,
@@ -1038,6 +1061,54 @@ def _path_name(value: str | None) -> str | None:
         return None
     path_name = Path(value).name
     return path_name or value
+
+
+def _resolve_severity_rank(item: DashboardAgentListItemView) -> int:
+    """Sort key — lower means more urgent, sorts first.
+
+    Reads the item's ``operator_status`` when available so the rank
+    matches the badge the operator sees on the row. Falls back to a
+    minimal recompute when the item was constructed without an
+    operator_status (older test fixtures), which still yields a
+    reasonable severity ordering rather than dumping every legacy
+    item into the same bucket.
+    """
+    operator_status = item.operator_status
+    if operator_status is None:
+        operator_status = describe_operator_status(
+            agent_status=item.status,
+            needs_attention=item.needs_attention,
+            attention_reason=item.attention_reason,
+            idle_seconds=item.idle_seconds,
+            is_potentially_stuck=item.is_potentially_stuck,
+            task_title=item.task_title,
+            current_activity=item.current_activity,
+        )
+    return operator_status.severity_rank
+
+
+@dataclass(frozen=True, slots=True)
+class _ReverseKey:
+    """Comparable wrapper that reverses ordering for sorted() calls.
+
+    Lets us mix ascending severity with a descending secondary key
+    inside a single ``sorted`` invocation. Without this we would have
+    to materialize and re-stable-sort, which is both slower and
+    fragile across Python implementations.
+    """
+
+    inner: Any
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, _ReverseKey):
+            return NotImplemented
+        return bool(self.inner > other.inner)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _ReverseKey) and self.inner == other.inner
+
+    def __hash__(self) -> int:
+        return hash(("_ReverseKey", self.inner))
 
 
 def _resolved_token_total(

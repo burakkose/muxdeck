@@ -304,7 +304,11 @@ class TestAgentListTable:
         activity_cells = table.columns[3]._cells
         status_cells = table.columns[4]._cells
         assert "waiting for operator confirmation" in str(activity_cells[0])
-        assert "needs input" in str(status_cells[0]).lower()
+        # Canonical uppercase status vocabulary — operator-facing
+        # labels are now WAITING / NEEDS REVIEW / RUNNING / FAILED /
+        # STALE / DONE so the dashboard never mixes "needs input" and
+        # "waiting" for the same kind on different surfaces.
+        assert "waiting" in str(status_cells[0]).lower()
 
 
 class TestDashboardPanels:

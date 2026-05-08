@@ -293,3 +293,80 @@ def test_failure_reason_for_dead_status() -> None:
 
     reason = _failure_reason(AgentStatus.DEAD)
     assert "pane" in reason.lower() or "exit" in reason.lower()
+
+
+def test_display_label_collapses_to_canonical_vocabulary() -> None:
+    """display_label maps each kind to one of the operator-facing labels.
+
+    Per the UX hierarchy round 5 redesign, the agent list and detail
+    banner expose six canonical buckets (RUNNING, WAITING,
+    NEEDS REVIEW, STALE, FAILED, DONE). STARTING and BLOCKED are kept
+    distinct internally but render via the same uppercase label model.
+    """
+    from muxdeck.services.operator_status_service import OperatorStatus
+
+    expectations = {
+        OperatorStatusKind.STARTING: "STARTING",
+        OperatorStatusKind.WORKING: "RUNNING",
+        OperatorStatusKind.WAITING_INPUT: "WAITING",
+        OperatorStatusKind.BLOCKED: "BLOCKED",
+        OperatorStatusKind.REVIEW_READY: "NEEDS REVIEW",
+        OperatorStatusKind.FAILED: "FAILED",
+        OperatorStatusKind.STALE: "STALE",
+        OperatorStatusKind.COMPLETED: "DONE",
+        OperatorStatusKind.TERMINATED: "DONE",
+    }
+    for kind, expected in expectations.items():
+        status = OperatorStatus(
+            kind=kind,
+            label=str(kind.value),
+            headline=str(kind.value),
+            reason="",
+            tone="info",
+            needs_attention=False,
+        )
+        assert status.display_label == expected, (kind, status.display_label)
+
+
+def test_severity_rank_orders_attention_buckets_first() -> None:
+    """severity_rank places attention/danger buckets ahead of normal work.
+
+    The dashboard sort uses this rank as the primary key so a FAILED or
+    BLOCKED row always bubbles to the top regardless of the user's
+    chosen secondary sort. WAITING comes next because it blocks on the
+    operator; NEEDS REVIEW follows; STALE then RUNNING/STARTING; DONE
+    sinks last.
+    """
+    from muxdeck.services.operator_status_service import OperatorStatus
+
+    def _rank(kind: OperatorStatusKind) -> int:
+        return OperatorStatus(
+            kind=kind,
+            label=str(kind.value),
+            headline=str(kind.value),
+            reason="",
+            tone="info",
+            needs_attention=False,
+        ).severity_rank
+
+    ordering = [
+        OperatorStatusKind.FAILED,
+        OperatorStatusKind.BLOCKED,
+        OperatorStatusKind.WAITING_INPUT,
+        OperatorStatusKind.REVIEW_READY,
+        OperatorStatusKind.STALE,
+        OperatorStatusKind.WORKING,
+        OperatorStatusKind.STARTING,
+        OperatorStatusKind.COMPLETED,
+        OperatorStatusKind.TERMINATED,
+    ]
+    ranks = [_rank(kind) for kind in ordering]
+    # FAILED and BLOCKED share the top tier, COMPLETED and TERMINATED
+    # share the bottom; everything else strictly ascends through the
+    # ordering above.
+    assert ranks[0] == ranks[1], "FAILED and BLOCKED share the top severity tier"
+    assert ranks[-1] == ranks[-2], "COMPLETED and TERMINATED share the lowest tier"
+    from itertools import pairwise
+
+    for left, right in pairwise(ranks):
+        assert left <= right, f"severity rank not monotonic: {ranks}"

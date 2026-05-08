@@ -187,6 +187,10 @@ class MuxdeckApp(App[None]):
         self.selected_session_id: str | None = None
         self.last_sync_report: RuntimeSyncReport | None = None
         self.last_dashboard_state: DashboardState | None = None
+        # Flips to True after the first sync attempt finishes (success
+        # *or* failure). Screens use it to decide whether to wait on a
+        # pending sync or fall back to a local build of stale data.
+        self.sync_attempted: bool = False
         self._sync_in_progress: bool = False
         self._refresh_pending: bool = False
         self._manual_refresh: bool = False
@@ -526,6 +530,13 @@ class MuxdeckApp(App[None]):
             return
         if event.state in (WorkerState.SUCCESS, WorkerState.ERROR, WorkerState.CANCELLED):
             self._sync_in_progress = False
+            # Mark the first sync attempt as complete so the dashboard
+            # stops waiting on it. Even an errored/cancelled sync
+            # signals that the synchronizer is no longer about to
+            # deliver fresh data, and the dashboard should fall back
+            # to whatever the local SQLite store has rather than
+            # showing "syncing fleet…" forever.
+            self.sync_attempted = True
             manual = self._manual_refresh
             self._manual_refresh = False
             if event.state == WorkerState.SUCCESS and event.worker.result is not None:

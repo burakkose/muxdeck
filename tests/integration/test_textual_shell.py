@@ -1274,7 +1274,10 @@ async def test_textual_shell_navigation_and_updates() -> None:
             await pilot.pause()
             detail_text = rendered_text(app.screen.query_one("#dashboard-detail"))
             status_text = rendered_text(app.screen.query_one("#dashboard-status-bar")).lower()
-            assert "Planner" in detail_text
+            # Detail-panel banner now renders the agent identity in
+            # all caps (operator-facing banner is the dominant header
+            # — see operator_status_service display_label notes).
+            assert "PLANNER" in detail_text
             # Dashboard overhaul (c30552f) inlined the former ActivityPanel
             # into the agent detail render and removed the standalone
             # FleetHealthPanel from the dashboard (it now lives on the
@@ -1430,7 +1433,7 @@ async def test_dashboard_live_viewer_and_move_window_use_single_pane_flow() -> N
 
             await pilot.press("escape")
             await pilot.pause()
-            assert "Planner" in rendered_text(app.screen.query_one("#dashboard-detail"))
+            assert "PLANNER" in rendered_text(app.screen.query_one("#dashboard-detail"))
 
             await pilot.press("W")
             await pilot.pause()
@@ -1610,7 +1613,7 @@ async def test_copy_details_shortcuts_copy_current_selection(
             await pilot.pause()
             await pilot.press("y")
             await pilot.pause()
-            assert "Reviewer" in copied[-1]
+            assert "REVIEWER" in copied[-1]
             assert "waiting for operator" in copied[-1]
             assert "task/reviewer" in copied[-1]
             assert (

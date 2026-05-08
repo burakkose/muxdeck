@@ -21,6 +21,47 @@ class OperatorStatusKind(StrEnum):
     COMPLETED = "completed"
 
 
+# Canonical uppercase labels operators see at a glance.
+#
+# The dashboard drowns operators in muddy terminology ("active" vs
+# "working" vs "doing" vs "reading results") that doesn't tell them
+# whether something needs their attention. This mapping collapses the
+# nine-state internal model into the six-bucket vocabulary the
+# operator actually cares about (RUNNING / WAITING / NEEDS REVIEW /
+# STALE / FAILED / DONE), with STARTING and BLOCKED kept as named
+# transient states that still render distinctly. Use ``display_label``
+# (or the ``label`` field) on rendering paths; the lowercase ``label``
+# field is preserved in the dataclass for backwards compatibility with
+# log/debug formatting.
+_DISPLAY_LABELS: dict[OperatorStatusKind, str] = {
+    OperatorStatusKind.STARTING: "STARTING",
+    OperatorStatusKind.WORKING: "RUNNING",
+    OperatorStatusKind.WAITING_INPUT: "WAITING",
+    OperatorStatusKind.BLOCKED: "BLOCKED",
+    OperatorStatusKind.REVIEW_READY: "NEEDS REVIEW",
+    OperatorStatusKind.FAILED: "FAILED",
+    OperatorStatusKind.TERMINATED: "DONE",
+    OperatorStatusKind.STALE: "STALE",
+    OperatorStatusKind.COMPLETED: "DONE",
+}
+
+# Lower rank == more urgent. The dashboard sorts by this primary key
+# so the operator's eye lands on FAILED/BLOCKED/WAITING/NEEDS REVIEW
+# before scrolling past quietly-working agents. STARTING ranks below
+# WORKING because a launching agent is interesting but not actionable.
+_SEVERITY_RANKS: dict[OperatorStatusKind, int] = {
+    OperatorStatusKind.FAILED: 0,
+    OperatorStatusKind.BLOCKED: 0,
+    OperatorStatusKind.WAITING_INPUT: 1,
+    OperatorStatusKind.REVIEW_READY: 2,
+    OperatorStatusKind.STALE: 3,
+    OperatorStatusKind.WORKING: 4,
+    OperatorStatusKind.STARTING: 5,
+    OperatorStatusKind.TERMINATED: 6,
+    OperatorStatusKind.COMPLETED: 6,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class OperatorStatus:
     kind: OperatorStatusKind
@@ -30,6 +71,29 @@ class OperatorStatus:
     tone: OperatorStatusTone
     needs_attention: bool
     is_critical: bool = False
+
+    @property
+    def display_label(self) -> str:
+        """Canonical uppercase label for prominent header rendering.
+
+        Renders the canonical bucket name (RUNNING / WAITING / NEEDS
+        REVIEW / STALE / FAILED / DONE plus STARTING and BLOCKED).
+        Use this in any place where the operator needs to read the
+        agent's state at a glance — list rows, detail headers,
+        attention badges. The lowercase ``label`` field is retained
+        for compactness in log lines and historical breadcrumbs.
+        """
+        return _DISPLAY_LABELS[self.kind]
+
+    @property
+    def severity_rank(self) -> int:
+        """Sort key for "danger first" dashboard ordering.
+
+        Lower rank == more urgent. Use as a primary sort key so the
+        agents needing intervention (failed, blocked, waiting) bubble
+        to the top regardless of secondary chronological sort.
+        """
+        return _SEVERITY_RANKS[self.kind]
 
 
 def default_operator_status() -> OperatorStatus:

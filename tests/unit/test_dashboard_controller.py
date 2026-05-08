@@ -814,6 +814,93 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertEqual(len(alerts), 1)
         self.assertEqual(alerts[0].agent_id, "agent-1")
 
+    def test_severity_sort_floats_attention_agents_above_calm_ones(self) -> None:
+        """Severity rank is the primary sort key; secondary direction respected.
+
+        The UX hierarchy redesign promised that agents needing
+        attention (WAITING_INPUT, REVIEW_READY, FAILED, BLOCKED, STALE)
+        rise to the top of the list regardless of the operator's
+        chosen secondary sort. This test mixes a busy "running" agent,
+        an attention "waiting for input" agent, and a calm "completed"
+        agent, then asserts the waiting agent is first under both
+        ascending and descending name sort.
+        """
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        store.agents["aaa-running"] = Agent(
+            id="aaa-running",
+            name="aaa-running",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Task",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_activity_at=observed_at,
+            last_seen_at=observed_at,
+        )
+        store.agents["zzz-waiting"] = Agent(
+            id="zzz-waiting",
+            name="zzz-waiting",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@2",
+            tmux_pane_id="%2",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Task",
+            status=AgentStatus.WAITING_INPUT,
+            started_at=observed_at,
+            last_activity_at=observed_at,
+            last_seen_at=observed_at,
+            needs_attention=True,
+            attention_reason="waiting for input",
+        )
+        store.agents["mmm-running"] = Agent(
+            id="mmm-running",
+            name="mmm-running",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@3",
+            tmux_pane_id="%3",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Task",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_activity_at=observed_at,
+            last_seen_at=observed_at,
+        )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        ascending = controller.build_state(
+            sort=DashboardSort(field="name", descending=False),
+        )
+        descending = controller.build_state(
+            sort=DashboardSort(field="name", descending=True),
+        )
+
+        ascending_ids = [item.agent_id for item in ascending.agents]
+        descending_ids = [item.agent_id for item in descending.agents]
+
+        # Waiting agent is first regardless of secondary sort.
+        self.assertEqual(ascending_ids[0], "zzz-waiting")
+        self.assertEqual(descending_ids[0], "zzz-waiting")
+        # Two RUNNING agents share a severity tier, so the secondary
+        # name sort decides their order — and the descending flag is
+        # honoured.
+        self.assertLess(
+            ascending_ids.index("aaa-running"),
+            ascending_ids.index("mmm-running"),
+        )
+        self.assertLess(
+            descending_ids.index("mmm-running"),
+            descending_ids.index("aaa-running"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
