@@ -22,7 +22,9 @@ ring file.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -34,6 +36,7 @@ from textual.widgets import Label, TextArea
 
 from muxdeck import theme
 from muxdeck.adapters.pane_stream import (
+    KeyTranslation,
     PaneRingReader,
     PaneStreamAdapter,
     ring_file_for_pane,
@@ -48,11 +51,21 @@ if TYPE_CHECKING:
     from muxdeck.app import MuxdeckApp, MuxdeckRuntime
 
 
+_log = logging.getLogger(__name__)
+
+
 # Ring-file polling stays fast for fresh line-oriented output; the
-# snapshot poll is slower and corrects dynamic redraws so the mirror
-# matches the current tmux screen.
+# snapshot poll runs on a worker thread and corrects dynamic redraws
+# (vim, less, status lines) that bypass the line-oriented pipe-pane
+# stream. We poll at 1s rather than 250ms because:
+#
+# * the subprocess fan-out at 4 Hz starves the UI thread on slower
+#   shells (especially WSL ↔ Windows tmux), and
+# * the ring-file drain already reflects fresh line output within
+#   100ms, so the snapshot is purely a correction layer.
 _POLL_INTERVAL_SEC = 0.1
-_SNAPSHOT_SYNC_INTERVAL_SEC = 0.25
+_SNAPSHOT_SYNC_INTERVAL_SEC = 1.0
+_SNAPSHOT_WORKER_GROUP = "compose-snapshot"
 _DEFAULT_EDITOR_HEIGHT = 10
 _MIN_EDITOR_HEIGHT = 7
 _MAX_EDITOR_HEIGHT = 24
@@ -166,6 +179,20 @@ class ComposeWithMirrorScreen(ShellScreen):
         self._capture_error: str | None = None
         self._stream_warning: str | None = None
         self._sync_warning: str | None = None
+        # In-flight asyncio tasks for forwarded keystrokes. We keep
+        # references so the GC doesn't drop them mid-flight and so
+        # tests can deterministically wait for the full keystroke
+        # round-trip via :meth:`_wait_for_pending_sends`.
+        self._send_tasks: set[asyncio.Task[None]] = set()
+        # FIFO lock guarantees keystrokes hit tmux in the order the
+        # operator typed them, even though each ``send_keys`` call
+        # runs on a worker thread off the UI loop.
+        self._send_lock = asyncio.Lock()
+        # ``True`` while a periodic snapshot worker is in flight; we
+        # skip subsequent ticks rather than queueing them so a slow
+        # tmux subprocess can never accumulate a backlog of pending
+        # captures and starve the worker pool.
+        self._snapshot_in_flight = False
 
     @property
     def editor_height(self) -> int:
@@ -272,7 +299,14 @@ class ComposeWithMirrorScreen(ShellScreen):
         except OSError as exc:
             self._stream_warning = f"⚠ live stream unavailable ({exc}); snapshot sync only"
         self.set_interval(_POLL_INTERVAL_SEC, self._drain_ring)
-        self.set_interval(_SNAPSHOT_SYNC_INTERVAL_SEC, self._sync_snapshot)
+        # Snapshot resyncs are corrective ─ they fix dynamic redraws
+        # (vim/less/status lines) that the line-oriented pipe-pane
+        # stream can't represent. The capture itself is a tmux
+        # subprocess that takes 30-100 ms on slower shells; running
+        # it on the UI thread froze the event loop several times a
+        # second. We dispatch each tick to a worker thread instead so
+        # keystrokes, scrolling, and other paints stay snappy.
+        self.set_interval(_SNAPSHOT_SYNC_INTERVAL_SEC, self._tick_snapshot_in_background)
 
     # ── polling ──────────────────────────────────────────────────────
 
@@ -336,6 +370,92 @@ class ComposeWithMirrorScreen(ShellScreen):
         self.begin_loading(viewer)
         self._sync_snapshot(force=True)
 
+    def _tick_snapshot_in_background(self) -> None:
+        """Periodic snapshot resync — runs the tmux capture on a worker.
+
+        Replaces the original "call ``_sync_snapshot`` on the UI thread
+        every 250 ms" loop, which forked a tmux subprocess on every
+        tick and froze the event loop for the duration of the capture.
+        We now fan the capture out to a worker thread and only the
+        cheap ``viewer.set_snapshot`` / ``viewer.replace_tail`` paths
+        run on the UI thread when the result lands.
+        """
+        if self._adapter is None:
+            return
+        if self._snapshot_in_flight:
+            # Another tick is still mid-capture. Don't queue another
+            # — let it complete; the next periodic tick will pick up
+            # any drift. Queueing would let a slow capture starve
+            # the worker pool indefinitely on a busy system.
+            return
+        self._snapshot_in_flight = True
+        adapter = self._adapter
+        pane_id = self._pane_id
+
+        def _capture() -> tuple[str | None, BaseException | None]:
+            try:
+                return adapter.capture_snapshot(pane_id), None
+            except (TmuxCommandError, OSError) as exc:
+                return None, exc
+
+        def _worker() -> None:
+            snapshot, error = _capture()
+            self.app.call_from_thread(self._apply_background_snapshot, snapshot, error)
+
+        self.run_worker(
+            _worker,
+            thread=True,
+            exclusive=True,
+            group=_SNAPSHOT_WORKER_GROUP,
+        )
+
+    def _apply_background_snapshot(
+        self,
+        snapshot: str | None,
+        error: BaseException | None,
+    ) -> None:
+        """Apply a worker-fetched snapshot on the UI thread.
+
+        Mirrors the body of :meth:`_sync_snapshot` minus the capture
+        call, so the manual ``r`` resync (which still calls
+        ``_sync_snapshot(force=True)`` directly) keeps its
+        synchronous semantics for tests and the existing wait-for-r
+        UX guarantee.
+        """
+        self._snapshot_in_flight = False
+        if not self.is_mounted:
+            return
+        try:
+            viewer = self.query_one(LivePaneViewer)
+        except Exception:
+            return
+        if error is not None:
+            if isinstance(error, TmuxCommandError):
+                detail = error.stderr or "tmux error"
+            else:
+                detail = str(error)
+            self._sync_warning = f"⚠ snapshot sync failed: {detail}"
+            self._refresh_guidance(update_status=True)
+            return
+        if snapshot is None:
+            return
+        had_warning = self._capture_error is not None or self._sync_warning is not None
+        self._capture_error = None
+        self._sync_warning = None
+        if snapshot != self._last_snapshot:
+            if viewer.matches_snapshot_tail(snapshot):
+                self._last_snapshot = snapshot
+            elif viewer.has_content and snapshot:
+                viewer.replace_tail(snapshot)
+                self._last_snapshot = snapshot
+            else:
+                viewer.set_snapshot(snapshot)
+                self._last_snapshot = snapshot
+        if not self._loading_cleared:
+            self.end_loading(viewer)
+            self._loading_cleared = True
+        self._refresh_guidance(update_status=had_warning)
+
     # ── key handling ─────────────────────────────────────────────────
 
     async def on_key(self, event: events.Key) -> None:
@@ -386,8 +506,36 @@ class ComposeWithMirrorScreen(ShellScreen):
         if translation is None:
             self.set_status(f"live input ignores {event.key!r} · esc stops live input")
             return True
-        self._adapter.send_keys(self._pane_id, translation)
+        # Forward to tmux without blocking the UI thread. ``send_keys``
+        # is a synchronous tmux subprocess call (~30-100 ms on slower
+        # shells); waiting for it inline made every keystroke feel
+        # laggy. The asyncio.Lock guarantees keystrokes still arrive
+        # at tmux in the order the operator typed them.
+        task = asyncio.create_task(self._send_translation_async(translation))
+        self._send_tasks.add(task)
+        task.add_done_callback(self._send_tasks.discard)
         return True
+
+    async def _send_translation_async(self, translation: KeyTranslation) -> None:
+        adapter = self._adapter
+        if adapter is None:
+            return
+        async with self._send_lock:
+            try:
+                await asyncio.to_thread(adapter.send_keys, self._pane_id, translation)
+            except (TmuxCommandError, OSError):
+                _log.exception("compose: send_keys failed for pane %s", self._pane_id)
+
+    async def _wait_for_pending_sends(self) -> None:
+        """Block until all queued keystroke forwards have completed.
+
+        Test helper. Production code never needs to wait — fire-and-
+        forget is the whole point of moving the call off the event
+        loop.
+        """
+        pending = tuple(self._send_tasks)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     def _swap_focus(self, *, forward: bool) -> None:
         del forward  # two-widget cycle — direction doesn't matter

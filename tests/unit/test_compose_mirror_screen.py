@@ -1640,6 +1640,200 @@ class ComposeMirrorTeardownTests(unittest.TestCase):
         assert ok is True
 
 
+class ComposeMirrorAsyncPerfTests(unittest.TestCase):
+    """Regression tests for the lazy/off-thread compose-mirror paths."""
+
+    def test_live_input_keystroke_returns_before_tmux_send(self) -> None:
+        """``_handle_live_input_key`` must not block on the tmux subprocess.
+
+        Before the perf fix, every keystroke ran ``send_keys``
+        synchronously on the UI thread. A slow tmux call would freeze
+        the event loop until it returned. The fix dispatches the send
+        through an asyncio task; the handler returns immediately and
+        the lock-protected task drives the actual subprocess.
+        """
+
+        async def scenario(tmp: Path) -> tuple[bool, list[tuple[str, tuple[str, ...], bool]]]:
+            recorded: list[tuple[str, tuple[str, ...], bool]] = []
+
+            class _SlowTmux(_FakeTmuxStream):
+                def send_keys(  # type: ignore[override]
+                    self,
+                    target_pane: str,
+                    keys: Sequence[str],
+                    /,
+                    *,
+                    literal: bool = False,
+                    append_enter: bool = False,
+                ) -> None:
+                    del append_enter
+                    # Simulate a slow tmux subprocess. If
+                    # ``_handle_live_input_key`` were still called
+                    # synchronously this delay would block the
+                    # handler's return; with the fix the handler
+                    # returns first and only the worker thread waits.
+                    import threading
+
+                    threading.Event().wait(0.05)
+                    recorded.append((target_pane, tuple(keys), literal))
+
+            tmux = _SlowTmux()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+            app = _MuxdeckHarness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%99",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                # Enter live-input mode.
+                mirror = app.screen.query_one(LivePaneViewer)
+                mirror.focus()
+                await pilot.pause()
+                screen._set_mirror_input_mode(True)
+                from textual import events as textual_events
+
+                event = textual_events.Key(key="x", character="x")
+                # The handler must return before the (slow) tmux send
+                # completes. We assert this by observing that the
+                # ``recorded`` list is empty immediately after the
+                # synchronous handler call returns.
+                screen._handle_live_input_key(event)
+                handler_returned_before_send = not recorded
+                # Now drain the pending sends and observe the result.
+                await screen._wait_for_pending_sends()
+                return handler_returned_before_send, recorded
+
+        with tempfile.TemporaryDirectory() as tmp:
+            returned_early, sent = asyncio.run(scenario(Path(tmp)))
+
+        assert returned_early is True
+        assert sent == [("%99", ("x",), True)]
+
+    def test_rapid_keystrokes_arrive_at_tmux_in_typed_order(self) -> None:
+        """Asyncio.Lock guarantees keystrokes hit tmux in submission order."""
+
+        async def scenario(tmp: Path) -> list[tuple[str, tuple[str, ...], bool]]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+            app = _MuxdeckHarness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%17",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                mirror = app.screen.query_one(LivePaneViewer)
+                mirror.focus()
+                screen._set_mirror_input_mode(True)
+                from textual import events as textual_events
+
+                # Submit a flurry of keystrokes synchronously, mimicking
+                # a fast typist. Each submission appends a task; the
+                # FIFO asyncio.Lock must serialise execution.
+                for ch in "abcdef":
+                    screen._handle_live_input_key(textual_events.Key(key=ch, character=ch))
+                await screen._wait_for_pending_sends()
+                return tmux.sent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sent = asyncio.run(scenario(Path(tmp)))
+
+        assert sent == [
+            ("%17", ("a",), True),
+            ("%17", ("b",), True),
+            ("%17", ("c",), True),
+            ("%17", ("d",), True),
+            ("%17", ("e",), True),
+            ("%17", ("f",), True),
+        ]
+
+    def test_background_snapshot_tick_skips_when_already_in_flight(self) -> None:
+        """Don't queue overlapping snapshot workers while one is running."""
+
+        async def scenario(tmp: Path) -> tuple[int, int]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+            app = _MuxdeckHarness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%41",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                # Pretend a snapshot worker is already running. A
+                # second tick must drop instead of dispatching a new
+                # worker — the next periodic tick will catch up once
+                # the in-flight one returns.
+                screen._snapshot_in_flight = True
+                snapshot_calls_before = len(tmux.captures)
+                screen._tick_snapshot_in_background()
+                await pilot.pause()
+                snapshot_calls_after = len(tmux.captures)
+                return snapshot_calls_before, snapshot_calls_after
+
+        with tempfile.TemporaryDirectory() as tmp:
+            before, after = asyncio.run(scenario(Path(tmp)))
+
+        # Mount produced exactly one capture (seed); the skipped tick
+        # must not have added another.
+        assert before == after
+
+    def test_background_snapshot_apply_records_tmux_error(self) -> None:
+        """Errors from the worker capture surface as a sync warning."""
+
+        async def scenario(tmp: Path) -> str | None:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+            app = _MuxdeckHarness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%42",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._apply_background_snapshot(
+                    None,
+                    TmuxCommandError(
+                        "tmux capture-pane",
+                        exit_code=1,
+                        stderr="no such pane",
+                        stdout="",
+                    ),
+                )
+                return screen._sync_warning
+
+        with tempfile.TemporaryDirectory() as tmp:
+            warning = asyncio.run(scenario(Path(tmp)))
+
+        assert warning is not None
+        assert "no such pane" in warning
+
+
 # Mark intentionally retained references to avoid unused-import errors
 # from ruff in case future tests don't reach them.
 _ = (Label, patch)
