@@ -18,21 +18,28 @@ from muxdeck.controllers import (
     ReplayTranscriptEntryView,
 )
 from muxdeck.theme import (
-    AQUA,
     BLUE,
     FG,
     FG1,
+    FG2,
+    FG3,
     FG4,
     GREEN,
     ORANGE,
-    PURPLE,
     SEVERITY_ERROR,
     YELLOW,
 )
 from muxdeck.ui_preferences import UiDensity, UiPreferences, resolve_ui_preferences
 from muxdeck.widgets.common import item_separator, pipe_separator, ui_symbol
 
-_AGENT_BADGE_PALETTE: tuple[str, ...] = (BLUE, GREEN, ORANGE, AQUA, YELLOW, PURPLE)
+# Agent badges in the replay timeline used to rotate through six
+# bright accents (BLUE, GREEN, ORANGE, AQUA, YELLOW, PURPLE) which
+# made every multi-agent recording look like a parade. The graphite
+# redesign collapses the palette to three muted variants — that is
+# still enough to visually separate agents at a glance, but keeps
+# colour reserved for actual state. The selected/focused agent is
+# distinguished by its row's raised surface, not by a louder badge.
+_AGENT_BADGE_PALETTE: tuple[str, ...] = (FG, FG1, FG2)
 
 
 def _agent_badge_style(agent_id: str) -> str:
@@ -41,23 +48,22 @@ def _agent_badge_style(agent_id: str) -> str:
 
 
 def _marker_style(kind: str) -> str:
+    # Replay markers used to use seven different accents — agent
+    # switch in PURPLE, file edit in BLUE, tool call in AQUA, etc.
+    # Per the graphite spec only the markers that carry real state
+    # earn colour: errors (red), blocking events (orange), activity
+    # bursts (green), warnings (yellow). The descriptive markers
+    # (boundary, switch, file_edit, tool_call, annotation) collapse
+    # to FG2 so they read as quiet inline labels.
     if kind == "error":
         return f"bold {SEVERITY_ERROR}"
     if kind == "blocking":
         return f"bold {ORANGE}"
     if kind == "activity":
         return f"bold {GREEN}"
-    if kind == "boundary":
-        return f"bold {AQUA}"
-    if kind == "agent_switch":
-        return f"bold {PURPLE}"
-    if kind == "file_edit":
-        return f"bold {BLUE}"
-    if kind == "tool_call":
-        return f"bold {AQUA}"
-    if kind == "annotation":
-        return f"bold {BLUE}"
-    return f"bold {YELLOW}"
+    if kind == "warning":
+        return f"bold {YELLOW}"
+    return f"bold {FG2}"
 
 
 def _append_chip(
@@ -77,7 +83,8 @@ def _append_chip(
 def _append_action(text: Text, key: str, label: str) -> None:
     if text.plain:
         text.append("  ")
-    text.append(key, style=f"bold {AQUA}")
+    # Action shortcut keys carry the primary-action accent.
+    text.append(key, style=f"bold {BLUE}")
     text.append(f" {label}", style=FG)
 
 
@@ -114,14 +121,19 @@ class ReplayFilterBar(Vertical):
         summary.append(f"/{total_entries} entries", style=FG4)
         summary.append(separator, style=FG4)
         summary.append("view ", style=FG4)
-        summary.append(presentation, style=AQUA)
+        # Presentation toggle is metadata, not a primary action.
+        summary.append(presentation, style=FG2)
         summary.append(separator, style=FG4)
         summary.append("follow ", style=FG4)
+        # follow=on does mean "live tail in progress" — that's a real
+        # state worth a touch of GREEN. follow=off stays muted.
         summary.append("on" if follow_latest else "off", style=GREEN if follow_latest else FG4)
         if filter_text.strip():
             summary.append(separator, style=FG4)
             summary.append("query ", style=FG4)
-            summary.append(filter_text.strip(), style=YELLOW)
+            # Query value is metadata. YELLOW used to make every search
+            # look like a warning.
+            summary.append(filter_text.strip(), style=FG2)
         else:
             summary.append(separator, style=FG4)
             summary.append("kind:error agent:planner marker:file_edit", style=FG4)
@@ -434,7 +446,9 @@ class ReplayProgressBar(Static):
         line.append(bar)
         line.append(" ", style=FG4)
         line.append(f"{glyph} ", style=glyph_style)
-        line.append(playback.speed_label, style=AQUA)
+        # Speed label is metadata; only the play/pause glyph carries
+        # state. Keep speed in primary text instead of bold AQUA.
+        line.append(playback.speed_label, style=FG)
         self.update(line)
 
     def _marker_columns(
@@ -473,18 +487,19 @@ class ReplaySummaryPanel(Static):
     ) -> None:
         preferences = resolve_ui_preferences(self)
         line = Text()
-        line.append(" loading replay… ", style=f"bold {AQUA}")
+        # "loading" is a transient prompt — keep it muted.
+        line.append(" loading replay… ", style=f"bold {FG3}")
         line.append(session_label, style=FG1)
         line.append(pipe_separator(preferences), style=FG4)
         line.append("view ", style=FG4)
-        line.append(presentation, style=AQUA)
+        line.append(presentation, style=FG2)
         line.append(pipe_separator(preferences), style=FG4)
         line.append("follow ", style=FG4)
         line.append("on" if follow_latest else "off", style=GREEN if follow_latest else FG4)
         if filter_text.strip():
             line.append(pipe_separator(preferences), style=FG4)
             line.append("filter ", style=FG4)
-            line.append(filter_text.strip(), style=YELLOW)
+            line.append(filter_text.strip(), style=FG2)
         self.update(line)
 
     def set_state(self, state: ReplayStateView | None) -> None:
@@ -493,6 +508,10 @@ class ReplaySummaryPanel(Static):
             self.update(Text("No replayable sessions", style=FG4))
             return
         line = Text()
+        # All summary-bar items are metadata, not state. The graphite
+        # redesign collapses them into the gray family so the bar
+        # reads as one calm strip. ``follow=on`` stays GREEN because
+        # it represents an actual ongoing operation.
         items = (
             ("session", state.session_id, FG1),
             ("agent", state.agent_id, FG1),
@@ -504,9 +523,9 @@ class ReplaySummaryPanel(Static):
             ),
             ("entries", f"{len(state.transcript)}/{state.total_entries}", FG1),
             ("markers", f"{len(state.jump_markers)}/{state.total_markers}", FG1),
-            ("files", str(state.files_touched), BLUE if state.files_touched else FG4),
-            ("tools", str(state.tool_calls), AQUA if state.tool_calls else FG4),
-            ("view", state.presentation, AQUA),
+            ("files", str(state.files_touched), FG2 if state.files_touched else FG4),
+            ("tools", str(state.tool_calls), FG2 if state.tool_calls else FG4),
+            ("view", state.presentation, FG2),
             (
                 "follow",
                 "on" if state.follow_latest else "off",
@@ -521,11 +540,13 @@ class ReplaySummaryPanel(Static):
         if state.filter_text.strip():
             line.append(pipe_separator(preferences), style=FG4)
             line.append("filter ", style=FG4)
-            line.append(state.filter_text.strip(), style=YELLOW)
+            line.append(state.filter_text.strip(), style=FG2)
         if len(state.agent_ids) > 1:
             line.append(pipe_separator(preferences), style=FG4)
             line.append(f"agents {len(state.agent_ids)} ", style=FG4)
-            line.append("(" + ", ".join(state.agent_ids) + ")", style=PURPLE)
+            # Agent ID list is metadata. PURPLE used to stand out for
+            # absolutely no semantic reason.
+            line.append("(" + ", ".join(state.agent_ids) + ")", style=FG2)
         self.update(line)
 
 
@@ -541,12 +562,13 @@ class ReplayActionBar(Static):
     ) -> None:
         preferences = resolve_ui_preferences(self)
         text = Text()
-        text.append(" preparing replay actions… ", style=f"bold {AQUA}")
+        # "preparing" is a transient placeholder.
+        text.append(" preparing replay actions… ", style=f"bold {FG3}")
         text.append(session_label, style=FG1)
         if filter_text.strip():
             text.append(pipe_separator(preferences), style=FG4)
             text.append("filter ", style=FG4)
-            text.append(filter_text.strip(), style=YELLOW)
+            text.append(filter_text.strip(), style=FG2)
         text.append("\n")
         _append_action(text, "/", "filter")
         _append_action(text, "m", "markers")
@@ -580,7 +602,11 @@ class ReplayActionBar(Static):
         marker_counts = self._marker_counts(state)
         text = Text()
         scope = f"{len(state.session_ids)} merged" if len(state.session_ids) > 1 else "single"
-        _append_chip(text, "scope", scope, value_style=FG1, preferences=preferences)
+        # ReplayActionBar chips: only counts that signal real state
+        # (activity = throughput, problems = needs review) keep colour.
+        # Files / notes / export format / scope are descriptive, so
+        # they collapse to the gray family.
+        _append_chip(text, "scope", scope, value_style=FG2, preferences=preferences)
         _append_chip(
             text,
             "activity",
@@ -599,21 +625,21 @@ class ReplayActionBar(Static):
             text,
             "files",
             str(marker_counts["file_edit"]),
-            value_style=BLUE,
+            value_style=FG2,
             preferences=preferences,
         )
         _append_chip(
             text,
             "notes",
             str(marker_counts["annotation"]),
-            value_style=PURPLE,
+            value_style=FG2,
             preferences=preferences,
         )
         _append_chip(
             text,
             "export",
             export_format,
-            value_style=AQUA,
+            value_style=FG2,
             preferences=preferences,
         )
         if state.filter_text.strip():
@@ -621,7 +647,7 @@ class ReplayActionBar(Static):
                 text,
                 "filter",
                 state.filter_text.strip(),
-                value_style=YELLOW,
+                value_style=FG2,
                 preferences=preferences,
             )
         text.append("\n")
@@ -662,7 +688,9 @@ class ReplayDetailPanel(Static):
             self.update(Text("No entry selected", style=FG4))
             return
         header = Text()
-        header.append(f"#{entry.ordinal} ", style=f"bold {BLUE}")
+        # The entry ordinal is metadata. Demote from BLUE so the kind
+        # tag (which carries severity colour) remains the loudest cell.
+        header.append(f"#{entry.ordinal} ", style=f"bold {FG3}")
         header.append(f"{entry.kind} ", style=_marker_style(entry.marker_kind or entry.kind))
         header.append(entry.timestamp, style=FG4)
         if entry.severity:
@@ -690,7 +718,8 @@ class ReplayDiffPanel(Static):
             return
         if diff_text is None or not diff_text.strip():
             evidence = Text()
-            evidence.append(" historical file evidence ", style=f"bold {BLUE}")
+            # Section header in the muted tier.
+            evidence.append(" historical file evidence ", style=f"bold {FG3}")
             evidence.append("\n")
             evidence.append(entry.file_path, style=f"bold {FG}")
             evidence.append("\n")
@@ -734,7 +763,11 @@ class ReplayInsightsPanel(Static):
             return
         insights = state.insights
         body = Text()
-        body.append("Insights\n", style=f"bold {AQUA}")
+        # Section heading uses the muted-label tier; the metrics
+        # themselves stay primary text. Idle-gap durations and the
+        # "Top errors" header keep their state colours (yellow =
+        # idle/warning, orange = needs-attention header).
+        body.append("Insights\n", style=f"bold {FG3}")
         body.append("duration ", style=FG4)
         body.append(_format_duration(insights.total_duration), style=FG1)
         body.append("  longest streak ", style=FG4)

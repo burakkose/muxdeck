@@ -18,7 +18,6 @@ from muxdeck.controllers.attention_controller import (
 from muxdeck.services.operator_status_service import OperatorStatusKind
 from muxdeck.theme import (
     ATTENTION_ROW_BG,
-    BLUE,
     FG,
     FG1,
     FG2,
@@ -39,7 +38,9 @@ _SEVERITY_STYLES: dict[str, str] = {
 
 
 def _append_section_title(text: Text, title: str) -> None:
-    text.append(f" {title}\n", style=f"bold {BLUE}")
+    # Graphite redesign: section titles read as muted-label headings,
+    # not loud BLUE banners. Colour stays reserved for state.
+    text.append(f" {title}\n", style=f"bold {FG3}")
 
 
 def _status_style(kind: OperatorStatusKind) -> str:
@@ -70,7 +71,10 @@ class AttentionSummaryBar(Static):
         content.append(str(summary.critical_items), style=f"bold {RED}")
         if filters.unread_only:
             content.append("  │  ", style=FG4)
-            content.append("filtered unread", style=f"bold {BLUE}")
+            # The unread filter is a state of the *view*, not a state
+            # of the inbox. Tone it down so the unread count above
+            # remains the loudest cell.
+            content.append("filtered unread", style=f"bold {FG2}")
         self.update(content)
 
 
@@ -195,7 +199,11 @@ class AttentionListPanel(Static, can_focus=True):
                 row_style = f"on {ATTENTION_ROW_BG}"
             unread_marker = "●" if item.unread else " "
             table.add_row(
-                Text(unread_marker, style=f"bold {BLUE}" if item.unread else FG4),
+                # Unread dot already lives in a row that paints its own
+                # ATTENTION_ROW_BG surface; an extra coloured dot is
+                # overkill. Keep the dot in primary text so the row's
+                # raised background carries the "unread" signal.
+                Text(unread_marker, style=f"bold {FG}" if item.unread else FG4),
                 Text(item.severity[:4], style=_SEVERITY_STYLES[item.severity]),
                 Text(item.operator_status.label, style=_status_style(item.operator_status.kind)),
                 Text(item.agent_name, style=f"bold {FG}" if is_selected else FG),
@@ -224,11 +232,15 @@ class AttentionDetailPanel(Static):
         content.append("\n")
         fields: list[tuple[str, str, str]] = [
             ("reason", item.message, _status_style(item.operator_status.kind)),
-            ("unread", "yes" if item.unread else "no", f"bold {BLUE}" if item.unread else FG4),
+            # ``unread`` is metadata about *this* item, not a state of
+            # the agent. Demote to primary text bold so colour stays
+            # reserved for severity / status above.
+            ("unread", "yes" if item.unread else "no", f"bold {FG}" if item.unread else FG4),
             ("task", item.task_title or "", FG2),
             ("branch", item.branch or "", FG1),
             ("worktree", item.worktree_name or "", FG2),
-            ("pane", item.pane_id, BLUE),
+            # Pane id is metadata, not navigation. Keep it grey.
+            ("pane", item.pane_id, FG2),
             ("seen", format_timestamp(item.occurred_at), FG4),
             ("event", selected.agent.latest_event_kind or "", FG4),
             ("level", selected.agent.latest_event_severity or "", FG4),
@@ -236,10 +248,10 @@ class AttentionDetailPanel(Static):
         for label, value, style in fields:
             if not value:
                 continue
-            content.append(f" {label:<8}", style=FG4)
+            content.append(f" {label:<8}", style=FG3)
             content.append(f"{value}\n", style=style)
         if selected.agent.recent_events:
-            content.append(" recent\n", style=FG4)
+            content.append(" recent\n", style=FG3)
             for event in selected.agent.recent_events[-4:]:
                 content.append(" ")
                 content.append(event, style=FG2)
@@ -260,7 +272,10 @@ class AttentionActivityPanel(Static):
                 content.append("\n")
             content.append(f" {format_short_timestamp(item.occurred_at)} ", style=FG4)
             if item.unread:
-                content.append("new ", style=f"bold {BLUE}")
+                # The "new" tag accompanies an attention-state colour
+                # immediately to its right; an extra BLUE pill made
+                # the row look like a multi-colour ribbon.
+                content.append("new ", style=f"bold {FG}")
             content.append(f"{item.agent_name}: ", style=f"bold {FG1}")
             content.append(
                 item.operator_status.headline,

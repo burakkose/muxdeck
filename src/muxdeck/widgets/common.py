@@ -307,6 +307,9 @@ class KeyHintFooter(Static):
         separator = pipe_separator(preferences)
         footer = Text()
         if self.busy:
+            # "working" indicator carries a real state — the runtime
+            # is mid-flight. Keep it amber so it reads as "in progress,
+            # don't act yet".
             footer.append(" ● working", style=f"bold {ORANGE}")
             footer.append(separator, style=FG4)
             footer.append(self.status, style=FG3)
@@ -322,12 +325,20 @@ class KeyHintFooter(Static):
             footer.append("modes ", style=FG4)
             footer.append(item_separator(preferences).join(mode_badges), style=FG2)
         footer.append(separator.rstrip(), style=FG4)
+        # Hint key colour rules (graphite redesign):
+        # - ACTION_HINT_KEYS get the primary-action accent (BLUE) so
+        #   the operator's eye lands on the next action they should
+        #   take. The previous ORANGE-for-shortcuts conflicted with
+        #   the warning meaning of ORANGE elsewhere in the UI.
+        # - Regular nav hints get a quieter FG3 key + FG4 label so the
+        #   footer reads as muted infrastructure, with the primary
+        #   actions standing out in blue.
         for hint in self.hints:
             if hint.key in ACTION_HINT_KEYS:
-                footer.append(f"  {hint.key}", style=f"bold {ORANGE}")
+                footer.append(f"  {hint.key}", style=f"bold {BLUE}")
                 footer.append(f" {hint.label}", style=f"bold {FG1}")
             else:
-                footer.append(f"  {hint.key}", style=f"bold {BLUE}")
+                footer.append(f"  {hint.key}", style=f"bold {FG3}")
                 footer.append(f" {hint.label}", style=FG4)
         return footer
 
