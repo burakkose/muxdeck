@@ -59,8 +59,13 @@ def _render(widget: _Renderable) -> str:
     inner_plain = getattr(inner, "plain", None)
     if isinstance(inner_plain, str):
         return inner_plain
+    # Widgets that paint a ``rich.console.Group`` (used to combine the
+    # table with scroll indicators) reach here. Drive a real
+    # :class:`rich.console.Console` against the inner renderable so we
+    # see the materialised text.
+    target = inner if inner is not None else (rendered if rendered is not None else renderable)
     buffer = StringIO()
-    Console(file=buffer, width=200, force_terminal=False, color_system=None).print(renderable)
+    Console(file=buffer, width=200, force_terminal=False, color_system=None).print(target)
     return buffer.getvalue()
 
 
@@ -330,6 +335,41 @@ async def test_list_panel_move_cursor_inside_app_clamps_to_bounds() -> None:
         panel.move_cursor(-99)
         assert panel._selected_index == 0
         panel.focus_list()
+
+
+@pytest.mark.asyncio
+async def test_list_panel_windows_long_inboxes_to_keep_selection_visible() -> None:
+    """Long inboxes must clip rendered rows around the cursor and surface
+    ``↑/↓ N more`` indicators so cursor moves never disappear off-screen.
+    """
+
+    panel = AttentionListPanel(widget_id="attention-list")
+
+    class _Harness(App[None]):
+        CSS = "AttentionListPanel { height: 8; }"
+
+        def compose(self) -> ComposeResult:
+            yield panel
+
+    items = tuple(_item(agent_id=f"a-{i}", agent_name=f"agent-{i}") for i in range(40))
+    async with _Harness().run_test(size=(160, 12)) as pilot:
+        await pilot.pause()
+        panel.set_items(items, selected_agent_id="a-20")
+        await pilot.pause()
+        rendered = _render(panel)
+        # Selected row in view + scroll indicators top and bottom.
+        assert "agent-20" in rendered
+        assert "more above" in rendered
+        assert "more below" in rendered
+        # Far-away rows are clipped.
+        assert "agent-0 " not in rendered
+        assert "agent-39" not in rendered
+        # Move to the bottom — viewport must follow the cursor.
+        panel.move_cursor(50)
+        await pilot.pause()
+        rendered = _render(panel)
+        assert "agent-39" in rendered
+        assert "agent-0 " not in rendered
 
 
 # ── AttentionDetailPanel ────────────────────────────────────────────

@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Protocol
 
 import pytest
+from rich.console import Console
 from textual.app import App, ComposeResult
 
 from muxdeck.controllers.sessions_controller import (
@@ -35,6 +36,21 @@ def _render(widget: _Renderable) -> str:
     renderable = widget.render()
     plain = getattr(renderable, "plain", None)
     return plain if isinstance(plain, str) else str(renderable)
+
+
+def _render_panel(panel: SessionListPanel, *, width: int = 120) -> str:
+    """Render the panel's renderable through Rich to inspect the full output.
+
+    ``SessionListPanel`` updates with a :class:`rich.console.Group` when the
+    list overflows the viewport (header, table and ``↑/↓ N more`` markers
+    rendered together). Plain ``str(...)`` on a ``Group`` returns its repr,
+    so we drive a real :class:`rich.console.Console` to materialize the text.
+    """
+    visual = panel.render()
+    renderable = getattr(visual, "_renderable", visual)
+    console = Console(width=width, record=True, file=None)
+    console.print(renderable)
+    return console.export_text()
 
 
 def _item(
@@ -186,6 +202,60 @@ async def test_list_panel_move_cursor_clamps_and_returns_session_id() -> None:
 def test_list_panel_move_cursor_no_op_when_empty() -> None:
     panel = SessionListPanel(widget_id="session-list")
     assert panel.move_cursor(1) is None
+
+
+@pytest.mark.asyncio
+async def test_list_panel_renders_scroll_indicators_when_list_overflows() -> None:
+    """Long lists must show ``↑/↓ N more`` so the cursor never disappears."""
+
+    panel = SessionListPanel(widget_id="session-list")
+
+    class _Harness(App[None]):
+        CSS = "SessionListPanel { height: 8; }"
+
+        def compose(self) -> ComposeResult:
+            yield panel
+
+    items = tuple(_item(session_id=f"s-{i}", summary=f"summary-{i}") for i in range(30))
+    async with _Harness().run_test(size=(120, 12)) as pilot:
+        await pilot.pause()
+        panel.set_sessions(items, selected_session_id="s-15", notify=False)
+        await pilot.pause()
+        rendered = _render_panel(panel)
+        # Selected row must be visible regardless of total length.
+        assert "summary-15" in rendered
+        # Both indicators show because the cursor is in the middle.
+        assert "more above" in rendered
+        assert "more below" in rendered
+        # Far-away rows must NOT render — proves we are clipping.
+        assert "summary-0 " not in rendered
+        assert "summary-29" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_list_panel_keeps_selection_visible_after_jump_to_end() -> None:
+    """Pressing ``j`` past the viewport must scroll the window down."""
+
+    panel = SessionListPanel(widget_id="session-list")
+
+    class _Harness(App[None]):
+        CSS = "SessionListPanel { height: 8; }"
+
+        def compose(self) -> ComposeResult:
+            yield panel
+
+    items = tuple(_item(session_id=f"s-{i}", summary=f"summary-{i}") for i in range(40))
+    async with _Harness().run_test(size=(120, 12)) as pilot:
+        await pilot.pause()
+        panel.set_sessions(items, selected_session_id="s-0", notify=False)
+        await pilot.pause()
+        # Jump to the last row — viewport must follow the cursor.
+        panel.move_cursor(40)
+        await pilot.pause()
+        rendered = _render_panel(panel)
+        assert "summary-39" in rendered
+        # Top of the list scrolls out of view.
+        assert "summary-0 " not in rendered
 
 
 # ── SessionSummaryBar ───────────────────────────────────────────────

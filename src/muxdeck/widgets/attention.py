@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 from textual.message import Message
+from textual.widget import Widget
 from textual.widgets import Static
 
 from muxdeck.controllers.attention_controller import (
@@ -116,7 +118,56 @@ class AttentionListPanel(Static, can_focus=True):
         self.post_message(self.AttentionSelected(self._items[index].agent_id))
 
     def _refresh_table(self) -> None:
-        self.update(self._build_table())
+        table = self._build_table()
+        total = len(self._items)
+        win_start = self._window_start
+        win_end = self._window_end
+        parts: list[RenderableType] = []
+        if win_start > 0:
+            parts.append(Text(f"  ↑ {win_start} more above", style=FG4))
+        parts.append(table)
+        remaining_below = total - win_end
+        if remaining_below > 0:
+            parts.append(Text(f"  ↓ {remaining_below} more below", style=FG4))
+        self.update(Group(*parts) if len(parts) > 1 else parts[0])
+
+    @property
+    def _window_start(self) -> int:
+        start, _ = self._visible_window()
+        return start
+
+    @property
+    def _window_end(self) -> int:
+        _, end = self._visible_window()
+        return end
+
+    def _visible_window(self) -> tuple[int, int]:
+        """Return ``(start, end)`` indices for the rows to render.
+
+        Keeps the highlighted row inside the visible window so cursor
+        movement remains meaningful when the inbox is taller than the
+        panel viewport. The viewport is read from the parent container
+        because :class:`Static` sizes itself to its content (``height:
+        auto``); without windowing the bottom rows would be clipped and
+        ``j/k`` would silently move the cursor off-screen.
+        """
+        total = len(self._items)
+        if total == 0:
+            return 0, 0
+        parent = self.parent
+        viewport_widget = parent if isinstance(parent, Widget) else self
+        # ``- 3`` reserves space for the table header and the optional
+        # ``↑/↓ N more`` indicator rows. Even on a partially mounted
+        # widget where ``size.height`` is ``0``, the ``max(..., 5)``
+        # fallback guarantees at least five rows are kept visible.
+        viewport = viewport_widget.size.height - 3
+        visible = max(viewport, 5)
+        if total <= visible:
+            return 0, total
+        half = visible // 2
+        start = self._selected_index - half
+        start = max(0, min(start, total - visible))
+        return start, start + visible
 
     def _build_table(self) -> Table:
         table = Table(
@@ -135,7 +186,9 @@ class AttentionListPanel(Static, can_focus=True):
         table.add_column("agent", min_width=8, ratio=2, overflow="ellipsis")
         table.add_column("branch", min_width=6, ratio=1, overflow="ellipsis")
         table.add_column("reason", min_width=18, ratio=3, overflow="ellipsis")
-        for index, item in enumerate(self._items):
+        win_start, win_end = self._visible_window()
+        for index in range(win_start, win_end):
+            item = self._items[index]
             is_selected = index == self._selected_index
             row_style = f"on {SELECTED_ROW_BG}" if is_selected else ""
             if item.unread and not is_selected:

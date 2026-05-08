@@ -756,7 +756,6 @@ def build_runtime(config: AppConfig | None = None) -> MuxdeckRuntime:
         activity_reader=activity_reader,
     )
     agent_controller = AgentController(store, sessions)
-    attention = AttentionController(dashboard, AttentionInboxService())
     sync_dashboard = DashboardController(
         sync_store,
         subtask_registry=subtask_registry,
@@ -764,6 +763,12 @@ def build_runtime(config: AppConfig | None = None) -> MuxdeckRuntime:
         session_resolver=session_resolver,
         activity_reader=activity_reader,
     )
+    # AttentionController.build_state internally calls dashboard.build_state,
+    # which is run from a worker thread (see AttentionScreen). Use the
+    # thread-safe sync_dashboard so the worker never touches the
+    # main-thread-bound store. ``mark_read`` and ``unread_count`` only touch
+    # the local inbox state and remain UI-thread safe.
+    attention = AttentionController(sync_dashboard, AttentionInboxService())
     return MuxdeckRuntime(
         config=resolved_config,
         store=store,

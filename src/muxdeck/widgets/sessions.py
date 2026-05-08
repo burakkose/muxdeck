@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from rich.console import Group, RenderableType
 from rich.table import Table
 from rich.text import Text
 from textual.message import Message
 from textual.reactive import reactive
+from textual.widget import Widget
 from textual.widgets import Static
 
 from muxdeck.theme import (
@@ -211,11 +213,51 @@ class SessionListPanel(Static, can_focus=True):
         table.add_column("State", width=10, no_wrap=True)
 
         selected_idx = self.selected_index
-        for idx, variants in enumerate(self._row_cache):
+        win_start, win_end = self._visible_window(comfortable=comfortable)
+        for idx in range(win_start, win_end):
+            variants = self._row_cache[idx]
             cells = variants[1] if idx == selected_idx else variants[0]
             table.add_row(*cells)
 
-        self.update(table)
+        total = len(self._row_cache)
+        parts: list[RenderableType] = []
+        if win_start > 0:
+            parts.append(Text(f"  ↑ {win_start} more above", style=FG4))
+        parts.append(table)
+        remaining_below = total - win_end
+        if remaining_below > 0:
+            parts.append(Text(f"  ↓ {remaining_below} more below", style=FG4))
+
+        self.update(Group(*parts) if len(parts) > 1 else parts[0])
+
+    def _visible_window(self, *, comfortable: bool) -> tuple[int, int]:
+        """Return ``(start, end)`` indices for the rows to render.
+
+        Keeps the selected row inside the visible window so cursor
+        movement remains meaningful when the list is taller than the
+        panel viewport. The viewport is read from the parent container
+        because :class:`Static` sizes itself to its content (``height:
+        auto``), which would otherwise grow without bound.
+        """
+        total = len(self._row_cache)
+        if total == 0:
+            return 0, 0
+        parent = self.parent
+        viewport_widget = parent if isinstance(parent, Widget) else self
+        # ``- 3`` reserves space for the table header and the optional
+        # ``↑/↓ N more`` indicator rows. Even on a partially mounted
+        # widget where ``size.height`` is ``0``, the ``max(..., 5)``
+        # fallback guarantees at least five rows are kept visible so
+        # ``j/k`` cannot park the cursor permanently outside the window.
+        viewport = viewport_widget.size.height - 3
+        row_lines = 2 if comfortable else 1
+        visible = max(viewport // row_lines, 5)
+        if total <= visible:
+            return 0, total
+        half = visible // 2
+        start = self.selected_index - half
+        start = max(0, min(start, total - visible))
+        return start, start + visible
 
 
 def _build_row_cells(
