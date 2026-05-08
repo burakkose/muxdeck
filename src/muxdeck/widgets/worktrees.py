@@ -48,7 +48,7 @@ def _field_row(
     """Render a single labeled field row. Skip if value is empty."""
     if not value or value == "-":
         return
-    text.append(f"  {label:<9}", style=FG4)
+    text.append(f"  {label:<9}", style=FG3)
     text.append(f"{value}\n", style=style)
 
 
@@ -215,7 +215,10 @@ class WorktreeListPanel(Static, can_focus=True):
 
             # Main/star indicator
             if wt.is_main_worktree:
-                result.append("★ ", style=f"bold {GREEN}{row_bg}")
+                # Main worktree is structural identity, not a state.
+                # Keep the star in primary text so GREEN stays reserved
+                # for "healthy / running" agents.
+                result.append("★ ", style=f"bold {FG}{row_bg}")
             else:
                 result.append("  ", style=row_bg)
 
@@ -230,7 +233,10 @@ class WorktreeListPanel(Static, can_focus=True):
                 if dir_name:
                     result.append(f" ({dir_name})", style=f"{FG4}{row_bg}")
 
-            # Status indicators on same line
+            # Status indicators on same line. Dirty is the only state
+            # indicator that earns colour (orange = needs review). The
+            # provenance/agent label is metadata about *who* owns the
+            # worktree, so it sits in the gray family.
             indicators: list[tuple[str, str]] = []
             if wt.is_dirty:
                 indicators.append(("D", f"bold {ORANGE}"))
@@ -238,7 +244,7 @@ class WorktreeListPanel(Static, can_focus=True):
                 indicators.append(
                     (
                         f"{_provenance_icon(wt.provenance)}{wt.provenance.label}",
-                        f"bold {AQUA}",
+                        FG2,
                     ),
                 )
 
@@ -304,7 +310,9 @@ class WorktreeDetailPanel(Static):
         glyph = "★ " if summary.is_main_worktree else "  "
         result.append("  ")
         result.append("│ ", style=bar_style)
-        result.append(glyph, style=f"bold {GREEN}" if summary.is_main_worktree else FG4)
+        # The star marks the canonical worktree, not a state. Keep it
+        # in primary text so GREEN remains reserved for "healthy".
+        result.append(glyph, style=f"bold {FG}" if summary.is_main_worktree else FG4)
         result.append(summary.branch.upper(), style=f"bold {FG}")
         result.append("   ")
         result.append(primary_label, style=f"bold {primary_color}")
@@ -322,7 +330,9 @@ class WorktreeDetailPanel(Static):
             result.append(label, style=f"bold {color}")
         result.append("\n")
 
-        # subtitle: tracking · ahead/behind
+        # subtitle: tracking · ahead/behind. Ahead/behind are metadata
+        # counters, not state — keep them in the gray family so colour
+        # stays reserved for the primary status label above.
         result.append("  ")
         result.append("│  ", style=bar_style)
         if detail.branch_status:
@@ -333,10 +343,10 @@ class WorktreeDetailPanel(Static):
         behind = summary.behind_count or 0
         if ahead:
             result.append("  ·  ", style=FG4)
-            result.append(f"ahead {ahead}", style=GREEN)
+            result.append(f"ahead {ahead}", style=FG2)
         if behind:
             result.append("  ·  ", style=FG4)
-            result.append(f"behind {behind}", style=ORANGE)
+            result.append(f"behind {behind}", style=FG2)
         result.append("\n")
 
         # path
@@ -350,34 +360,36 @@ class WorktreeDetailPanel(Static):
         # Banner already carries branch / tracking / ahead / behind, so
         # this section now only renders fields that aren't in the banner.
         _field_row(result, "repo", summary.repo_root, FG2)
-        _field_row(result, "base", summary.base_branch, FG1)
-        _field_row(result, "changes", detail.change_summary, FG1)
+        _field_row(result, "base", summary.base_branch, FG2)
+        _field_row(result, "changes", detail.change_summary, FG2)
 
         # ── agent assignment ──
+        # Provenance is metadata ("who owns this worktree?"), not a
+        # state. Keep it in the gray family so colour stays meaningful.
         if summary.provenance is not None:
             result.append("\n")
             _field_row(
                 result,
                 _provenance_field_label(summary.provenance),
                 _provenance_value(summary.provenance),
-                f"bold {AQUA}",
+                FG,
             )
         _field_row(
             result,
             "sessions",
             str(summary.active_session_count) if summary.active_session_count else None,
-            FG1,
+            FG2,
         )
         _field_row(
             result,
             "panes",
             ", ".join(detail.pane_targets) if detail.pane_targets else None,
-            BLUE,
+            FG2,
         )
 
         if detail.status_entries:
             result.append("\n")
-            result.append("  changes\n", style=f"bold {FG4}")
+            result.append("  changes\n", style=f"bold {FG3}")
             visible_changes = detail.status_entries[:6]
             for change in visible_changes:
                 result.append("  ")
@@ -390,10 +402,13 @@ class WorktreeDetailPanel(Static):
 
         if detail.recent_commits:
             result.append("\n")
-            result.append("  recent commits\n", style=f"bold {FG4}")
+            result.append("  recent commits\n", style=f"bold {FG3}")
             for commit in detail.recent_commits[:5]:
                 result.append("  ")
-                result.append(commit.short_sha, style=f"bold {AQUA}")
+                # Commit hashes are identifiers, not actions — keep them
+                # in a quiet bold so the recent-commits block does not
+                # compete with the primary launch chip.
+                result.append(commit.short_sha, style=f"bold {FG2}")
                 result.append("  ")
                 result.append(_truncate(commit.subject, 42), style=FG1)
                 result.append("  ")
@@ -455,7 +470,7 @@ class StartIntentPanel(Static):
             ("model", intent.model or "-"),
             ("prompt", intent.prompt),
         ):
-            _field_row(result, label, str(value), FG1)
+            _field_row(result, label, str(value), FG2)
         result.append("\n  also: ", style=FG4)
         result.append("x", style=f"bold {BLUE}")
         result.append(" / ", style=FG4)

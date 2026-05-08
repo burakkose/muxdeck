@@ -12,6 +12,7 @@ from typing import Protocol
 
 import pytest
 from rich.console import Console
+from rich.text import Text
 from textual.app import App, ComposeResult
 
 from muxdeck.controllers.sessions_controller import (
@@ -485,3 +486,138 @@ def test_list_panel_long_repository_drops_org_prefix_for_compactness() -> None:
     assert "the-actual-repo" in rendered
     # Org prefix dropped because total len > 24 chars
     assert "some-very-long-organization-name/" not in rendered
+
+
+def test_list_panel_repo_and_branch_columns_do_not_use_loud_accents() -> None:
+    """Graphite redesign: repo/branch are metadata, not state. They
+    must sit in the gray family so the table reads as a single calm
+    surface and colour stays reserved for the status dot/label.
+
+    Before the redesign the repo column rendered in AQUA and branch in
+    YELLOW; that produced the "wall of colour" feedback. This pins
+    the muted-text rule so future widget edits don't regress."""
+    from muxdeck.widgets.sessions import _build_row_cells
+
+    item = SessionListItemView(
+        session_id="repo-1",
+        summary="task",
+        repository="burakkose/muxdeck",
+        branch="feat/graphite-theme",
+        status="active",
+        status_glyph="🟢",
+        updated="now",
+        created="now",
+        checkpoint_count=0,
+        last_event_type="agent.updated",
+        cwd="/repo",
+        is_resumable=True,
+    )
+    cells = _build_row_cells(item, selected=False, preferences=UiPreferences())
+    repo_cell, branch_cell = cells[2], cells[3]
+    style_text = (str(repo_cell.style) + " " + str(branch_cell.style)).lower()
+    # The graphite palette uses #A7AFBD (FG2) for selected and
+    # #4D5563 (FG4) for unselected metadata. Loud accents should be
+    # absent.
+    assert "#ffd60a" not in style_text  # YELLOW
+    assert "#5ac8fa" not in style_text  # BLUE/AQUA
+    assert "#ff9f0a" not in style_text  # ORANGE
+    assert "#4d5563" in str(repo_cell.style).lower()
+    assert "#4d5563" in str(branch_cell.style).lower()
+
+
+def test_action_bar_chips_use_graphite_metadata_text_not_rainbow() -> None:
+    """The session action-bar chips used to render ``selected``,
+    ``repo``, ``branch``, ``checkpoints``, ``usage`` and ``premium``
+    in five different accent colours (orange, aqua, yellow, blue,
+    aqua, blue). The graphite redesign keeps colour rare: only the
+    ``status`` chip carries a state colour, every other chip sits in
+    the gray family so the bar reads as one calm surface."""
+    detail = _detail()
+    bar = SessionActionBar()
+    bar.set_state(
+        detail,
+        has_live_pane=False,
+        filter_text="alpha",
+        show_completed=True,
+    )
+    rendered = bar.renderable
+    assert isinstance(rendered, Text)
+    # Walk every span and assert metadata-chip values are NOT painted in
+    # the legacy rainbow accents. We allow accents on the status chip
+    # (it carries state) and on action shortcut keys (BLUE letters).
+    metadata_values = (
+        "session-1",
+        "repo",
+        "feature/x",
+        "alpha",
+        "shown",
+        "500 tok",
+    )
+    for span in rendered.spans:
+        text_slice = rendered.plain[span.start : span.end]
+        if any(value in text_slice for value in metadata_values):
+            style = str(span.style).lower()
+            # Metadata chips must avoid the loud cyan/yellow/orange
+            # palette. The status chip can still be coloured because
+            # it carries state, but our metadata_values list does not
+            # include any status text.
+            assert "#ffd60a" not in style, f"yellow leaked into chip: {text_slice!r}"
+            assert "#5ac8fa" not in style, f"blue leaked into chip: {text_slice!r}"
+            assert "#ff9f0a" not in style, f"orange leaked into chip: {text_slice!r}"
+
+
+def test_worktree_list_panel_provenance_not_aqua() -> None:
+    """Worktree provenance is metadata about ownership, not a state.
+    The graphite redesign moves it from a loud bold AQUA pill to the
+    gray family so colour stays reserved for the dirty-marker (orange)
+    and severity bar."""
+    from muxdeck.controllers import (
+        WorktreeProvenanceKind,
+        WorktreeProvenanceView,
+        WorktreeSummaryView,
+    )
+    from muxdeck.widgets.worktrees import WorktreeListPanel
+
+    summary = WorktreeSummaryView(
+        worktree_id="wt-1",
+        repo_root="/home/burakkose/muxdeck",
+        path="/home/burakkose/muxdeck",
+        branch="main",
+        base_branch="main",
+        is_main_worktree=True,
+        is_dirty=False,
+        ahead_count=0,
+        behind_count=0,
+        locked=False,
+        assigned_agent_id=None,
+        assigned_agent_name=None,
+        provenance=WorktreeProvenanceView(
+            kind=WorktreeProvenanceKind.ASSIGNED,
+            agent_id="muxdeck",
+            agent_name="muxdeck",
+        ),
+        active_session_count=0,
+        context_count=0,
+        has_conflicts=False,
+    )
+    panel = WorktreeListPanel()
+    panel.set_worktrees((summary,), selected_worktree_id=None, notify=False)
+    rendered = panel.renderable
+    assert isinstance(rendered, Text)
+    # Walk every span and confirm the provenance label
+    # (``⚡muxdeck`` / ``◌muxdeck``) is not rendered in the legacy bold
+    # AQUA pill. A plain "muxdeck" appearance in the branch column is
+    # fine, so we filter to spans that include the provenance icon.
+    found_provenance = False
+    for span in rendered.spans:
+        text_slice = rendered.plain[span.start : span.end]
+        if "⚡" in text_slice or "◌" in text_slice:
+            found_provenance = True
+            style = str(span.style).lower()
+            assert "#5ac8fa" not in style, (
+                f"provenance still painted in legacy AQUA: {text_slice!r}"
+            )
+            assert "bold" not in style, (
+                f"provenance should not be bold in graphite redesign: {text_slice!r}"
+            )
+    assert found_provenance, "provenance label was not rendered at all"

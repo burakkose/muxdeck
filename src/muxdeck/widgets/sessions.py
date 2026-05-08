@@ -16,9 +16,10 @@ from muxdeck.theme import (
     AQUA,
     BLUE,
     FG,
+    FG2,
+    FG3,
     FG4,
     GREEN,
-    ORANGE,
     ORANGE_DIM,
     YELLOW,
 )
@@ -75,6 +76,8 @@ def _append_chip(
 def _append_action(text: Text, key: str, label: str, *, enabled: bool = True) -> None:
     if text.plain:
         text.append("  ")
+    # Graphite footer rule: keys carry a small accent, labels stay
+    # primary text. Disabled actions fade to FG4.
     key_style = f"bold {AQUA}" if enabled else FG4
     label_style = FG if enabled else FG4
     text.append(key, style=key_style)
@@ -317,8 +320,12 @@ def _build_row_cells(
             style=row_style,
         ),
         summary_text,
-        Text(repo_label, style=AQUA if selected else FG4),
-        Text(item.branch[:20], style=YELLOW if selected else FG4),
+        # Graphite palette: repo and branch are metadata, not state.
+        # They live in the gray family so colour stays reserved for the
+        # status dot/label. Selected rows lift to FG2 so they read on
+        # the raised surface without becoming loud cyan/yellow text.
+        Text(repo_label, style=FG2 if selected else FG4),
+        Text(item.branch[:20], style=FG2 if selected else FG4),
         Text(item.updated, style=row_style),
         Text(str(item.checkpoint_count), style=row_style),
         Text(item.status, style=f"bold {color}"),
@@ -375,46 +382,52 @@ class SessionDetailPanel(Static):
             content.append("   session is closed — resume unavailable", style=FG4)
         content.append("\n\n")
 
-        # Session ID — prominent for copy
-        content.append("  Session ID  ", style=f"bold {FG4}")
-        content.append(detail.session_id, style=f"bold {ORANGE}")
+        # Session ID — prominent for copy. The graphite palette uses
+        # primary text for identifiers, not a coloured highlight; the
+        # row already stands out because labels are muted gray.
+        content.append("  Session ID  ", style=f"bold {FG3}")
+        content.append(detail.session_id, style=f"bold {FG}")
         content.append("\n")
 
-        content.append("  Repository  ", style=f"bold {FG4}")
-        content.append(detail.repository, style=AQUA)
+        # Repository / branch / cwd / timestamps are metadata. Values
+        # render in the secondary text colour so the eye reserves
+        # bright/coloured text for the status banner and primary
+        # action chip above.
+        content.append("  Repository  ", style=f"bold {FG3}")
+        content.append(detail.repository, style=FG)
         content.append("  ")
-        content.append(detail.branch, style=YELLOW)
+        content.append(detail.branch, style=FG2)
         content.append("\n")
 
-        content.append("  CWD         ", style=f"bold {FG4}")
-        content.append(detail.cwd, style=FG)
+        content.append("  CWD         ", style=f"bold {FG3}")
+        content.append(detail.cwd, style=FG2)
         content.append("\n")
 
-        content.append("  Created     ", style=f"bold {FG4}")
-        content.append(detail.created_at, style=FG)
-        content.append("  Updated  ", style=f"bold {FG4}")
-        content.append(detail.updated_at, style=FG)
+        content.append("  Created     ", style=f"bold {FG3}")
+        content.append(detail.created_at, style=FG2)
+        content.append("  Updated  ", style=f"bold {FG3}")
+        content.append(detail.updated_at, style=FG2)
         content.append("\n")
 
-        content.append("  Last Event  ", style=f"bold {FG4}")
-        content.append(detail.last_event_type, style=FG)
-        content.append("  at  ", style=FG4)
-        content.append(detail.last_event_at, style=FG)
+        content.append("  Last Event  ", style=f"bold {FG3}")
+        content.append(detail.last_event_type, style=FG2)
+        content.append("  at  ", style=FG3)
+        content.append(detail.last_event_at, style=FG2)
         content.append("\n")
 
-        content.append("  Checkpoints ", style=f"bold {FG4}")
-        content.append(str(detail.checkpoint_count), style=BLUE)
+        content.append("  Checkpoints ", style=f"bold {FG3}")
+        content.append(str(detail.checkpoint_count), style=FG)
         content.append("\n")
 
-        content.append("  Usage       ", style=f"bold {FG4}")
+        content.append("  Usage       ", style=f"bold {FG3}")
         content.append(
             detail.usage_summary,
-            style=AQUA if detail.usage_available else FG4,
+            style=FG if detail.usage_available else FG4,
         )
         content.append("\n")
         if detail.premium_requests is not None:
-            content.append("  Premium     ", style=f"bold {FG4}")
-            content.append(detail.premium_requests, style=BLUE)
+            content.append("  Premium     ", style=f"bold {FG3}")
+            content.append(detail.premium_requests, style=FG2)
             content.append("\n")
         content.append("\n")
 
@@ -509,8 +522,8 @@ class SessionActionBar(Static):
         text.append(f" {'show' if not show_completed else 'hide'} completed", style=FG)
         if filter_text.strip():
             text.append("  ")
-            text.append("filter ", style=FG4)
-            text.append(filter_text.strip(), style=YELLOW)
+            text.append("filter ", style=FG3)
+            text.append(filter_text.strip(), style=FG2)
         self.update(text)
 
     def set_state(
@@ -527,8 +540,8 @@ class SessionActionBar(Static):
             text.append(" no session selected ", style=f"bold {FG}")
             if filter_text.strip():
                 text.append(pipe_separator(preferences), style=FG4)
-                text.append("filter ", style=FG4)
-                text.append(filter_text.strip(), style=YELLOW)
+                text.append("filter ", style=FG3)
+                text.append(filter_text.strip(), style=FG2)
             text.append("\n")
             _append_action(text, "↵", "replay", enabled=False)
             _append_action(text, "l", "live mirror", enabled=False)
@@ -539,11 +552,17 @@ class SessionActionBar(Static):
             return
         status_style = _STATUS_COLORS.get(detail.status, FG4)
         text = Text()
+        # Graphite chip rule: chip values are FG (primary text). Only
+        # the status chip carries colour because the status is the only
+        # thing in the bar that conveys state. Identifier / metadata
+        # chips (id, repo, branch, usage, host, filter) all sit in the
+        # gray family so the bar reads as one coherent surface, not a
+        # rainbow.
         _append_chip(
             text,
             "selected",
             detail.session_id[:12],
-            value_style=f"bold {ORANGE}",
+            value_style=FG,
             preferences=preferences,
         )
         _append_chip(
@@ -553,20 +572,20 @@ class SessionActionBar(Static):
             value_style=f"bold {status_style}",
             preferences=preferences,
         )
-        _append_chip(text, "repo", detail.repository, value_style=AQUA, preferences=preferences)
-        _append_chip(text, "branch", detail.branch, value_style=YELLOW, preferences=preferences)
+        _append_chip(text, "repo", detail.repository, value_style=FG2, preferences=preferences)
+        _append_chip(text, "branch", detail.branch, value_style=FG2, preferences=preferences)
         _append_chip(
             text,
             "checkpoints",
             str(detail.checkpoint_count),
-            value_style=BLUE,
+            value_style=FG2,
             preferences=preferences,
         )
         _append_chip(
             text,
             "usage",
             detail.usage_badge,
-            value_style=AQUA if detail.usage_available else FG4,
+            value_style=FG if detail.usage_available else FG4,
             preferences=preferences,
         )
         if detail.premium_requests is not None:
@@ -574,24 +593,24 @@ class SessionActionBar(Static):
                 text,
                 "premium",
                 detail.premium_requests,
-                value_style=BLUE,
+                value_style=FG2,
                 preferences=preferences,
             )
         if detail.origin == "windows":
-            _append_chip(text, "host", "windows", value_style=BLUE, preferences=preferences)
+            _append_chip(text, "host", "windows", value_style=FG2, preferences=preferences)
         if filter_text.strip():
             _append_chip(
                 text,
                 "filter",
                 filter_text.strip(),
-                value_style=YELLOW,
+                value_style=FG2,
                 preferences=preferences,
             )
         _append_chip(
             text,
             "completed",
             "shown" if show_completed else "hidden",
-            value_style=FG,
+            value_style=FG2,
             preferences=preferences,
         )
         text.append("\n")
