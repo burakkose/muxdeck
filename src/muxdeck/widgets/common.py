@@ -95,8 +95,8 @@ _RICH_UI_GLYPHS: Final[dict[str, str]] = {
     "collapsed": "▸",
     "subagent": "↳",
     "bullet": "•",
-    "section-lead": " ── ",
-    "section-fill": " ──────────────────────────────────────",
+    "section-lead": "",
+    "section-fill": "",
     "connector-mid": "├─",
     "connector-last": "└─",
     "detail-arrow": "»",
@@ -120,8 +120,8 @@ _ASCII_UI_GLYPHS: Final[dict[str, str]] = {
     "collapsed": ">",
     "subagent": "->",
     "bullet": "-",
-    "section-lead": " -- ",
-    "section-fill": " --------------------------------------",
+    "section-lead": "",
+    "section-fill": "",
     "connector-mid": "|-",
     "connector-last": "`-",
     "detail-arrow": ">",
@@ -273,7 +273,7 @@ class TabBar(Static):
             else:
                 bar.append(f" {key}{key_separator}{label} ", style=FG4)
             if badge_count > 0:
-                bar.append(f"{badge_glyph}{badge_count} ", style=f"bold {RED}")
+                bar.append(f"{badge_glyph}{badge_count} ", style=f"bold {ORANGE}")
         mode_badges = preferences.mode_badges()
         if mode_badges:
             bar.append(separator, style=FG4)

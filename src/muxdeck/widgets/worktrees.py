@@ -33,10 +33,9 @@ from muxdeck.theme import (
 
 
 def _section_header(text: Text, title: str) -> None:
-    """Render a clean section header with box-drawing decoration."""
-    text.append(" ── ", style=FG4)
+    """Render a clean section heading without trailing rules."""
     text.append(title.upper(), style=f"bold {FG3}")
-    text.append(" ──────────────────────────────────────\n", style=FG4)
+    text.append("\n")
 
 
 def _field_row(
