@@ -309,10 +309,43 @@ def test_highlight_log_line_renders_each_branch(content: str, expected_marker: s
 # ── panel-only rendering ────────────────────────────────────────────
 
 
-def test_alert_panel_renders_no_active_alerts_when_empty() -> None:
+def test_alert_panel_collapses_to_empty_class_when_no_alerts() -> None:
+    """Empty alert state should collapse the panel rather than print a placeholder.
+
+    The previous behaviour rendered "no active alerts" as a one-line
+    placeholder, which trained operators to skip the bottom of the
+    sidebar entirely. Now AlertPanel adds the ``empty`` class and
+    relies on the CSS rule on ``#dashboard-alerts.empty`` (display:
+    none) to release the row to the output panel.
+    """
     panel = AlertPanel()
     panel.set_alerts(())
-    assert "no active alerts" in _render(panel)
+    assert panel.has_class("empty"), "empty alerts should collapse the panel"
+    rendered = _render(panel)
+    assert "no active alerts" not in rendered.lower()
+    assert "needs attention" not in rendered.lower()
+
+
+def test_alert_panel_renders_needs_attention_header_with_alerts() -> None:
+    """Non-empty alerts render the loud NEEDS ATTENTION banner."""
+    from datetime import UTC, datetime
+
+    from muxdeck.controllers.dashboard_controller import DashboardAlertView
+
+    panel = AlertPanel()
+    alert = DashboardAlertView(
+        agent_id="agent-1",
+        agent_name="planner",
+        severity="warning",
+        title="stale agent",
+        message="idle for 600s",
+        occurred_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    panel.set_alerts((alert,))
+    rendered = _render(panel)
+    assert not panel.has_class("empty")
+    assert "needs attention" in rendered.lower()
+    assert "planner" in rendered.lower()
 
 
 def test_log_preview_panel_no_agent_branch() -> None:
@@ -957,6 +990,76 @@ def test_agent_detail_panel_renders_task_title_when_distinct_from_activity() -> 
     panel.set_agent(selected)
     rendered = _render(panel)
     assert "Bug hunt" in rendered
+
+
+def test_agent_detail_panel_surfaces_state_aware_primary_action() -> None:
+    """The ACTIONS section leads with a contextual primary action.
+
+    A WAITING agent's primary should be ``m send message`` (operator
+    has to answer the question to unblock it). A RUNNING agent's
+    primary should be ``v live mirror`` (the most common operator
+    interaction is "let me see what it's doing"). The marker chip
+    ``primary`` is rendered after the suggestion to signal that this
+    row is the recommended next step rather than just another
+    shortcut.
+    """
+    panel = AgentDetailPanel()
+
+    waiting_item = replace(
+        _bare_item(),
+        status=AgentStatus.WAITING_INPUT,
+        needs_attention=True,
+        attention_reason="waiting for operator confirmation",
+    )
+    panel.set_agent(_selected_view_with(waiting_item))
+    waiting_rendered = _render(panel)
+    assert "primary" in waiting_rendered.lower()
+    assert "send message" in waiting_rendered.lower()
+
+    running_panel = AgentDetailPanel()
+    running_panel.set_agent(_selected_view_with(_bare_item()))
+    running_rendered = _render(running_panel)
+    assert "primary" in running_rendered.lower()
+    assert "live mirror" in running_rendered.lower()
+
+
+def test_render_action_shortcuts_skips_section_when_all_rows_empty() -> None:
+    """Defensive: an ACTIONS header with no body confuses operators.
+
+    Previously ``_render_action_shortcuts`` always emitted the
+    ``ACTIONS`` section header before iterating rows, so an empty
+    ``rows`` argument left the operator staring at a section header
+    with nothing under it. The new behaviour skips the entire
+    section when there's nothing to render and no primary action.
+    """
+    from rich.text import Text as _RichText
+
+    from muxdeck.ui_preferences import UiPreferences
+    from muxdeck.widgets.dashboard import _render_action_shortcuts
+
+    text = _RichText()
+    _render_action_shortcuts(text, ((), ()), preferences=UiPreferences())
+    assert "actions" not in text.plain.lower()
+
+
+def test_render_action_shortcuts_renders_when_only_primary_supplied() -> None:
+    """Primary action alone is enough to justify the section."""
+    from rich.text import Text as _RichText
+
+    from muxdeck.ui_preferences import UiPreferences
+    from muxdeck.widgets.dashboard import _render_action_shortcuts
+
+    text = _RichText()
+    _render_action_shortcuts(
+        text,
+        (),
+        preferences=UiPreferences(),
+        primary=("R", "resume"),
+    )
+    rendered = text.plain.lower()
+    assert "actions" in rendered
+    assert "resume" in rendered
+    assert "primary" in rendered
 
 
 def test_agent_detail_panel_renders_subagent_input_section_with_prompt() -> None:

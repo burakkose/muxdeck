@@ -144,6 +144,15 @@ Screen {
     padding-top: 0;
 }
 
+/* When the dashboard has no attention items, collapse the panel
+   completely instead of showing an empty section. The output panel
+   below it claims the released vertical space. */
+#dashboard-alerts.empty {
+    display: none;
+    height: 0;
+    border-top: none;
+}
+
 /* ── attention ───────────────────────────────────────────────────── */
 
 #attention-main {

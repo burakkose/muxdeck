@@ -144,8 +144,13 @@ class DashboardScreen(ShellScreen):
                         id="dashboard-detail",
                         classes="section",
                     )
-                    yield LogPreviewPanel(id="dashboard-log", classes="section")
+                    # Attention sits ABOVE output so the operator sees
+                    # "what needs my action right now" before they read
+                    # any logs. Previously the alert panel was buried
+                    # below the dominant output panel and operators
+                    # reported missing stale-agent warnings entirely.
                     yield AlertPanel(id="dashboard-alerts", classes="section")
+                    yield LogPreviewPanel(id="dashboard-log", classes="section")
 
     def on_mount(self) -> None:
         self.refresh_data()

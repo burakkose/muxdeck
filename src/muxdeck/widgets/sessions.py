@@ -19,7 +19,7 @@ from muxdeck.theme import (
     FG4,
     GREEN,
     ORANGE,
-    RED,
+    ORANGE_DIM,
     YELLOW,
 )
 from muxdeck.ui_preferences import UiDensity, UiPreferences, resolve_ui_preferences
@@ -34,7 +34,13 @@ if TYPE_CHECKING:
 
 _STATUS_COLORS = {
     "active": GREEN,
-    "unclosed": RED,
+    # "unclosed" means a session was not cleanly shut down. It's a
+    # housekeeping flag, not a failure — using bright RED here made it
+    # visually compete with genuinely failed agents and trained
+    # operators to ignore the colour. ORANGE_DIM puts it in the
+    # "warning, not urgent" tier so red can stay reserved for
+    # FAILED/BLOCKED agents on the dashboard.
+    "unclosed": ORANGE_DIM,
     "completed": FG4,
 }
 
@@ -403,7 +409,7 @@ class SessionSummaryBar(Static):
         text.append("active  ", style=FG4)
         text.append(
             f"{_session_status_glyph('unclosed', preferences=preferences)} {unclosed} ",
-            style=f"bold {RED}",
+            style=f"bold {ORANGE_DIM}",
         )
         text.append("unclosed  ", style=FG4)
         text.append(

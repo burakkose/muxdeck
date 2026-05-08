@@ -1328,6 +1328,7 @@ class AgentDetailPanel(Static):
                 (("l", "logs"), ("S", "stop visible")),
             ),
             preferences=preferences,
+            primary=_primary_action_for(operator_status.kind),
         )
 
         self.update(result)
@@ -1590,17 +1591,75 @@ def _render_subtask_section(
         text.append("(details unknown)\n", style=f"italic {FG4}")
 
 
+_PRIMARY_ACTION_BY_KIND: dict[OperatorStatusKind, tuple[str, str]] = {
+    # The agent has a question for the operator. Send a message
+    # immediately rather than opening the console (which is a slower
+    # context switch). The message screen also surfaces the existing
+    # output so the operator has the context they need.
+    OperatorStatusKind.WAITING_INPUT: ("m", "send message"),
+    # The agent has work the operator should look at — review the
+    # diff/output before deciding what to do next.
+    OperatorStatusKind.REVIEW_READY: ("p", "open console"),
+    # Stuck-but-running. Resume kicks the agent forward; the operator
+    # can interrupt afterwards if the resume reveals a real problem.
+    OperatorStatusKind.BLOCKED: ("R", "resume"),
+    # Hands-off agents the operator probably wants to peek at.
+    OperatorStatusKind.STALE: ("p", "open console"),
+    OperatorStatusKind.FAILED: ("p", "open console"),
+    # Healthy agents — the most common interaction is opening the
+    # live mirror to confirm what the agent is doing.
+    OperatorStatusKind.WORKING: ("v", "live mirror"),
+    OperatorStatusKind.STARTING: ("v", "live mirror"),
+    # Terminal states. ``c`` (mark complete) is the one operator
+    # action that meaningfully changes the dashboard; opening or
+    # killing terminated panes is rarely the right next step.
+    OperatorStatusKind.COMPLETED: ("c", "mark complete"),
+    OperatorStatusKind.TERMINATED: ("c", "mark complete"),
+}
+
+
+def _primary_action_for(kind: OperatorStatusKind) -> tuple[str, str] | None:
+    """Return the contextual primary action for the selected agent.
+
+    See ``_PRIMARY_ACTION_BY_KIND`` for the per-status mapping.
+    Returns ``None`` for kinds we deliberately leave un-suggested so
+    the operator falls back to the generic ACTIONS list.
+    """
+    return _PRIMARY_ACTION_BY_KIND.get(kind)
+
+
 def _render_action_shortcuts(
     text: Text,
     rows: Sequence[Sequence[tuple[str, str]]],
     *,
     preferences: UiPreferences,
+    primary: tuple[str, str] | None = None,
 ) -> None:
+    """Render an ``ACTIONS`` section with optional state-aware primary action.
+
+    Empty rows are dropped before the section header is written so we
+    never produce an "ACTIONS" header with no body — operators read
+    that as broken UI rather than as "no actions available".
+
+    ``primary``, when supplied, is rendered on its own line at the
+    top of the section in a brighter accent style. It expresses the
+    one action the operator is most likely to want next given the
+    selected agent's state (resume on stale, message on waiting,
+    open on running, …) so the dashboard answers "what should I do
+    now?" without forcing the operator to scan every shortcut.
+    """
+    visible_rows = [row for row in rows if row]
+    if not visible_rows and primary is None:
+        return
     text.append("\n")
     _section_header(text, "actions", preferences=preferences)
-    for row in rows:
-        if not row:
-            continue
+    if primary is not None:
+        key, label = primary
+        text.append("  ▸ ", style=f"bold {AQUA}")
+        text.append(key, style=f"bold {AQUA}")
+        text.append(f" {label}", style=f"bold {FG}")
+        text.append("   primary\n", style=FG4)
+    for row in visible_rows:
         text.append("  ", style=FG4)
         for index, (key, label) in enumerate(row):
             if index:
@@ -1723,20 +1782,45 @@ def _highlight_log_line(content: str, default_style: str) -> Text:
 
 
 class AlertPanel(Static):
-    """Active attention items — compact severity badges."""
+    """Active attention items — rendered as a loud "needs attention" banner.
+
+    The dashboard's primary job is to answer "what needs my action
+    right now?". The previous "ALERTS" header sat at the bottom of the
+    sidebar in the same neutral typography as every other section,
+    which buried even critical-severity items below the agent output.
+
+    This widget now:
+
+    - Renames the section to **NEEDS ATTENTION** (matching the
+      operator vocabulary the rest of the UI uses).
+    - Adds a severity-coloured left bar to each row so the eye lands
+      on actionable items first.
+    - Collapses to ``display: none`` (via ``add_class('empty')``)
+      when there is nothing to show, returning the vertical space to
+      the output panel below it. The previous "no active alerts"
+      placeholder wasted space telling the operator that the system
+      had nothing to tell them.
+    """
 
     def set_alerts(self, alerts: Sequence[DashboardAlertView]) -> None:
         preferences = resolve_ui_preferences(self)
-        joined = Text()
-        _section_header(joined, "alerts", preferences=preferences)
         if not alerts:
-            joined.append("  no active alerts\n", style=FG4)
-            self.update(joined)
+            # Empty alert state — collapse the panel so the output
+            # panel can claim the vertical real estate. The CSS
+            # rule for ``.empty`` on ``#dashboard-alerts`` sets
+            # ``display: none``.
+            self.add_class("empty")
+            self.update(Text(""))
             return
+        self.remove_class("empty")
+        joined = Text()
+        _section_header(joined, "needs attention", preferences=preferences)
+        bar_glyph = "│" if preferences.glyphs is UiGlyphs.RICH else "|"
         for alert in alerts[:5]:
+            severity_style = _SEVERITY_STYLES.get(alert.severity, FG3)
             short_sev = alert.severity[:4].upper()
-            joined.append("  ")
-            joined.append(f"{short_sev:<4}", style=_SEVERITY_STYLES.get(alert.severity, FG3))
+            joined.append(f" {bar_glyph} ", style=f"bold {severity_style}")
+            joined.append(f"{short_sev:<4}", style=f"bold {severity_style}")
             joined.append(f" {alert.agent_name}", style=f"bold {FG1}")
             joined.append(f"  {alert.message}\n", style=FG3)
         self.update(joined)
