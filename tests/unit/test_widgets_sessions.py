@@ -398,3 +398,90 @@ def test_detail_panel_with_premium_requests_renders_premium_field() -> None:
     rendered = _render(panel)
     assert "Premium" in rendered
     assert "3 req" in rendered
+
+
+def test_detail_panel_promotes_resume_as_primary_action() -> None:
+    """Round 7: resume must be visually promoted as the primary action.
+
+    Operator feedback was that resume was buried at the bottom of the
+    panel. The new banner lifts it next to the title with the same
+    ``▸ key label   primary`` chip the dashboard uses, so the operator
+    never has to scan through metadata to find their next move.
+    """
+    panel = SessionDetailPanel()
+    panel.set_detail(_detail(is_resumable=True))
+    rendered = _render(panel)
+    assert "▸" in rendered
+    # Status banner uppercases the status name.
+    assert "ACTIVE" in rendered
+    # Primary chip text + label
+    assert "primary" in rendered
+    # Resume command remains visible as the secondary action
+    assert "copilot --resume=session-1" in rendered
+
+
+def test_detail_panel_non_resumable_offers_replay_as_primary() -> None:
+    """When a session can't resume, the primary slot falls back to ↵ replay
+    so the operator never sees an empty primary action area."""
+    panel = SessionDetailPanel()
+    panel.set_detail(_detail(is_resumable=False, status="completed"))
+    rendered = _render(panel)
+    assert "▸" in rendered
+    assert "replay" in rendered
+
+
+def test_list_panel_long_summary_no_longer_truncates_at_50_chars() -> None:
+    """Round 7: summary column ratio + slice both bumped.
+
+    Old behaviour cut titles at 50 chars (compact density) which hid
+    the meaningful tail of typical agent task names. The new slice
+    allows 72 chars in compact density and 96 in comfortable, so a
+    60-char title that previously would have been cut should now
+    survive intact.
+    """
+    panel = SessionListPanel()
+    long_title = "Fix Session Scrolling And Attention Freeze When Hopping Pages"
+    assert 50 < len(long_title) <= 72
+    item = SessionListItemView(
+        session_id="long-1",
+        summary=long_title,
+        repository="repo",
+        branch="feat/x",
+        status="active",
+        status_glyph="🟢",
+        updated="now",
+        created="now",
+        checkpoint_count=0,
+        last_event_type="agent.updated",
+        cwd="/repo",
+        is_resumable=True,
+    )
+    panel.set_sessions((item,), notify=False)
+    rendered = _render_panel(panel, width=180)
+    assert long_title in rendered
+
+
+def test_list_panel_long_repository_drops_org_prefix_for_compactness() -> None:
+    """Repository column was widened from ratio=2 to ratio=1; long repo
+    names drop the ``org/`` prefix to keep the column readable while
+    leaving Summary plenty of room."""
+    panel = SessionListPanel()
+    item = SessionListItemView(
+        session_id="repo-1",
+        summary="task",
+        repository="some-very-long-organization-name/the-actual-repo",
+        branch="main",
+        status="active",
+        status_glyph="🟢",
+        updated="now",
+        created="now",
+        checkpoint_count=0,
+        last_event_type="agent.updated",
+        cwd="/repo",
+        is_resumable=True,
+    )
+    panel.set_sessions((item,), notify=False)
+    rendered = _render_panel(panel, width=160)
+    assert "the-actual-repo" in rendered
+    # Org prefix dropped because total len > 24 chars
+    assert "some-very-long-organization-name/" not in rendered

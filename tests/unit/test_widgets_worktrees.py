@@ -274,9 +274,11 @@ def test_detail_panel_full_render_with_changes_commits_and_conflicts() -> None:
     )
     panel.set_detail(detail)
     rendered = _render(panel)
-    assert "feature/x" in rendered
-    assert "dirty" in rendered
-    assert "locked" in rendered
+    # Round-7 detail banner uppercases the branch name and surfaces
+    # primary + secondary status flags with severity-coloured chips.
+    assert "FEATURE/X" in rendered
+    assert "DIRTY" in rendered  # dirty wins precedence over locked
+    assert "+LOCKED" in rendered  # locked still shown as secondary chip
     assert "ahead 2, behind 1" in rendered
     assert "%1, %2" in rendered
     assert "+2 more" in rendered  # 8 entries, only 6 shown
@@ -295,7 +297,10 @@ def test_detail_panel_minimal_render_skips_optional_sections() -> None:
     )
     panel.set_detail(detail)
     rendered = _render(panel)
-    assert "feature/x" in rendered
+    # Banner uppercases branch names; CLEAN appears for a non-dirty,
+    # non-locked, non-conflict worktree.
+    assert "FEATURE/X" in rendered
+    assert "CLEAN" in rendered
     assert "press" in rendered
 
 
@@ -377,3 +382,76 @@ def test_start_intent_panel_default_dash_when_no_model() -> None:
     # bails on "-" — confirm the panel still renders without crashing.
     rendered = _render(panel)
     assert "feature/x" in rendered
+
+
+def test_start_intent_panel_promotes_launch_as_primary_action() -> None:
+    """Round 7: Launch agent must read as the primary action.
+
+    The panel previously showed launch as a "press s/x/↵ to open
+    settings" hint at the bottom; user feedback was that the most
+    important workflow on the worktrees screen was hiding behind the
+    field rows. Promote it to a primary-action chip with the same
+    ``▸ key label   primary`` convention the dashboard uses.
+    """
+    panel = StartIntentPanel()
+    intent = WorktreeStartAgentIntent(
+        worktree_id="wt-1",
+        repo_root="/repo",
+        worktree_path="/repo/wt",
+        branch="feature/x",
+        suggested_session_name="s",
+        suggested_window_name="w",
+        prompt="p",
+        model=None,
+    )
+    panel.set_intent(intent)
+    rendered = _render(panel)
+    assert "▸" in rendered
+    assert "launch agent" in rendered
+    assert "primary" in rendered
+
+
+def test_detail_panel_shows_clean_when_no_dirty_or_locked_or_conflict() -> None:
+    panel = WorktreeDetailPanel()
+    summary = _summary(is_dirty=False, locked=False)
+    detail = WorktreeDetailView(
+        summary=summary,
+        conflicts=(),
+        active_session_ids=(),
+        pane_targets=(),
+        branch_status="up to date",
+    )
+    panel.set_detail(detail)
+    rendered = _render(panel)
+    assert "CLEAN" in rendered
+    # When nothing is wrong, no DIRTY / LOCKED / CONFLICTS should leak in
+    assert "DIRTY" not in rendered
+    assert "LOCKED" not in rendered
+    assert "CONFLICTS" not in rendered
+
+
+def test_detail_panel_shows_conflicts_with_top_severity() -> None:
+    """When merge conflicts exist they outrank dirty / locked in the banner."""
+    panel = WorktreeDetailPanel()
+    summary = _summary(is_dirty=True, locked=True)
+    detail = WorktreeDetailView(
+        summary=summary,
+        conflicts=(
+            WorktreeConflictView(
+                code="UU",
+                message="merge conflict",
+                path="src/file.py",
+                worktree_id="wt-1",
+                agent_id=None,
+                branch="feature/x",
+            ),
+        ),
+        active_session_ids=(),
+        pane_targets=(),
+    )
+    panel.set_detail(detail)
+    rendered = _render(panel)
+    assert "CONFLICTS" in rendered
+    # Dirty + locked still surface as secondary chips so they aren't lost
+    assert "+DIRTY" in rendered
+    assert "+LOCKED" in rendered

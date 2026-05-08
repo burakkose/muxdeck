@@ -1826,7 +1826,7 @@ async def test_worktrees_screen_can_create_and_select_existing_worktrees() -> No
             await pilot.pause()
 
             assert runtime.worktrees.create_calls == [("/repo", "New task")]
-            assert "task/new-task" in rendered_text(app.screen.query_one("#worktrees-detail"))
+            assert "TASK/NEW-TASK" in rendered_text(app.screen.query_one("#worktrees-detail"))
             assert (
                 "created /repo/worktrees/new-task"
                 in rendered_text(app.screen.query_one("#shell-footer")).lower()

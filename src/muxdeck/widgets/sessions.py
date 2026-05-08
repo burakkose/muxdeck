@@ -211,8 +211,14 @@ class SessionListPanel(Static, can_focus=True):
             padding=(0, 1),
         )
         table.add_column("", width=2, no_wrap=True)  # status glyph
-        table.add_column("Summary", ratio=4 if comfortable else 3, no_wrap=True)
-        table.add_column("Repository", ratio=2, no_wrap=True)
+        # Summary gets the lion's share of the row — feedback in round
+        # 7 was that titles like "Fix Session Scrolling And Attention
+        # Fr…" routinely truncated mid-word while the Repository column
+        # (which fits in ~24 chars) wasted real estate. The fixed-width
+        # State / CPs / Updated columns are unchanged so the right edge
+        # stays predictable across rows.
+        table.add_column("Summary", ratio=5 if comfortable else 4, no_wrap=True)
+        table.add_column("Repository", ratio=1, no_wrap=True)
         table.add_column("Branch", ratio=1, no_wrap=True)
         table.add_column("Updated", width=10, no_wrap=True)
         table.add_column("CPs", width=4, justify="right")
@@ -284,7 +290,13 @@ def _build_row_cells(
     summary_text = Text()
     if item.origin == "windows":
         summary_text.append("[win] ", style=f"bold {BLUE}")
-    summary_text.append(item.summary[: 64 if comfortable else 50], style=row_style)
+    # Round 7: extend the in-row title budget. The previous limits
+    # (50/64 chars) hid the meaningful tail of most session names
+    # because most repository names are short. The Summary column now
+    # owns ratio=5 of the row, so we can afford a longer slice — the
+    # column itself will still hard-truncate when the actual viewport
+    # cannot fit, so this only affects narrow-viewport sessions.
+    summary_text.append(item.summary[: 96 if comfortable else 72], style=row_style)
     if comfortable:
         detail_parts = [item.session_id[:12], item.last_event_type]
         cwd_tail = item.cwd.rstrip("/").split("/")[-1] if item.cwd else ""
@@ -292,13 +304,20 @@ def _build_row_cells(
             detail_parts.append(cwd_tail)
         summary_text.append("\n  ", style=FG4)
         summary_text.append(item_separator(preferences).join(detail_parts[:3]), style=FG4)
+    # Repository names like ``burakkose/muxdeck`` typically fit in
+    # ~24 chars; trim the org prefix when the value is wider so the
+    # narrower ratio=1 Repository column does not soft-wrap or
+    # silently elide the meaningful tail (the repo name).
+    repo_label = item.repository
+    if len(repo_label) > 24 and "/" in repo_label:
+        repo_label = repo_label.split("/", 1)[1]
     return (
         Text(
             f"{pointer}{_session_status_glyph(item.status, preferences=preferences)}",
             style=row_style,
         ),
         summary_text,
-        Text(item.repository, style=AQUA if selected else FG4),
+        Text(repo_label, style=AQUA if selected else FG4),
         Text(item.branch[:20], style=YELLOW if selected else FG4),
         Text(item.updated, style=row_style),
         Text(str(item.checkpoint_count), style=row_style),
@@ -321,12 +340,39 @@ class SessionDetailPanel(Static):
         content = Text()
         color = _STATUS_COLORS.get(detail.status, FG4)
 
+        # ── dominant banner with severity bar ──
+        # Mirrors the dashboard / worktrees detail banners so the
+        # operator's eye lands on status + title + identity in the same
+        # place across screens.
+        bar_style = f"bold {color}"
         status_glyph = _session_status_glyph(detail.status, preferences=preferences)
-        content.append(f" {status_glyph} {detail.status.upper()} ", style=f"bold {color}")
         content.append("  ")
+        content.append("│ ", style=bar_style)
+        content.append(f"{status_glyph} {detail.status.upper()}", style=f"bold {color}")
+        content.append("   ")
         if detail.origin == "windows":
             content.append("[win] ", style=f"bold {BLUE}")
         content.append(detail.summary, style=f"bold {FG}")
+        content.append("\n")
+
+        # ── primary action chip ──
+        # Resume is the dominant operator move on this screen; round-7
+        # promotes it from the bottom to right under the banner so the
+        # operator never has to read the whole panel to know what to do
+        # next. For non-resumable sessions we offer ``↵ replay`` so the
+        # primary slot is never empty.
+        content.append("  ")
+        content.append("│ ", style=bar_style)
+        if detail.is_resumable:
+            content.append("▸ ", style=f"bold {AQUA}")
+            content.append("R", style=f"bold {AQUA}")
+            content.append(" resume", style=f"bold {FG}")
+            content.append("   primary", style=FG4)
+        else:
+            content.append("▸ ", style=f"bold {AQUA}")
+            content.append("↵", style=f"bold {AQUA}")
+            content.append(" replay", style=f"bold {FG}")
+            content.append("   session is closed — resume unavailable", style=FG4)
         content.append("\n\n")
 
         # Session ID — prominent for copy
@@ -373,12 +419,10 @@ class SessionDetailPanel(Static):
         content.append("\n")
 
         if detail.is_resumable:
-            content.append("  Resume: ", style=f"bold {FG4}")
+            content.append("  Resume command:\n", style=f"bold {FG4}")
+            content.append("  ")
             content.append(detail.resume_command, style=f"bold {GREEN}")
             content.append("\n")
-            content.append("  Press ", style=FG4)
-            content.append("R", style=f"bold {AQUA}")
-            content.append(" to resume in a new tmux window", style=FG4)
         else:
             content.append("  Session completed cleanly", style=FG4)
 

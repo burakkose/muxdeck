@@ -271,40 +271,86 @@ class WorktreeDetailPanel(Static):
 
         summary = detail.summary
 
-        # ── header: branch + status ──
-        if summary.is_main_worktree:
-            result.append("  ★ ", style=f"bold {GREEN}")
+        # ── dominant status block ──
+        # Match the dashboard detail banner so the operator can see at a
+        # glance which branch is selected, what state it is in, and where
+        # it lives. Severity-coloured left bar mirrors the alert panel
+        # convention so worktree health reads as ops state, not metadata.
+        # Precedence is conflicts > dirty > locked > clean (conflicts
+        # block work, dirty is the operator's most common next decision,
+        # locked is usually transient). Secondary flags ride along as
+        # ``+FLAG`` chips so a dirty-AND-locked worktree still surfaces
+        # both states.
+        bar_style: str
+        primary_label: str
+        primary_color: str
+        if detail.conflicts:
+            bar_style = f"bold {SEVERITY_ERROR}"
+            primary_label = "CONFLICTS"
+            primary_color = SEVERITY_ERROR
+        elif summary.is_dirty:
+            bar_style = f"bold {ORANGE}"
+            primary_label = "DIRTY"
+            primary_color = ORANGE
+        elif summary.locked:
+            bar_style = f"bold {YELLOW}"
+            primary_label = "LOCKED"
+            primary_color = YELLOW
         else:
-            result.append("    ")
-        result.append(summary.branch, style=f"bold {FG}")
-        if summary.is_dirty:
-            result.append("  dirty", style=f"bold {ORANGE}")
-        if summary.locked:
-            result.append("  locked", style=f"bold {YELLOW}")
+            bar_style = f"bold {GREEN}"
+            primary_label = "CLEAN"
+            primary_color = GREEN
+
+        glyph = "★ " if summary.is_main_worktree else "  "
+        result.append("  ")
+        result.append("│ ", style=bar_style)
+        result.append(glyph, style=f"bold {GREEN}" if summary.is_main_worktree else FG4)
+        result.append(summary.branch.upper(), style=f"bold {FG}")
+        result.append("   ")
+        result.append(primary_label, style=f"bold {primary_color}")
+        # Secondary flags. Skip the one we already used as the primary
+        # label so we don't render ``DIRTY +DIRTY``.
+        secondaries: list[tuple[str, str]] = []
+        if detail.conflicts and primary_label != "CONFLICTS":
+            secondaries.append(("CONFLICTS", SEVERITY_ERROR))
+        if summary.is_dirty and primary_label != "DIRTY":
+            secondaries.append(("DIRTY", ORANGE))
+        if summary.locked and primary_label != "LOCKED":
+            secondaries.append(("LOCKED", YELLOW))
+        for label, color in secondaries:
+            result.append("  +", style=FG4)
+            result.append(label, style=f"bold {color}")
         result.append("\n")
 
-        # ── path (shortened) ──
-        result.append(f"  {summary.path}\n", style=FG4)
+        # subtitle: tracking · ahead/behind
+        result.append("  ")
+        result.append("│  ", style=bar_style)
+        if detail.branch_status:
+            result.append(detail.branch_status, style=FG2)
+        else:
+            result.append("no upstream tracking", style=FG4)
+        ahead = summary.ahead_count or 0
+        behind = summary.behind_count or 0
+        if ahead:
+            result.append("  ·  ", style=FG4)
+            result.append(f"ahead {ahead}", style=GREEN)
+        if behind:
+            result.append("  ·  ", style=FG4)
+            result.append(f"behind {behind}", style=ORANGE)
+        result.append("\n")
+
+        # path
+        result.append("  ")
+        result.append("│  ", style=bar_style)
+        result.append(summary.path, style=FG2)
+        result.append("\n")
         result.append("\n")
 
         # ── git info ──
+        # Banner already carries branch / tracking / ahead / behind, so
+        # this section now only renders fields that aren't in the banner.
         _field_row(result, "repo", summary.repo_root, FG2)
         _field_row(result, "base", summary.base_branch, FG1)
-        _field_row(result, "tracking", detail.branch_status, FG1)
-        if summary.ahead_count is not None and summary.ahead_count > 0:
-            _field_row(
-                result,
-                "ahead",
-                str(summary.ahead_count),
-                GREEN,
-            )
-        if summary.behind_count is not None and summary.behind_count > 0:
-            _field_row(
-                result,
-                "behind",
-                str(summary.behind_count),
-                ORANGE,
-            )
         _field_row(result, "changes", detail.change_summary, FG1)
 
         # ── agent assignment ──
@@ -389,6 +435,18 @@ class StartIntentPanel(Static):
             result.append("  select a worktree to launch an agent\n", style=FG4)
             self.update(result)
             return
+
+        # Primary action chip — launching the agent IS the operational
+        # purpose of this panel. Round-7 promotes it to the top so the
+        # operator does not have to scan the field rows to find it.
+        # Mirrors the dashboard's ``▸ key label   primary`` convention.
+        result.append("  ")
+        result.append("▸ ", style=f"bold {AQUA}")
+        result.append("s", style=f"bold {AQUA}")
+        result.append(" launch agent", style=f"bold {FG}")
+        result.append("   primary", style=FG4)
+        result.append("\n\n")
+
         for label, value in (
             ("worktree", intent.worktree_path),
             ("branch", intent.branch),
@@ -398,13 +456,11 @@ class StartIntentPanel(Static):
             ("prompt", intent.prompt),
         ):
             _field_row(result, label, str(value), FG1)
-        result.append("\n  press ", style=FG4)
-        result.append("s/x/↵", style=f"bold {BLUE}")
-        result.append(" to open launch settings\n", style=FG4)
-        result.append(
-            "  launch settings can create or attach a worktree before starting\n",
-            style=FG4,
-        )
+        result.append("\n  also: ", style=FG4)
+        result.append("x", style=f"bold {BLUE}")
+        result.append(" / ", style=FG4)
+        result.append("↵", style=f"bold {BLUE}")
+        result.append(" open settings to attach an existing worktree\n", style=FG4)
         self.update(result)
 
 
