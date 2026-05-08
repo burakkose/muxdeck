@@ -112,22 +112,35 @@ def test_strip_ansi_preserves_lf_and_tab() -> None:
 
 
 def test_event_color_branches() -> None:
-    # Each branch in the function uses a distinct emoji prefix and must
-    # return a distinct color so the dashboard can visually separate
-    # event kinds. We assert on distinctness, not just truthiness — the
-    # earlier shape `assert {a, b, c, d, e}` only verified the set was
-    # non-empty (always true) and would silently pass if every branch
-    # collapsed to the same color.
-    aqua = _event_color("📖 read file")
-    green = _event_color("⚡ ran command")
-    yellow = _event_color("💭 thought")
-    orange = _event_color("⚠️ warning")
+    """Each branch maps to a graphite-safe colour or muted text.
+
+    Before the graphite redesign, every emoji prefix returned a
+    distinct accent (aqua / green / yellow / orange) which made the
+    "recent events" line look like a five-colour chip strip. Per the
+    spec colour is rare, so most event categories now collapse to
+    FG2 (muted metadata). Only the two categories that carry real
+    state survive in colour:
+
+    - ``⚡`` (success) -> GREEN
+    - ``⚠`` (warning) -> YELLOW
+
+    The other prefixes (📖, ✏️, 🔍, 💭, 🔧, anything unknown) all
+    return the muted FG2 grey because they are descriptive labels,
+    not state changes."""
+    from muxdeck.theme import GREEN, YELLOW
+
+    success = _event_color("⚡ ran command")
+    warning = _event_color("⚠️ deprecation")
+    read = _event_color("📖 read file")
+    thought = _event_color("💭 thought")
     fallback = _event_color("misc event")
-    colors = (aqua, green, yellow, orange, fallback)
-    assert all(isinstance(c, str) and c for c in colors)
-    assert len(set(colors)) == len(colors), (
-        f"event colors should be pairwise distinct, got {colors!r}"
-    )
+    assert success == GREEN
+    assert warning == YELLOW
+    # Read / thought / fallback collapse to the same muted family —
+    # the rainbow is gone on purpose.
+    assert read == fallback
+    assert thought == fallback
+    assert read not in (GREEN, YELLOW)
 
 
 def test_short_status_known_and_unknown() -> None:

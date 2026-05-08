@@ -42,7 +42,6 @@ from muxdeck.theme import (
     FG4,
     GREEN,
     ORANGE,
-    PURPLE,
     SELECTED_ROW_BG,
     SEVERITY_ERROR,
     SEVERITY_INFO,
@@ -157,24 +156,30 @@ _LOG_SOURCE_STYLES: dict[str, str] = {
     "stderr": f"bold {SEVERITY_ERROR}",
     "tmux": FG4,
     "tmux_capture": FG4,
-    # Agent speech is the signal; user prompts are context around it.
-    "assistant": AQUA,
-    "user": f"bold {PURPLE}",
+    # Agent speech is the signal; user prompts are context. The
+    # graphite redesign puts the loudest log line in primary text and
+    # demotes user prompts to FG2 so colour stays reserved for
+    # warnings/errors below.
+    "assistant": FG,
+    "user": f"bold {FG2}",
     "system": FG4,
 }
 
 
 def _event_color(event: str) -> str:
-    """Pick a color based on event emoji prefix."""
-    if event.startswith(("📖", "✏️", "🔍")):
-        return AQUA
+    """Pick a color based on event emoji prefix.
+
+    Per the graphite redesign, recent-event chips for tool / search /
+    edit output are metadata about *what* the agent did, not state. The
+    only event categories that earn colour are real state changes:
+    success (green), warning (amber), and danger (kept off the palette
+    here — error rows surface through ``_highlight_log_line`` instead).
+    """
     if event.startswith("⚡"):
         return GREEN
-    if event.startswith(("💭", "🔧")):
-        return YELLOW
     if event.startswith("⚠"):
-        return ORANGE
-    return FG
+        return YELLOW
+    return FG2
 
 
 def _section_header(text: Text, title: str, *, preferences: UiPreferences) -> None:
@@ -402,16 +407,22 @@ def _resolved_token_total(agent: DashboardAgentListItemView) -> int | None:
 def _usage_badges(agent: DashboardAgentListItemView) -> tuple[tuple[str, str], ...]:
     badges: list[tuple[str, str]] = []
     token_total = _resolved_token_total(agent)
+    # Usage badges are numeric metadata, not state. The graphite
+    # palette routes them to the gray family so they read as quiet
+    # context next to the loud status banner. Cost is the only badge
+    # that earns a touch of warmth (FG, slightly brighter) because
+    # an operator scanning for cost regressions cares about it more
+    # than tok/in/out counts.
     if token_total is not None:
-        badges.append((f"{token_total:,} tok", AQUA))
+        badges.append((f"{token_total:,} tok", FG2))
     else:
         if agent.token_input is not None:
-            badges.append((f"in {agent.token_input:,}", BLUE))
+            badges.append((f"in {agent.token_input:,}", FG2))
         if agent.token_output is not None:
-            badges.append((f"out {agent.token_output:,}", PURPLE))
+            badges.append((f"out {agent.token_output:,}", FG2))
     cost = _format_cost(agent.estimated_cost_usd)
     if cost != "-":
-        badges.append((cost, GREEN))
+        badges.append((cost, FG))
     return tuple(badges)
 
 
@@ -507,7 +518,11 @@ class StatusBar(Static):
         if "tokens" in metric_lookup:
             line.append(separator, style=FG4)
             line.append("tokens ", style=FG4)
-            line.append(f"{metric_lookup['tokens']:,}", style=f"bold {AQUA}")
+            # Token total is metadata, not state. The graphite redesign
+            # keeps it in primary text instead of bold AQUA so the
+            # active / review / waiting count badges remain the only
+            # bold-coloured cells in the bar.
+            line.append(f"{metric_lookup['tokens']:,}", style=f"bold {FG}")
         if selected is not None:
             focus, focus_style = _focus_summary(selected)
             usage_badges = _usage_badges(selected)
@@ -556,7 +571,10 @@ class FilterBar(Vertical):
         summary.append(f"/{total_agents} visible", style=FG4)
         summary.append(separator, style=FG4)
         summary.append("sort ", style=FG4)
-        summary.append(sort_label, style=AQUA)
+        # Sort label is metadata, not a primary surface. Keep it in
+        # primary text instead of AQUA so colour stays reserved for
+        # the attention / filter chips above.
+        summary.append(sort_label, style=FG2)
         if attention_only:
             summary.append(separator, style=FG4)
             summary.append("attention", style=f"bold {ORANGE}")
@@ -566,7 +584,10 @@ class FilterBar(Vertical):
         if filter_text and filter_text.strip():
             summary.append(separator, style=FG4)
             summary.append("query ", style=FG4)
-            summary.append(filter_text.strip(), style=YELLOW)
+            # Query value is metadata. YELLOW is reserved for the
+            # stale / warning state — using it on the filter chip
+            # made every search look like an alert.
+            summary.append(filter_text.strip(), style=FG2)
         else:
             summary.append(separator, style=FG4)
             summary.append("search name, branch, task, or status", style=FG4)
@@ -1069,7 +1090,10 @@ def _render_subagent_row(
     # filtered out upstream in :meth:`AgentListPanel._rebuild_rows`.
     comfortable = preferences.density is UiDensity.COMFORTABLE
     glyph = ui_symbol("subagent", preferences=preferences)
-    glyph_color = AQUA
+    # Sub-agent rows are children of an agent in the list. Tone the
+    # connector glyph down to FG3 (muted label tier) so it reads as
+    # tree structure, not as a primary action surface.
+    glyph_color = FG3
     duration = _format_subagent_duration(subagent)
     label = Text()
     label.append("    ", style=FG4)
@@ -1198,9 +1222,11 @@ class AgentDetailPanel(Static):
         activity = item.current_activity or operator_status.reason
         if activity and activity != subtitle and activity != task_title:
             result.append("  ")
+            # Activity arrow is a quiet directional cue, not a primary
+            # action. Demote to FG3 so it reads as muted prefix.
             result.append(
                 f"{ui_symbol('detail-arrow', preferences=preferences)} ",
-                style=f"bold {AQUA}",
+                style=FG3,
             )
             result.append(activity, style=FG1)
             result.append("\n")
@@ -1223,10 +1249,15 @@ class AgentDetailPanel(Static):
             result.append("\n")
 
         # ── compact metadata rows ──
+        # Graphite redesign: branch / repo / worktree / window / pane
+        # are all metadata. Move them to the FG2 family so colour stays
+        # reserved for the status banner above and the primary action
+        # chip below. The previous PURPLE branch + BLUE pane chips made
+        # the detail panel look like a kids' colouring book.
         _append_inline_fields(
             result,
             (
-                ("branch", item.branch, PURPLE),
+                ("branch", item.branch, FG2),
                 ("repo", item.repo_name, FG2),
                 ("worktree", item.worktree_name, FG2),
             ),
@@ -1252,7 +1283,7 @@ class AgentDetailPanel(Static):
             result,
             (
                 ("window", item.window_name, FG2),
-                ("pane", item.pane_id, BLUE),
+                ("pane", item.pane_id, FG2),
             ),
             preferences=preferences,
         )
@@ -1265,7 +1296,7 @@ class AgentDetailPanel(Static):
             (
                 ("uptime", _format_duration(item.started_at), FG2),
                 ("idle", _format_idle(item.idle_seconds), FG2),
-                ("pulse", pulse, AQUA),
+                ("pulse", pulse, FG2),
             ),
             preferences=preferences,
         )
@@ -1276,26 +1307,30 @@ class AgentDetailPanel(Static):
             or item.token_output is not None
             or cost != "-"
         ):
-            result.append("  usage\n", style=f"bold {FG4}")
+            # Usage rows: the field-row helper carries its own muted
+            # label tier. Values are numeric metadata, not state — keep
+            # them all in FG / FG2 so the section reads as one calm
+            # block instead of a four-colour stoplight.
+            result.append("  usage\n", style=f"bold {FG3}")
             _field_row(
                 result,
                 "total",
                 f"{token_total:,}" if token_total is not None else None,
-                AQUA,
+                FG,
             )
             _field_row(
                 result,
                 "input",
                 f"{item.token_input:,}" if item.token_input is not None else None,
-                BLUE,
+                FG2,
             )
             _field_row(
                 result,
                 "output",
                 f"{item.token_output:,}" if item.token_output is not None else None,
-                PURPLE,
+                FG2,
             )
-            _field_row(result, "cost", cost if cost != "-" else None, GREEN)
+            _field_row(result, "cost", cost if cost != "-" else None, FG2)
 
         # ── recent parsed events (deduplicated) ──
         if agent.recent_events:
@@ -1374,15 +1409,19 @@ class AgentDetailPanel(Static):
 
         if subagent.description:
             result.append("  ")
+            # Match the dashboard activity arrow: muted prefix.
             result.append(
                 f"{ui_symbol('detail-arrow', preferences=preferences)} ",
-                style=f"bold {AQUA}",
+                style=FG3,
             )
             result.append(subagent.description, style=FG1)
             result.append("\n")
 
         result.append("\n")
-        _field_row(result, "type", subagent.agent_type or subagent.agent_name, PURPLE)
+        # Sub-agent type / id / duration are metadata. Keep PURPLE for
+        # the type field would re-introduce the rainbow we're trying
+        # to remove, so move everything to FG2.
+        _field_row(result, "type", subagent.agent_type or subagent.agent_name, FG2)
         _field_row(result, "id", subagent.tool_call_id[:16], FG4)
         _field_row(result, "duration", _format_subagent_duration(subagent), FG2)
 
@@ -1392,7 +1431,7 @@ class AgentDetailPanel(Static):
 
         if subagent.prompt:
             result.append("\n")
-            result.append("  input\n", style=f"bold {FG4}")
+            result.append("  input\n", style=f"bold {FG3}")
             snippet = _truncate(subagent.prompt, 800)
             for line in snippet.splitlines() or [snippet]:
                 result.append(f"  {line}\n", style=FG2)
@@ -1412,7 +1451,7 @@ class AgentDetailPanel(Static):
                 header = "  launch ack\n"
             else:
                 header = "  output\n"
-            result.append(header, style=f"bold {FG4}")
+            result.append(header, style=f"bold {FG3}")
             snippet = _truncate(subagent.result_content, 1200)
             for line in snippet.splitlines() or [snippet]:
                 result.append(f"  {line}\n", style=FG1)
@@ -1450,13 +1489,13 @@ def _render_subagent_metrics(text: Text, subagent: DashboardSubAgentView) -> Non
     if subagent.duration_ms is not None:
         _field_row(text, "elapsed", _format_duration_ms(subagent.duration_ms), FG2)
     if subagent.total_tokens is not None:
-        _field_row(text, "tokens", f"{subagent.total_tokens:,}", AQUA)
+        _field_row(text, "tokens", f"{subagent.total_tokens:,}", FG)
     if subagent.total_tool_calls is not None:
         _field_row(text, "tools", str(subagent.total_tool_calls), FG2)
     if subagent.model:
-        _field_row(text, "model", subagent.model, PURPLE)
+        _field_row(text, "model", subagent.model, FG2)
     if subagent.error_message:
-        text.append("  error     ", style=FG4)
+        text.append("  error     ", style=FG3)
         text.append(f"{_truncate(subagent.error_message, 400)}\n", style=SEVERITY_ERROR)
 
 
@@ -1468,7 +1507,7 @@ def _render_subagent_interactions(
 ) -> None:
     interactions = subagent.read_interactions
     text.append("\n")
-    text.append(f"  interactions ({len(interactions)})\n", style=f"bold {FG4}")
+    text.append(f"  interactions ({len(interactions)})\n", style=f"bold {FG3}")
     if not interactions:
         text.append("  —\n", style=FG4)
         return
@@ -1477,7 +1516,7 @@ def _render_subagent_interactions(
     visible = interactions[-10:]
     for interaction in visible:
         ts = interaction.timestamp.astimezone(UTC).strftime("%H:%M:%S")
-        text.append(f"  {ui_symbol('collapsed', preferences=preferences)} ", style=AQUA)
+        text.append(f"  {ui_symbol('collapsed', preferences=preferences)} ", style=FG3)
         text.append(ts, style=FG4)
         text.append("  read_agent(", style=FG2)
         text.append(interaction.arguments_summary, style=FG1)
@@ -1572,7 +1611,10 @@ def _render_subtask_section(
             preferences=preferences,
         )
         text.append(f"  {connector} ", style=FG4)
-        text.append(task.agent_type_label, style=f"bold {AQUA}")
+        # Sub-task type label is metadata; status colour next to it is
+        # what carries state. Keep type in primary text to avoid the
+        # rainbow effect.
+        text.append(task.agent_type_label, style=f"bold {FG}")
         if task.model:
             short_model = task.model.split("-")[-1] if "-" in task.model else task.model
             text.append(f" ({short_model})", style=FG3)
@@ -1712,7 +1754,10 @@ class LogPreviewPanel(Static):
             return
         if not agent.log_preview:
             if _resolved_operator_status(agent.item).kind is OperatorStatusKind.STARTING:
-                result.append("  launching — waiting for first output…\n", style=AQUA)
+                # "Waiting for first output" is a transient placeholder.
+                # Keep it muted so it doesn't compete with steady-state
+                # log content.
+                result.append("  launching — waiting for first output…\n", style=FG3)
             else:
                 result.append("  no recent output\n", style=FG4)
             self.update(result)
@@ -1771,11 +1816,14 @@ def _highlight_log_line(content: str, default_style: str) -> Text:
     elif any(kw in lower for kw in ("warning", "warn", "deprecat")):
         text.append(content, style=YELLOW)
     elif content.startswith(("●", "✓", "✗", "│", "└", "├")):
-        # Tool calls / tree output
-        text.append(content, style=AQUA)
+        # Tool calls / tree output. The tree art is its own visual cue;
+        # the graphite redesign keeps these in the muted-label tier so
+        # the log preview reads as one calm block instead of a
+        # rainbow.
+        text.append(content, style=FG3)
     elif content.startswith(("$", ">", "λ")):
-        # Command prompts
-        text.append(content, style=f"bold {GREEN}")
+        # Command prompts — secondary signal, but worth a quiet hint.
+        text.append(content, style=f"bold {FG2}")
     else:
         text.append(content, style=FG3)
     return text
