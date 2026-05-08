@@ -1833,6 +1833,58 @@ class ComposeMirrorAsyncPerfTests(unittest.TestCase):
         assert warning is not None
         assert "no such pane" in warning
 
+    def test_background_snapshot_tick_skips_during_interact_mode(self) -> None:
+        """Snapshot capture must pause while the operator is typing.
+
+        The pipe-pane stream is the source of truth during interact
+        mode — every keystroke echoes back through ``_drain_ring``
+        within ~100ms. A snapshot resync at this point almost always
+        disagrees with the streamed tail because the cursor moved
+        between captures, and the apply path then invalidates the
+        viewer's decoded cache and re-renders the entire ~2000-line
+        buffer on the UI thread. That hitch (every 1 second while
+        typing) is what made interact mode feel "extremely laggy" to
+        the operator.
+        """
+
+        async def scenario(tmp: Path) -> tuple[int, int]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+            app = _MuxdeckHarness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%51",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._mirror_input_active = True
+                snapshot_calls_before = len(tmux.captures)
+                screen._tick_snapshot_in_background()
+                await pilot.pause()
+                snapshot_calls_after_input = len(tmux.captures)
+                # Once the operator exits interact mode the very next
+                # tick must resume so genuine drift gets corrected.
+                screen._mirror_input_active = False
+                screen._tick_snapshot_in_background()
+                await pilot.pause()
+                snapshot_calls_after_resume = len(tmux.captures)
+                return (
+                    snapshot_calls_after_input - snapshot_calls_before,
+                    snapshot_calls_after_resume - snapshot_calls_after_input,
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            during_input, after_resume = asyncio.run(scenario(Path(tmp)))
+
+        assert during_input == 0
+        assert after_resume == 1
+
 
 # Mark intentionally retained references to avoid unused-import errors
 # from ruff in case future tests don't reach them.

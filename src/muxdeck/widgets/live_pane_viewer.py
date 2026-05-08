@@ -249,13 +249,19 @@ class LivePaneViewer(RichLog):
             for raw_line in lines:
                 for decoded in self._decoder.decode(raw_line):
                     self._decoded.append(decoded)
-        self.clear()
-        for cached in self._decoded:
-            self._write_styled(cached)
-        if follow_tail:
-            self.scroll_end(animate=False, immediate=True, force=True, x_axis=False)
-            return
-        self.scroll_to(y=previous_scroll_y, animate=False, immediate=True, force=True)
+        # Coalesce the clear + N writes into a single Textual repaint.
+        # Without ``batch_update`` each ``RichLog.write`` triggers an
+        # individual refresh which on a full 2000-line buffer adds up
+        # to a multi-frame hitch on the UI thread when a snapshot tick
+        # corrects the tail.
+        with self.app.batch_update():
+            self.clear()
+            for cached in self._decoded:
+                self._write_styled(cached)
+            if follow_tail:
+                self.scroll_end(animate=False, immediate=True, force=True, x_axis=False)
+            else:
+                self.scroll_to(y=previous_scroll_y, animate=False, immediate=True, force=True)
 
     def _write_styled(self, text: Text) -> None:
         # RichLog.write is the documented append API. Guard with

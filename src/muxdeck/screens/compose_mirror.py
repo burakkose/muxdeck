@@ -382,6 +382,19 @@ class ComposeWithMirrorScreen(ShellScreen):
         """
         if self._adapter is None:
             return
+        if self._mirror_input_active:
+            # While the operator is typing into the live pane the
+            # pipe-pane stream is the source of truth — every keystroke
+            # echoes back through ``_drain_ring`` and lands in the
+            # viewer within ~100ms. A snapshot resync at this point
+            # almost always disagrees with the streamed tail (the
+            # cursor moved between snapshots) and the apply path then
+            # invalidates the viewer's decoded cache and re-renders the
+            # full ~2000-line buffer on the UI thread, hitching every
+            # keystroke. Skip the tick entirely; the next periodic
+            # capture after the operator presses ``esc`` will resync
+            # any genuine drift.
+            return
         if self._snapshot_in_flight:
             # Another tick is still mid-capture. Don't queue another
             # — let it complete; the next periodic tick will pick up
