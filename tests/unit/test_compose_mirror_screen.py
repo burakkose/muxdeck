@@ -1838,21 +1838,22 @@ class ComposeMirrorAsyncPerfTests(unittest.TestCase):
         assert warning is not None
         assert "no such pane" in warning
 
-    def test_background_snapshot_tick_skips_during_interact_mode(self) -> None:
-        """Snapshot capture must pause while the operator is typing.
+    def test_background_snapshot_tick_runs_during_interact_mode(self) -> None:
+        """Snapshot capture must keep running while the operator is typing.
 
-        The pipe-pane stream is the source of truth during interact
-        mode — every keystroke echoes back through ``_drain_ring``
-        within ~100ms. A snapshot resync at this point almost always
-        disagrees with the streamed tail because the cursor moved
-        between captures, and the apply path then invalidates the
-        viewer's decoded cache and re-renders the entire ~2000-line
-        buffer on the UI thread. That hitch (every 1 second while
-        typing) is what made interact mode feel "extremely laggy" to
-        the operator.
+        For TUI programs that redraw their input prompt via ANSI
+        cursor positioning (Copilot CLI, vim, less, …), the
+        line-oriented pipe-pane stream alone shows nothing
+        intelligible — only the snapshot resync sees the actual
+        rendered pane state. If the snapshot tick paused during
+        interact, the operator would see nothing they typed until
+        they pressed ``esc`` and a snapshot fired again. The fix
+        keeps the snapshot running and routes the apply path through
+        the cheap ``set_snapshot`` instead of the expensive
+        ``replace_tail`` so the UI stays responsive.
         """
 
-        async def scenario(tmp: Path) -> tuple[int, int]:
+        async def scenario(tmp: Path) -> int:
             tmux = _FakeTmuxStream()
             stream = PaneStreamAdapter(tmux=tmux)
             actions = _FakeActionService()
@@ -1869,26 +1870,144 @@ class ComposeMirrorAsyncPerfTests(unittest.TestCase):
                 await app.push_screen(screen)
                 await pilot.pause()
                 screen._mirror_input_active = True
+                # Reset throttle so the next tick fires immediately
+                # — matches the production behaviour from
+                # ``_set_mirror_input_mode`` entering interact mode.
+                screen._last_snapshot_tick = 0.0
                 snapshot_calls_before = len(tmux.captures)
                 screen._tick_snapshot_in_background()
                 await pilot.pause()
-                snapshot_calls_after_input = len(tmux.captures)
-                # Once the operator exits interact mode the very next
-                # tick must resume so genuine drift gets corrected.
-                screen._mirror_input_active = False
-                screen._tick_snapshot_in_background()
-                await pilot.pause()
-                snapshot_calls_after_resume = len(tmux.captures)
-                return (
-                    snapshot_calls_after_input - snapshot_calls_before,
-                    snapshot_calls_after_resume - snapshot_calls_after_input,
-                )
+                return len(tmux.captures) - snapshot_calls_before
 
         with tempfile.TemporaryDirectory() as tmp:
-            during_input, after_resume = asyncio.run(scenario(Path(tmp)))
+            during_input = asyncio.run(scenario(Path(tmp)))
 
-        assert during_input == 0
-        assert after_resume == 1
+        assert during_input == 1
+
+    def test_background_snapshot_apply_uses_set_snapshot_during_interact(self) -> None:
+        """During interact, divergent snapshots route through ``set_snapshot``.
+
+        ``replace_tail`` invalidates the viewer's decoded cache and
+        forces a ~2000-line ``_rerender_from_buffer`` on the UI
+        thread. Even with ``app.batch_update()`` that's a multi-frame
+        stall every tick, which is what made interact mode feel
+        "extremely laggy" after the previous round of fixes. The
+        cheap ``set_snapshot`` does a clear + append of the ~50-line
+        snapshot, which is what the operator wants while typing
+        anyway (fresh visible pane, no stale scrollback).
+        """
+
+        async def scenario(tmp: Path) -> tuple[int, int]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+            app = _MuxdeckHarness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%52",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                viewer = app.screen.query_one(LivePaneViewer)
+                # Seed the viewer so ``has_content`` is True — the
+                # interact branch differs from the empty branch.
+                viewer.set_snapshot("seeded baseline content\n")
+                screen._last_snapshot = "seeded baseline content\n"
+                set_snapshot_calls = 0
+                replace_tail_calls = 0
+                original_set = viewer.set_snapshot
+                original_replace = viewer.replace_tail
+
+                def _track_set(payload: object) -> None:
+                    nonlocal set_snapshot_calls
+                    set_snapshot_calls += 1
+                    original_set(payload)  # type: ignore[arg-type]
+
+                def _track_replace(payload: object) -> None:
+                    nonlocal replace_tail_calls
+                    replace_tail_calls += 1
+                    original_replace(payload)  # type: ignore[arg-type]
+
+                viewer.set_snapshot = _track_set  # type: ignore[assignment]
+                viewer.replace_tail = _track_replace  # type: ignore[assignment]
+                screen._mirror_input_active = True
+                screen._apply_background_snapshot(
+                    "fresh divergent snapshot from tmux\n",
+                    None,
+                )
+                await pilot.pause()
+                return set_snapshot_calls, replace_tail_calls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            set_calls, replace_calls = asyncio.run(scenario(Path(tmp)))
+
+        assert set_calls == 1
+        assert replace_calls == 0
+
+    def test_background_snapshot_apply_uses_replace_tail_outside_interact(self) -> None:
+        """Outside interact, snapshot apply still preserves scrollback.
+
+        The non-interact viewer is the read-only mirror; operators
+        scroll back through their session history there. We must
+        keep ``replace_tail`` (which preserves the streamed buffer
+        and only swaps the tail rows) so that history isn't wiped
+        by every periodic snapshot.
+        """
+
+        async def scenario(tmp: Path) -> tuple[int, int]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+            app = _MuxdeckHarness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%53",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                viewer = app.screen.query_one(LivePaneViewer)
+                viewer.set_snapshot("seeded baseline content\n")
+                screen._last_snapshot = "seeded baseline content\n"
+                set_snapshot_calls = 0
+                replace_tail_calls = 0
+                original_set = viewer.set_snapshot
+                original_replace = viewer.replace_tail
+
+                def _track_set(payload: object) -> None:
+                    nonlocal set_snapshot_calls
+                    set_snapshot_calls += 1
+                    original_set(payload)  # type: ignore[arg-type]
+
+                def _track_replace(payload: object) -> None:
+                    nonlocal replace_tail_calls
+                    replace_tail_calls += 1
+                    original_replace(payload)  # type: ignore[arg-type]
+
+                viewer.set_snapshot = _track_set  # type: ignore[assignment]
+                viewer.replace_tail = _track_replace  # type: ignore[assignment]
+                screen._mirror_input_active = False
+                screen._apply_background_snapshot(
+                    "fresh divergent snapshot from tmux\n",
+                    None,
+                )
+                await pilot.pause()
+                return set_snapshot_calls, replace_tail_calls
+
+        with tempfile.TemporaryDirectory() as tmp:
+            set_calls, replace_calls = asyncio.run(scenario(Path(tmp)))
+
+        assert set_calls == 0
+        assert replace_calls == 1
 
     def test_keystroke_burst_coalesces_into_single_send_call(self) -> None:
         """A burst of printable keystrokes lands on tmux in one batched call.

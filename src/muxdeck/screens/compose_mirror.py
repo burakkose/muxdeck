@@ -64,7 +64,18 @@ _log = logging.getLogger(__name__)
 # * the ring-file drain already reflects fresh line output within
 #   100ms, so the snapshot is purely a correction layer.
 _POLL_INTERVAL_SEC = 0.05
+# Snapshot resync runs at two cadences: ``_SNAPSHOT_SYNC_INTERVAL_SEC``
+# is the steady-state interval when the operator is just watching the
+# pane, and ``_SNAPSHOT_INTERACT_INTERVAL_SEC`` is the faster cadence
+# during interact mode where the snapshot is the only source of
+# truth for TUI programs (Copilot CLI, vim, less, …) that redraw
+# their input area via ANSI cursor positioning rather than line-
+# oriented stdout. Without the faster tick the operator would see
+# nothing in the mirror until they pressed ``esc`` and triggered the
+# steady-state snapshot — which is exactly the regression operators
+# reported after the previous "skip snapshot during interact" fix.
 _SNAPSHOT_SYNC_INTERVAL_SEC = 1.0
+_SNAPSHOT_INTERACT_INTERVAL_SEC = 0.4
 _SNAPSHOT_WORKER_GROUP = "compose-snapshot"
 # Maximum time to wait for additional keystrokes after the first
 # arrives before flushing them to tmux. Coalescing keystrokes into a
@@ -208,6 +219,12 @@ class ComposeWithMirrorScreen(ShellScreen):
         # tmux subprocess can never accumulate a backlog of pending
         # captures and starve the worker pool.
         self._snapshot_in_flight = False
+        # Monotonic timestamp of the last snapshot dispatch. The
+        # snapshot tick is wall-clock-throttled rather than
+        # ``set_interval``-throttled so we can change the cadence
+        # dynamically when the operator enters/exits interact mode
+        # without tearing down a Textual interval.
+        self._last_snapshot_tick = 0.0
 
     @property
     def editor_height(self) -> int:
@@ -327,7 +344,17 @@ class ComposeWithMirrorScreen(ShellScreen):
         # it on the UI thread froze the event loop several times a
         # second. We dispatch each tick to a worker thread instead so
         # keystrokes, scrolling, and other paints stay snappy.
-        self.set_interval(_SNAPSHOT_SYNC_INTERVAL_SEC, self._tick_snapshot_in_background)
+        #
+        # The Textual interval fires at the *interact* cadence so the
+        # tick has a chance to dispatch a snapshot whenever the
+        # operator is typing. The wall-clock throttle inside
+        # ``_tick_snapshot_in_background`` falls back to the slower
+        # steady-state cadence when the operator is just watching, so
+        # subprocess overhead stays at ~1 capture/sec outside interact.
+        self.set_interval(
+            _SNAPSHOT_INTERACT_INTERVAL_SEC,
+            self._tick_snapshot_in_background,
+        )
 
     # ── polling ──────────────────────────────────────────────────────
 
@@ -400,21 +427,14 @@ class ComposeWithMirrorScreen(ShellScreen):
         We now fan the capture out to a worker thread and only the
         cheap ``viewer.set_snapshot`` / ``viewer.replace_tail`` paths
         run on the UI thread when the result lands.
+
+        During interact mode we throttle to the faster interval so the
+        operator sees their typed characters within ~400 ms even when
+        the underlying program (Copilot CLI, vim, …) re-renders its
+        input via cursor positioning rather than line-oriented stdout
+        the line-buffered pipe-pane stream can decode.
         """
         if self._adapter is None:
-            return
-        if self._mirror_input_active:
-            # While the operator is typing into the live pane the
-            # pipe-pane stream is the source of truth — every keystroke
-            # echoes back through ``_drain_ring`` and lands in the
-            # viewer within ~100ms. A snapshot resync at this point
-            # almost always disagrees with the streamed tail (the
-            # cursor moved between snapshots) and the apply path then
-            # invalidates the viewer's decoded cache and re-renders the
-            # full ~2000-line buffer on the UI thread, hitching every
-            # keystroke. Skip the tick entirely; the next periodic
-            # capture after the operator presses ``esc`` will resync
-            # any genuine drift.
             return
         if self._snapshot_in_flight:
             # Another tick is still mid-capture. Don't queue another
@@ -422,6 +442,19 @@ class ComposeWithMirrorScreen(ShellScreen):
             # any drift. Queueing would let a slow capture starve
             # the worker pool indefinitely on a busy system.
             return
+        loop = asyncio.get_event_loop()
+        now = loop.time()
+        # Steady-state cadence stays at 1 s to keep tmux subprocess
+        # overhead low when the operator is just watching the pane.
+        # Interact mode tightens the cadence for fresh feedback.
+        target_interval = (
+            _SNAPSHOT_INTERACT_INTERVAL_SEC
+            if self._mirror_input_active
+            else _SNAPSHOT_SYNC_INTERVAL_SEC
+        )
+        if (now - self._last_snapshot_tick) < target_interval:
+            return
+        self._last_snapshot_tick = now
         self._snapshot_in_flight = True
         adapter = self._adapter
         pane_id = self._pane_id
@@ -455,6 +488,14 @@ class ComposeWithMirrorScreen(ShellScreen):
         ``_sync_snapshot(force=True)`` directly) keeps its
         synchronous semantics for tests and the existing wait-for-r
         UX guarantee.
+
+        During interact mode we deliberately use ``set_snapshot``
+        (full replace, ~50 lines) rather than ``replace_tail`` (which
+        forces a 2000-line ``_rerender_from_buffer`` on the UI
+        thread). The operator is typing, not scrolling history; they
+        need a fresh, hitch-free view of the pane every ~400 ms. The
+        steady-state path keeps ``replace_tail`` so non-interact
+        viewers preserve their pipe-pane scrollback.
         """
         self._snapshot_in_flight = False
         if not self.is_mounted:
@@ -478,6 +519,14 @@ class ComposeWithMirrorScreen(ShellScreen):
         self._sync_warning = None
         if snapshot != self._last_snapshot:
             if viewer.matches_snapshot_tail(snapshot):
+                self._last_snapshot = snapshot
+            elif self._mirror_input_active and snapshot:
+                # Cheap full-replace during interact: avoids the
+                # ~2000-line decode + write rerender that
+                # ``replace_tail`` triggers when the streamed tail
+                # disagrees with the snapshot (which happens almost
+                # every tick while the operator types).
+                viewer.set_snapshot(snapshot)
                 self._last_snapshot = snapshot
             elif viewer.has_content and snapshot:
                 viewer.replace_tail(snapshot)
@@ -738,6 +787,11 @@ class ComposeWithMirrorScreen(ShellScreen):
         self._mirror_input_active = enabled
         if enabled:
             self.query_one(LivePaneViewer).focus()
+            # Reset the snapshot throttle so the operator gets a
+            # fresh capture on the very next interval tick rather
+            # than waiting up to a full ``_SNAPSHOT_SYNC_INTERVAL_SEC``
+            # window if the last snapshot just fired.
+            self._last_snapshot_tick = 0.0
         self._refresh_guidance()
 
     def _refresh_guidance(self, *, update_status: bool = True) -> None:
