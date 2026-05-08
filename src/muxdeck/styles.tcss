@@ -139,6 +139,7 @@ Screen {
 #dashboard-log {
     height: 1fr;
     min-height: 8;
+    max-height: 18;
     border-top: solid #191D25;
     padding-top: 0;
 }

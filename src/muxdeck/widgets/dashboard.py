@@ -1747,7 +1747,7 @@ class LogPreviewPanel(Static):
         # row and pushing freshly-arrived lines out of the bottom of
         # the panel.
         result = Text(no_wrap=True, overflow="ellipsis")
-        _section_header(result, "output", preferences=preferences)
+        _section_header(result, "output preview", preferences=preferences)
         if agent is None:
             result.append("  no recent output\n", style=FG4)
             self.update(result)
