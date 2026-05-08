@@ -398,6 +398,24 @@ class PaneStreamAdapter:
             include_escape_sequences=True,
         )
 
+    def capture_tail(self, pane_id: str, *, lines: int = 100) -> str:
+        """Capture the last ``lines`` rows of the pane plus scrollback.
+
+        Tailored for the dashboard's "Output" panel, which needs a
+        live ``tail -f``-style window over the agent pane without the
+        latency of the discovery loop's stored ``log_chunks``. Joins
+        wrapped lines and strips ANSI because the consumer
+        (``LogPreviewPanel``) collapses ANSI before rendering.
+        """
+        if lines <= 0:
+            msg = "lines must be positive"
+            raise ValueError(msg)
+        return self._tmux.capture_pane(
+            pane_id,
+            start_line=-lines,
+            join_wrapped_lines=True,
+        )
+
     def start_pipe(self, pane_id: str, target_path: Path) -> None:
         """Begin streaming pane output into ``target_path``.
 

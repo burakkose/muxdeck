@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -16,6 +18,7 @@ from muxdeck.controllers import (
     AgentIntentView,
     DashboardAgentListItemView,
     DashboardFilterState,
+    DashboardLogLineView,
     DashboardSelectedAgentView,
     DashboardSort,
     DashboardSortField,
@@ -58,6 +61,9 @@ _SORT_ORDER: tuple[DashboardSortField, ...] = (
 
 _DASHBOARD_WORKER = "dashboard_load"
 _DASHBOARD_DETAIL_WORKER = "dashboard_detail"
+_DASHBOARD_LIVE_TAIL_WORKER = "dashboard_live_tail"
+_DASHBOARD_LIVE_TAIL_INTERVAL_SEC = 1.0
+_DASHBOARD_LIVE_TAIL_CAPTURE_LINES = 200
 
 _NOTIFY_SEVERITY: dict[str, Literal["information", "warning", "error"]] = {
     "info": "information",
@@ -99,6 +105,19 @@ class DashboardScreen(ShellScreen):
         # ``build_state`` twice back-to-back on every cold open and any
         # dashboard refresh that is in flight piles up.
         self._skip_next_show_refresh: bool = True
+        # Live-tail state for the "Selected agent · output" panel.
+        # Without this loop the panel only refreshes when the discovery
+        # service writes a new ``log_chunks`` row (every >=2s, plus a
+        # content-dedup that freezes the panel when nothing changed).
+        # The tail capture runs in a worker thread so the subprocess
+        # round-trip never blocks the UI event loop.
+        self._live_tail_timer: Timer | None = None
+        self._live_tail_token: int = 0
+        self._live_tail_agent_id: str | None = None
+        self._live_tail_pane_id: str | None = None
+        self._live_tail_stream: PaneStreamAdapter | None = None
+        self._live_tail_lines: dict[str, tuple[DashboardLogLineView, ...]] = {}
+        self._live_tail_sequence: int = 0
 
     @property
     def current_filters(self) -> DashboardFilterState:
@@ -137,6 +156,23 @@ class DashboardScreen(ShellScreen):
             self._skip_next_show_refresh = False
             return
         self.refresh_data()
+        if self._selected_agent_id is not None and self._live_tail_timer is None:
+            self._start_live_tail(self._selected_agent_id)
+
+    def on_screen_resume(self) -> None:
+        # Textual switches between modes by hiding instead of unmounting,
+        # so ``set_interval`` timers from the previous activation keep
+        # firing in the background. Stop the tail in ``on_screen_suspend``
+        # and restart it here to avoid wasting subprocess calls on a
+        # dashboard the operator is no longer looking at.
+        if self._selected_agent_id is not None and self._live_tail_timer is None:
+            self._start_live_tail(self._selected_agent_id)
+
+    def on_screen_suspend(self) -> None:
+        self._stop_live_tail()
+
+    def on_unmount(self) -> None:
+        self._stop_live_tail()
 
     def refresh_data(self) -> None:
         sync_report = self.muxdeck_app.last_sync_report
@@ -260,7 +296,18 @@ class DashboardScreen(ShellScreen):
                 self.query_one(AgentDetailPanel).set_subagent(panel.selected_subagent)
             else:
                 self.query_one(AgentDetailPanel).set_agent(self._state.selected_agent)
-            self.query_one(LogPreviewPanel).set_logs(self._state.selected_agent)
+            self.query_one(LogPreviewPanel).set_logs(
+                self._with_live_preview(self._state.selected_agent),
+            )
+        # Cold-start: when the dashboard first paints with a remembered
+        # selection (or the worker picked one for us), no AgentSelected
+        # message will ever fire — start the live tail here so the
+        # output panel updates without waiting for the operator to move
+        # the cursor.
+        if effective_selected is not None and self._live_tail_agent_id != effective_selected:
+            self._start_live_tail(effective_selected)
+        elif effective_selected is None:
+            self._stop_live_tail()
         self.query_one(AlertPanel).set_alerts(self._state.alerts)
         attention_controller = getattr(self.runtime, "attention", None)
         if attention_controller is not None:
@@ -310,6 +357,9 @@ class DashboardScreen(ShellScreen):
         if self._detail_timer is not None:
             self._detail_timer.stop()
         self._detail_timer = self.set_timer(0.1, self._schedule_selected_detail_worker)
+        # Restart the live-tail loop on the freshly selected pane. The
+        # capture itself runs in a worker thread, so this is cheap.
+        self._start_live_tail(self._selected_agent_id)
 
     def on_agent_list_panel_sub_agent_highlighted(
         self,
@@ -839,7 +889,7 @@ class DashboardScreen(ShellScreen):
             self.query_one(AgentDetailPanel).set_subagent(panel.selected_subagent)
         else:
             self.query_one(AgentDetailPanel).set_agent(view)
-        self.query_one(LogPreviewPanel).set_logs(view)
+        self.query_one(LogPreviewPanel).set_logs(self._with_live_preview(view))
 
     def _update_selected_detail(self) -> None:
         """Lightweight: rebuild only the detail panels for the newly selected agent."""
@@ -881,7 +931,7 @@ class DashboardScreen(ShellScreen):
             self.query_one(AgentDetailPanel).set_subagent(panel.selected_subagent)
         else:
             self.query_one(AgentDetailPanel).set_agent(selected_view)
-        self.query_one(LogPreviewPanel).set_logs(selected_view)
+        self.query_one(LogPreviewPanel).set_logs(self._with_live_preview(selected_view))
 
     def _resolve_live_mirror_target(
         self,
@@ -911,6 +961,160 @@ class DashboardScreen(ShellScreen):
         if tmux is None:
             return None
         return PaneStreamAdapter(tmux=tmux.with_socket_path(socket_path))
+
+    # --------------------------------------------------------------- live tail
+
+    def _with_live_preview(
+        self,
+        view: DashboardSelectedAgentView | None,
+    ) -> DashboardSelectedAgentView | None:
+        """Substitute the cached live tail into the painted output panel.
+
+        The discovery loop's ``log_chunks`` are written every >=2s and
+        are deduped on content, so painting them straight from the store
+        produces a panel that lags badly and freezes the moment a pane
+        stops changing. Whenever the live-tail loop has captured fresh
+        text for the highlighted agent, swap the controller-built
+        ``log_preview`` for the live capture so the panel reads like
+        ``tail -f``.
+        """
+        if view is None:
+            return None
+        cached = self._live_tail_lines.get(view.item.agent_id)
+        if cached is None:
+            return view
+        return replace(view, log_preview=cached)
+
+    def _start_live_tail(self, agent_id: str) -> None:
+        self._stop_live_tail()
+        agent = next(
+            (a for a in (self._state.agents if self._state else ()) if a.agent_id == agent_id),
+            None,
+        )
+        if agent is None or not agent.pane_id:
+            return
+        try:
+            pane_id, stream_adapter = self._resolve_live_mirror_target(agent)
+        except AttributeError:
+            # Runtime missing optional infra (e.g. ``pane_stream`` /
+            # ``tmux`` / ``store``) — common in lighter test harnesses
+            # and in production environments where tmux integration is
+            # disabled. Skip the tail rather than crashing the screen.
+            return
+        if stream_adapter is None or not pane_id:
+            return
+        self._live_tail_agent_id = agent_id
+        self._live_tail_pane_id = pane_id
+        self._live_tail_stream = stream_adapter
+        # Bumping the token here invalidates any in-flight capture so
+        # its result for the previous pane never lands in the cache.
+        self._live_tail_token += 1
+        # Kick a capture immediately so the panel reflects the new
+        # selection without waiting one full interval.
+        self._tick_live_tail()
+        self._live_tail_timer = self.set_interval(
+            _DASHBOARD_LIVE_TAIL_INTERVAL_SEC,
+            self._tick_live_tail,
+            name=_DASHBOARD_LIVE_TAIL_WORKER,
+        )
+
+    def _stop_live_tail(self) -> None:
+        if self._live_tail_timer is not None:
+            self._live_tail_timer.stop()
+            self._live_tail_timer = None
+        self._live_tail_agent_id = None
+        self._live_tail_pane_id = None
+        self._live_tail_stream = None
+        # Bump the token so any worker still mid-capture drops its
+        # result instead of writing it into the cache.
+        self._live_tail_token += 1
+
+    def _tick_live_tail(self) -> None:
+        agent_id = self._live_tail_agent_id
+        pane_id = self._live_tail_pane_id
+        stream = self._live_tail_stream
+        if agent_id is None or not pane_id or stream is None:
+            return
+        token = self._live_tail_token
+
+        def _capture() -> None:
+            self._capture_live_tail(stream, pane_id, agent_id, token)
+
+        self.run_worker(
+            _capture,
+            thread=True,
+            exclusive=True,
+            name=_DASHBOARD_LIVE_TAIL_WORKER,
+        )
+
+    def _capture_live_tail(
+        self,
+        stream: PaneStreamAdapter,
+        pane_id: str,
+        agent_id: str,
+        token: int,
+    ) -> None:
+        try:
+            text = stream.capture_tail(pane_id, lines=_DASHBOARD_LIVE_TAIL_CAPTURE_LINES)
+        except Exception:
+            # Pane vanished, tmux unreachable, etc. The next tick will
+            # retry; meanwhile, leave any cached lines visible rather
+            # than blanking the panel on a single transient failure.
+            return
+        if token != self._live_tail_token:
+            return
+        self.app.call_from_thread(self._apply_live_tail, agent_id, token, text)
+
+    def _apply_live_tail(self, agent_id: str, token: int, captured_text: str) -> None:
+        if token != self._live_tail_token:
+            return
+        if agent_id != self._selected_agent_id:
+            return
+        self._live_tail_sequence += 1
+        captured_at = datetime.now(UTC)
+        line_limit = self._preview_line_limit()
+        lines = self._build_live_preview_lines(
+            captured_text,
+            line_limit=line_limit,
+            captured_at=captured_at,
+            sequence_no=self._live_tail_sequence,
+        )
+        if not lines:
+            # Pane is genuinely empty (or only whitespace). Drop the
+            # cached entry so the panel falls back to the controller's
+            # "no recent output" / "launching" placeholder rather than
+            # showing the previous agent's stale tail.
+            self._live_tail_lines.pop(agent_id, None)
+        else:
+            self._live_tail_lines[agent_id] = lines
+        if self._state is not None and self._state.selected_agent is not None:
+            self.query_one(LogPreviewPanel).set_logs(
+                self._with_live_preview(self._state.selected_agent),
+            )
+
+    @staticmethod
+    def _build_live_preview_lines(
+        captured_text: str,
+        *,
+        line_limit: int,
+        captured_at: datetime,
+        sequence_no: int,
+    ) -> tuple[DashboardLogLineView, ...]:
+        if line_limit <= 0:
+            return ()
+        non_blank = [line.rstrip() for line in captured_text.splitlines() if line.strip()]
+        if not non_blank:
+            return ()
+        tail = non_blank[-line_limit:]
+        return tuple(
+            DashboardLogLineView(
+                captured_at=captured_at,
+                source="tmux_capture",
+                sequence_no=sequence_no,
+                content=line,
+            )
+            for line in tail
+        )
 
     def _preview_line_limit(self) -> int:
         return min(max(self.runtime.config.general.log_preview_lines, 12), 24)

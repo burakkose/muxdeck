@@ -394,7 +394,7 @@ class DashboardScreenActionTests(unittest.TestCase):
                     screen._state = seed_state
                 screen._skip_next_show_refresh = True
                 await app.push_screen(screen)
-                await pilot.pause()
+                await pilot.pause()  # type: ignore[attr-defined]
                 # Set selection AFTER any worker-driven _apply_state
                 # has run so the selection is not reset to the state's
                 # (typically None) selected_agent_id.
@@ -966,7 +966,7 @@ class DashboardScreenAdditionalTests(unittest.TestCase):
                     screen._state = seed_state
                 screen._skip_next_show_refresh = True
                 await app.push_screen(screen)
-                await pilot.pause()
+                await pilot.pause()  # type: ignore[attr-defined]
                 if select_agent_id is not None:
                     screen._selected_agent_id = select_agent_id
                 captured["screen"] = screen
@@ -1841,6 +1841,7 @@ class DashboardScreenAdditionalTests(unittest.TestCase):
         )
 
         async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            tmux_obj.with_socket_calls.clear()
             pane_id, stream = screen._resolve_live_mirror_target(item)
             assert pane_id == "%nested"
             assert stream is not None
@@ -2474,6 +2475,305 @@ class DashboardScreenAdditionalTests(unittest.TestCase):
             screen.on_worker_state_changed(event)
 
         self._run_with_screen(runtime, body)
+
+
+# ── Live-tail loop ──────────────────────────────────────────────────
+
+
+@dataclass
+class _FakeStream:
+    """Recording fake of ``PaneStreamAdapter`` for the live-tail tests."""
+
+    capture_text: str = ""
+    raise_on_capture: bool = False
+    capture_tail_calls: list[tuple[str, int]] = field(default_factory=list)
+
+    def capture_tail(self, pane_id: str, *, lines: int = 100) -> str:
+        self.capture_tail_calls.append((pane_id, lines))
+        if self.raise_on_capture:
+            raise RuntimeError("tmux unreachable")
+        return self.capture_text
+
+
+class DashboardLiveTailTests(unittest.TestCase):
+    """Behavioural coverage for the dashboard ``Selected agent · output`` live tail."""
+
+    def _run(
+        self,
+        runtime: MuxdeckRuntime,
+        body: ScreenBody,
+        *,
+        seed_state: DashboardState | None = None,
+    ) -> tuple[_Harness, DashboardScreen]:
+        captured: dict[str, Any] = {}
+
+        async def scenario() -> None:
+            app = _Harness(runtime)
+            captured["app"] = app
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = DashboardScreen(runtime)
+                if seed_state is not None:
+                    screen._state = seed_state
+                screen._skip_next_show_refresh = True
+                await app.push_screen(screen)
+                await pilot.pause()  # type: ignore[attr-defined]
+                captured["screen"] = screen
+                await body(app, screen, pilot)
+
+        asyncio.run(scenario())
+        return captured["app"], captured["screen"]
+
+    def _build_runtime(
+        self,
+        *,
+        stream: _FakeStream,
+        item: DashboardAgentListItemView,
+    ) -> tuple[MuxdeckRuntime, DashboardState]:
+        st = _state(agents=(item,))
+        return _runtime_with(
+            dashboard_ctrl=_RecordingDashboardCtrl(state_to_return=st),
+            agents_ctrl=_RecordingAgents(),
+            pane_stream=stream,
+            store=_StubStore(agents={item.agent_id: _RecordAgent()}),
+        ), st
+
+    def test_start_live_tail_kicks_immediate_capture(self) -> None:
+        item = _agent_view()
+        stream = _FakeStream(capture_text="hello live\n")
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
+            screen._selected_agent_id = None  # ensure cold start
+            screen._start_live_tail(item.agent_id)
+            await pilot.pause()  # type: ignore[attr-defined]
+            await pilot.pause()  # type: ignore[attr-defined]
+            assert stream.capture_tail_calls
+            pane_id, lines = stream.capture_tail_calls[0]
+            assert pane_id == item.pane_id
+            assert lines == 200
+            assert screen._live_tail_timer is not None
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_apply_live_tail_caches_lines_and_repaints_panel(self) -> None:
+        from muxdeck.widgets.dashboard import LogPreviewPanel
+
+        item = _agent_view()
+        stream = _FakeStream()
+        runtime, st = self._build_runtime(stream=stream, item=item)
+        st = DashboardState(
+            generated_at=st.generated_at,
+            metrics=st.metrics,
+            filters=st.filters,
+            sort=st.sort,
+            health=st.health,
+            alerts=st.alerts,
+            agents=st.agents,
+            selected_agent_id=item.agent_id,
+            selected_agent=_selected_view(item),
+        )
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._selected_agent_id = item.agent_id
+            screen._state = st
+            screen._live_tail_token = 5
+            screen._apply_live_tail(item.agent_id, 5, "first line\nsecond\n")
+            cached = screen._live_tail_lines[item.agent_id]
+            assert tuple(line.content for line in cached) == ("first line", "second")
+            assert all(line.source == "tmux_capture" for line in cached)
+            # Subsequent paints substitute the cached preview.
+            preview_panel = screen.query_one(LogPreviewPanel)
+            preview_panel.update("")  # clear
+            screen.query_one(LogPreviewPanel).set_logs(
+                screen._with_live_preview(st.selected_agent),
+            )
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_apply_live_tail_drops_stale_token(self) -> None:
+        item = _agent_view()
+        stream = _FakeStream()
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._selected_agent_id = item.agent_id
+            screen._live_tail_token = 7
+            screen._apply_live_tail(item.agent_id, 6, "ignored\n")
+            assert item.agent_id not in screen._live_tail_lines
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_apply_live_tail_drops_when_selection_changed(self) -> None:
+        item = _agent_view()
+        other = _agent_view(agent_id="agent-2", pane_id="%2", name="agent-2")
+        stream = _FakeStream()
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._selected_agent_id = other.agent_id
+            screen._live_tail_token = 1
+            screen._apply_live_tail(item.agent_id, 1, "stale\n")
+            assert item.agent_id not in screen._live_tail_lines
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_apply_live_tail_empty_capture_clears_cache(self) -> None:
+        item = _agent_view()
+        stream = _FakeStream()
+        runtime, st = self._build_runtime(stream=stream, item=item)
+        st = DashboardState(
+            generated_at=st.generated_at,
+            metrics=st.metrics,
+            filters=st.filters,
+            sort=st.sort,
+            health=st.health,
+            alerts=st.alerts,
+            agents=st.agents,
+            selected_agent_id=item.agent_id,
+            selected_agent=_selected_view(item),
+        )
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._selected_agent_id = item.agent_id
+            screen._state = st
+            screen._live_tail_token = 1
+            screen._live_tail_lines[item.agent_id] = ()
+            screen._apply_live_tail(item.agent_id, 1, "    \n\n")
+            assert item.agent_id not in screen._live_tail_lines
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_with_live_preview_returns_view_when_no_cache(self) -> None:
+        item = _agent_view()
+        view = _selected_view(item)
+        stream = _FakeStream()
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            assert screen._with_live_preview(None) is None
+            painted = screen._with_live_preview(view)
+            assert painted is view  # untouched when nothing cached
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_with_live_preview_substitutes_cached_lines(self) -> None:
+        item = _agent_view()
+        view = _selected_view(item)
+        stream = _FakeStream()
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            cached = DashboardScreen._build_live_preview_lines(
+                "alpha\nbeta\n",
+                line_limit=12,
+                captured_at=datetime(2024, 1, 1, tzinfo=UTC),
+                sequence_no=42,
+            )
+            screen._live_tail_lines[item.agent_id] = cached
+            painted = screen._with_live_preview(view)
+            assert painted is not None
+            assert painted.log_preview == cached
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_capture_live_tail_swallows_exceptions(self) -> None:
+        item = _agent_view()
+        stream = _FakeStream(raise_on_capture=True)
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._selected_agent_id = item.agent_id
+            screen._live_tail_token = 1
+            # Should not raise even though the underlying stream throws.
+            screen._capture_live_tail(
+                cast("Any", stream), "%1", item.agent_id, 1
+            )
+            # Cache stays empty — transient errors should not blank the panel.
+            assert item.agent_id not in screen._live_tail_lines
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_stop_live_tail_clears_state_and_cancels_timer(self) -> None:
+        item = _agent_view()
+        stream = _FakeStream()
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
+            screen._selected_agent_id = item.agent_id
+            screen._start_live_tail(item.agent_id)
+            await pilot.pause()  # type: ignore[attr-defined]
+            assert screen._live_tail_timer is not None
+            token_before = screen._live_tail_token
+            screen._stop_live_tail()
+            assert screen._live_tail_timer is None
+            assert screen._live_tail_agent_id is None
+            assert screen._live_tail_pane_id is None
+            assert screen._live_tail_stream is None
+            assert screen._live_tail_token > token_before
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_start_live_tail_skips_when_pane_id_missing(self) -> None:
+        item = _agent_view(pane_id="")
+        stream = _FakeStream()
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._selected_agent_id = item.agent_id
+            screen._start_live_tail(item.agent_id)
+            assert screen._live_tail_timer is None
+            assert screen._live_tail_agent_id is None
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_build_live_preview_lines_strips_blank_and_trims_to_limit(self) -> None:
+        text = "a\n\nbb\n   \nccc\n"
+        ts = datetime(2024, 1, 1, tzinfo=UTC)
+        out = DashboardScreen._build_live_preview_lines(
+            text, line_limit=2, captured_at=ts, sequence_no=1
+        )
+        assert tuple(line.content for line in out) == ("bb", "ccc")
+        assert all(line.captured_at == ts for line in out)
+        assert all(line.source == "tmux_capture" for line in out)
+
+    def test_build_live_preview_lines_empty_inputs(self) -> None:
+        ts = datetime(2024, 1, 1, tzinfo=UTC)
+        assert (
+            DashboardScreen._build_live_preview_lines(
+                "", line_limit=10, captured_at=ts, sequence_no=1
+            )
+            == ()
+        )
+        assert (
+            DashboardScreen._build_live_preview_lines(
+                "x\n", line_limit=0, captured_at=ts, sequence_no=1
+            )
+            == ()
+        )
+        assert (
+            DashboardScreen._build_live_preview_lines(
+                "  \n  \n", line_limit=10, captured_at=ts, sequence_no=1
+            )
+            == ()
+        )
+
+    def test_on_screen_suspend_stops_tail_and_resume_restarts(self) -> None:
+        item = _agent_view()
+        stream = _FakeStream()
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
+            screen._selected_agent_id = item.agent_id
+            screen._start_live_tail(item.agent_id)
+            await pilot.pause()  # type: ignore[attr-defined]
+            assert screen._live_tail_timer is not None
+            screen.on_screen_suspend()
+            assert screen._live_tail_timer is None
+            screen.on_screen_resume()
+            await pilot.pause()  # type: ignore[attr-defined]
+            assert screen._live_tail_timer is not None
+
+        self._run(runtime, body, seed_state=st)
 
 
 if __name__ == "__main__":

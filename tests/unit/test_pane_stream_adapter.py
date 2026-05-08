@@ -47,6 +47,7 @@ class FakeTmuxPaneStream:
     capture_output: str = ""
     pane_ids_present: frozenset[str] = frozenset({"%1"})
     capture_calls: list[tuple[str, bool, bool]] = field(default_factory=list)
+    capture_kwargs: list[dict[str, object]] = field(default_factory=list)
     pipe_calls: list[_PipeCall] = field(default_factory=list)
     stop_pipe_calls: list[str] = field(default_factory=list)
     send_keys_calls: list[_SendKeysCall] = field(default_factory=list)
@@ -62,9 +63,17 @@ class FakeTmuxPaneStream:
         join_wrapped_lines: bool = False,
         include_escape_sequences: bool = False,
     ) -> str:
-        del start_line, end_line
         self.capture_calls.append(
             (target_pane, join_wrapped_lines, include_escape_sequences),
+        )
+        self.capture_kwargs.append(
+            {
+                "target_pane": target_pane,
+                "start_line": start_line,
+                "end_line": end_line,
+                "join_wrapped_lines": join_wrapped_lines,
+                "include_escape_sequences": include_escape_sequences,
+            }
         )
         return self.capture_output
 
@@ -121,6 +130,35 @@ class TestSeed:
         tmux = FakeTmuxPaneStream(capture_output="")
         adapter = PaneStreamAdapter(tmux)
         assert adapter.seed("%1") == ""
+
+
+class TestCaptureTail:
+    def test_passes_negative_start_line_and_joins_wraps(self) -> None:
+        tmux = FakeTmuxPaneStream(capture_output="line1\nline2\n")
+        adapter = PaneStreamAdapter(tmux)
+        assert adapter.capture_tail("%1", lines=64) == "line1\nline2\n"
+        assert tmux.capture_kwargs == [
+            {
+                "target_pane": "%1",
+                "start_line": -64,
+                "end_line": None,
+                "join_wrapped_lines": True,
+                "include_escape_sequences": False,
+            }
+        ]
+
+    def test_default_lines_is_positive(self) -> None:
+        tmux = FakeTmuxPaneStream()
+        adapter = PaneStreamAdapter(tmux)
+        adapter.capture_tail("%1")
+        assert tmux.capture_kwargs[-1]["start_line"] == -100
+
+    def test_rejects_non_positive_lines(self) -> None:
+        adapter = PaneStreamAdapter(FakeTmuxPaneStream())
+        with pytest.raises(ValueError, match="positive"):
+            adapter.capture_tail("%1", lines=0)
+        with pytest.raises(ValueError, match="positive"):
+            adapter.capture_tail("%1", lines=-1)
 
 
 class TestStartPipe:
