@@ -443,6 +443,25 @@ class PaneStreamAdapter:
             literal=translation.literal,
         )
 
+    def send_keys_raw(
+        self,
+        pane_id: str,
+        keys: Sequence[str],
+        literal: bool,
+    ) -> None:
+        """Forward a coalesced batch of keys with a single tmux call.
+
+        Existing callers use :meth:`send_keys` with a single
+        :class:`KeyTranslation`. The compose-mirror dispatcher
+        coalesces keystroke bursts and needs to fan many translations
+        into one ``send-keys`` invocation, so we expose the raw
+        signature here. ``literal`` mode is mode-locked per call: the
+        caller must split mixed-mode runs into separate batches.
+        """
+        if not keys:
+            return
+        self._tmux.send_keys(pane_id, tuple(keys), literal=literal)
+
     def pane_exists(self, pane_id: str) -> bool:
         return self._tmux.pane_exists(pane_id)
 

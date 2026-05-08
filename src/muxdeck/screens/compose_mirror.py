@@ -63,9 +63,16 @@ _log = logging.getLogger(__name__)
 #   shells (especially WSL ↔ Windows tmux), and
 # * the ring-file drain already reflects fresh line output within
 #   100ms, so the snapshot is purely a correction layer.
-_POLL_INTERVAL_SEC = 0.1
+_POLL_INTERVAL_SEC = 0.05
 _SNAPSHOT_SYNC_INTERVAL_SEC = 1.0
 _SNAPSHOT_WORKER_GROUP = "compose-snapshot"
+# Maximum time to wait for additional keystrokes after the first
+# arrives before flushing them to tmux. Coalescing keystrokes into a
+# single ``send-keys`` call (which itself can take 30-100 ms on slower
+# shells) cuts subprocess fan-out by 10x or more during a typing
+# burst, which is the difference between "instant" and "type, wait
+# two seconds, watch every char arrive late" in interact mode.
+_KEYSTROKE_COALESCE_SEC = 0.02
 _DEFAULT_EDITOR_HEIGHT = 10
 _MIN_EDITOR_HEIGHT = 7
 _MAX_EDITOR_HEIGHT = 24
@@ -179,15 +186,23 @@ class ComposeWithMirrorScreen(ShellScreen):
         self._capture_error: str | None = None
         self._stream_warning: str | None = None
         self._sync_warning: str | None = None
-        # In-flight asyncio tasks for forwarded keystrokes. We keep
-        # references so the GC doesn't drop them mid-flight and so
-        # tests can deterministically wait for the full keystroke
-        # round-trip via :meth:`_wait_for_pending_sends`.
-        self._send_tasks: set[asyncio.Task[None]] = set()
-        # FIFO lock guarantees keystrokes hit tmux in the order the
-        # operator typed them, even though each ``send_keys`` call
-        # runs on a worker thread off the UI loop.
-        self._send_lock = asyncio.Lock()
+        # Inbound keystroke queue + a single long-lived dispatcher
+        # task that drains it. Per-keystroke ``asyncio.create_task``
+        # +``asyncio.to_thread`` was forking one tmux subprocess per
+        # character (~30-100 ms each, serialized via a lock); typing
+        # 20 chars in a second built up 1-2 seconds of backlog and
+        # made the live mirror feel "type, wait, see chars trickle
+        # in". The dispatcher coalesces every keystroke that arrives
+        # within ``_KEYSTROKE_COALESCE_SEC`` of the previous one into
+        # a single ``send-keys`` invocation, cutting subprocess
+        # overhead by ~10x for a typing burst.
+        self._send_queue: asyncio.Queue[KeyTranslation] = asyncio.Queue()
+        self._dispatcher_task: asyncio.Task[None] | None = None
+        # ``True`` while a coalesced batch is mid-flush in the worker
+        # thread. The test helper waits on both the queue and this
+        # flag so it doesn't return between "queue drained" and
+        # "subprocess actually finished".
+        self._flush_in_flight = False
         # ``True`` while a periodic snapshot worker is in flight; we
         # skip subsequent ticks rather than queueing them so a slow
         # tmux subprocess can never accumulate a backlog of pending
@@ -250,6 +265,9 @@ class ComposeWithMirrorScreen(ShellScreen):
             self._loading_cleared = True
         else:
             self._seed_and_stream(viewer)
+            # Start the keystroke dispatcher after seeding so the
+            # adapter and pane id are guaranteed to be live.
+            self._dispatcher_task = asyncio.create_task(self._run_send_dispatcher())
         if self._show_editor:
             # Land focus in the editor so typing just works. The mirror can
             # be reached with tab.
@@ -260,6 +278,9 @@ class ComposeWithMirrorScreen(ShellScreen):
 
     def on_unmount(self) -> None:
         self._teardown_pipe()
+        if self._dispatcher_task is not None:
+            self._dispatcher_task.cancel()
+            self._dispatcher_task = None
 
     def on_descendant_focus(self, event: events.DescendantFocus) -> None:
         super().on_descendant_focus(event)
@@ -519,36 +540,123 @@ class ComposeWithMirrorScreen(ShellScreen):
         if translation is None:
             self.set_status(f"live input ignores {event.key!r} · esc stops live input")
             return True
-        # Forward to tmux without blocking the UI thread. ``send_keys``
-        # is a synchronous tmux subprocess call (~30-100 ms on slower
-        # shells); waiting for it inline made every keystroke feel
-        # laggy. The asyncio.Lock guarantees keystrokes still arrive
-        # at tmux in the order the operator typed them.
-        task = asyncio.create_task(self._send_translation_async(translation))
-        self._send_tasks.add(task)
-        task.add_done_callback(self._send_tasks.discard)
+        # Hand off to the dispatcher coroutine. ``put_nowait`` on an
+        # unbounded asyncio.Queue is a sub-microsecond memory append,
+        # so the keystroke handler returns immediately and Textual
+        # never blocks waiting for tmux. The dispatcher coalesces
+        # bursts into a single ``send-keys`` subprocess call.
+        self._send_queue.put_nowait(translation)
         return True
 
-    async def _send_translation_async(self, translation: KeyTranslation) -> None:
+    async def _run_send_dispatcher(self) -> None:
+        """Drain the keystroke queue, batching bursts into one send-keys call.
+
+        Per-keystroke ``asyncio.to_thread(send_keys, …)`` was forking a
+        tmux subprocess (~30-100 ms) per character and serializing
+        them through an ``asyncio.Lock``. A typing burst of 20 chars
+        could pile up 1-2 seconds of subprocess work, which the
+        operator perceived as "type, wait, watch chars trickle in
+        late". We instead pull from the queue, wait up to
+        ``_KEYSTROKE_COALESCE_SEC`` for adjacent keystrokes, and
+        flush the run to tmux as a single batched call when the
+        translation kind (literal vs symbolic) is compatible.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            while True:
+                first = await self._send_queue.get()
+                # Mark a flush as pending the moment the dispatcher
+                # commits to a batch. This keeps the test helper
+                # ``_wait_for_pending_sends`` from racing past the
+                # coalesce window where the queue is empty but the
+                # batch hasn't been handed to tmux yet.
+                self._flush_in_flight = True
+                batch: list[KeyTranslation] = [first]
+                deadline = loop.time() + _KEYSTROKE_COALESCE_SEC
+                while True:
+                    timeout = deadline - loop.time()
+                    if timeout <= 0:
+                        break
+                    try:
+                        more = await asyncio.wait_for(self._send_queue.get(), timeout)
+                    except TimeoutError:
+                        break
+                    batch.append(more)
+                await self._flush_batch(batch)
+        except asyncio.CancelledError:
+            # Drain remaining keystrokes on screen close so the agent
+            # doesn't lose what the operator typed during teardown.
+            remaining: list[KeyTranslation] = []
+            while not self._send_queue.empty():
+                try:
+                    remaining.append(self._send_queue.get_nowait())
+                except asyncio.QueueEmpty:
+                    break
+            if remaining:
+                with contextlib.suppress(Exception):
+                    await self._flush_batch(remaining)
+            raise
+
+    async def _flush_batch(self, batch: list[KeyTranslation]) -> None:
+        """Coalesce a contiguous run into the fewest possible send_keys calls."""
         adapter = self._adapter
-        if adapter is None:
+        if adapter is None or not batch:
+            self._flush_in_flight = False
             return
-        async with self._send_lock:
-            try:
-                await asyncio.to_thread(adapter.send_keys, self._pane_id, translation)
-            except (TmuxCommandError, OSError):
-                _log.exception("compose: send_keys failed for pane %s", self._pane_id)
+        # Group consecutive entries that share the same ``literal``
+        # flag: tmux ``send-keys -l`` is mode-locked per invocation,
+        # so a literal run and a symbolic run can't ride the same
+        # subprocess. Within a group, every key tuple is concatenated
+        # into one positional arg list.
+        groups = self._group_by_literal(batch)
+        try:
+            for literal, keys in groups:
+                try:
+                    await asyncio.to_thread(adapter.send_keys_raw, self._pane_id, keys, literal)
+                except (TmuxCommandError, OSError):
+                    _log.exception("compose: send_keys failed for pane %s", self._pane_id)
+        finally:
+            self._flush_in_flight = False
+
+    @staticmethod
+    def _group_by_literal(
+        batch: list[KeyTranslation],
+    ) -> list[tuple[bool, tuple[str, ...]]]:
+        groups: list[tuple[bool, tuple[str, ...]]] = []
+        current_literal: bool | None = None
+        current_keys: list[str] = []
+        for translation in batch:
+            if not translation.keys:
+                continue
+            if current_literal is None:
+                current_literal = translation.literal
+            if translation.literal != current_literal:
+                groups.append((current_literal, tuple(current_keys)))
+                current_literal = translation.literal
+                current_keys = []
+            current_keys.extend(translation.keys)
+        if current_literal is not None and current_keys:
+            groups.append((current_literal, tuple(current_keys)))
+        return groups
 
     async def _wait_for_pending_sends(self) -> None:
-        """Block until all queued keystroke forwards have completed.
+        """Block until the keystroke queue is fully drained and flushed.
 
-        Test helper. Production code never needs to wait — fire-and-
-        forget is the whole point of moving the call off the event
-        loop.
+        Test helper. Production code never needs to wait — the
+        fire-and-forget dispatcher is the whole point of moving the
+        call off the event loop.
         """
-        pending = tuple(self._send_tasks)
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+        # Poll until both the queue is empty *and* no flush is mid-
+        # subprocess. Bound at ~5 seconds to keep a wedged dispatcher
+        # from hanging the test runner forever.
+        for _ in range(1000):
+            if self._send_queue.empty() and not self._flush_in_flight:
+                # One more cooperative yield so any final ``to_thread``
+                # callback can land on the test event loop.
+                await asyncio.sleep(0)
+                if self._send_queue.empty() and not self._flush_in_flight:
+                    return
+            await asyncio.sleep(0.005)
 
     def _swap_focus(self, *, forward: bool) -> None:
         del forward  # two-widget cycle — direction doesn't matter

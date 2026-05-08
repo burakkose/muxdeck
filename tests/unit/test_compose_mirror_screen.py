@@ -1717,7 +1717,14 @@ class ComposeMirrorAsyncPerfTests(unittest.TestCase):
         assert sent == [("%99", ("x",), True)]
 
     def test_rapid_keystrokes_arrive_at_tmux_in_typed_order(self) -> None:
-        """Asyncio.Lock guarantees keystrokes hit tmux in submission order."""
+        """Coalesced keystrokes still reach tmux in the order the operator typed.
+
+        The dispatcher batches adjacent keystrokes into a single
+        ``send-keys`` invocation to cut subprocess fan-out. Order
+        across the concatenated keys (and across batches) must still
+        match what the operator typed — a regression here would scramble
+        characters in interactive prompts.
+        """
 
         async def scenario(tmp: Path) -> list[tuple[str, tuple[str, ...], bool]]:
             tmux = _FakeTmuxStream()
@@ -1740,9 +1747,6 @@ class ComposeMirrorAsyncPerfTests(unittest.TestCase):
                 screen._set_mirror_input_mode(True)
                 from textual import events as textual_events
 
-                # Submit a flurry of keystrokes synchronously, mimicking
-                # a fast typist. Each submission appends a task; the
-                # FIFO asyncio.Lock must serialise execution.
                 for ch in "abcdef":
                     screen._handle_live_input_key(textual_events.Key(key=ch, character=ch))
                 await screen._wait_for_pending_sends()
@@ -1751,14 +1755,15 @@ class ComposeMirrorAsyncPerfTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             sent = asyncio.run(scenario(Path(tmp)))
 
-        assert sent == [
-            ("%17", ("a",), True),
-            ("%17", ("b",), True),
-            ("%17", ("c",), True),
-            ("%17", ("d",), True),
-            ("%17", ("e",), True),
-            ("%17", ("f",), True),
-        ]
+        # Whether the dispatcher fires one batched call or several
+        # depends on event-loop timing; what must hold is that the
+        # concatenated literal keys, in arrival order, spell "abcdef".
+        flattened: list[str] = []
+        for pane, keys, literal in sent:
+            assert pane == "%17"
+            assert literal is True
+            flattened.extend(keys)
+        assert flattened == list("abcdef")
 
     def test_background_snapshot_tick_skips_when_already_in_flight(self) -> None:
         """Don't queue overlapping snapshot workers while one is running."""
@@ -1884,6 +1889,53 @@ class ComposeMirrorAsyncPerfTests(unittest.TestCase):
 
         assert during_input == 0
         assert after_resume == 1
+
+    def test_keystroke_burst_coalesces_into_single_send_call(self) -> None:
+        """A burst of printable keystrokes lands on tmux in one batched call.
+
+        This is the perf win that makes interact mode feel like a
+        text box. Forking ``tmux send-keys`` per character (each
+        30-100 ms) on a typing burst piles up multi-second backlog;
+        coalescing all keys typed within ``_KEYSTROKE_COALESCE_SEC``
+        into a single subprocess invocation collapses that backlog
+        ~10x.
+        """
+
+        async def scenario(tmp: Path) -> list[tuple[str, tuple[str, ...], bool]]:
+            tmux = _FakeTmuxStream()
+            stream = PaneStreamAdapter(tmux=tmux)
+            actions = _FakeActionService()
+            runtime = _fake_runtime(actions, stream)
+            app = _MuxdeckHarness()
+            async with app.run_test() as pilot:
+                screen = ComposeWithMirrorScreen(
+                    runtime,
+                    pane_id="%21",
+                    display_name="demo",
+                    ring_dir=tmp,
+                    show_editor=False,
+                )
+                await app.push_screen(screen)
+                await pilot.pause()
+                mirror = app.screen.query_one(LivePaneViewer)
+                mirror.focus()
+                screen._set_mirror_input_mode(True)
+                from textual import events as textual_events
+
+                # Submit the burst synchronously — no awaits between
+                # keystrokes, mimicking a fast typist whose chars all
+                # arrive in the same event-loop iteration.
+                for ch in "hello":
+                    screen._handle_live_input_key(textual_events.Key(key=ch, character=ch))
+                await screen._wait_for_pending_sends()
+                return tmux.sent
+
+        with tempfile.TemporaryDirectory() as tmp:
+            sent = asyncio.run(scenario(Path(tmp)))
+
+        # A burst that all enqueues in one event-loop tick must
+        # produce exactly one batched ``send-keys`` call.
+        assert sent == [("%21", ("h", "e", "l", "l", "o"), True)]
 
 
 # Mark intentionally retained references to avoid unused-import errors
