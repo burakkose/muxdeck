@@ -275,11 +275,11 @@ def test_summary_bar_set_counts_renders_status_glyphs() -> None:
 def test_unclosed_status_uses_warning_palette_not_error_red() -> None:
     """`unclosed` is a housekeeping flag, not a failure.
 
-    The status colour should sit in the warning tier (orange/dim red)
-    so it doesn't visually compete with FAILED agents on the
-    dashboard. ORANGE_DIM (#F29E74) is the canonical "warning, not
-    urgent" colour in the muxdeck palette; full RED (#FF6666) is
-    reserved for genuine failure states.
+    The status colour should sit in the warning tier (desaturated
+    amber/orange) so it doesn't visually compete with FAILED agents
+    on the dashboard. ORANGE_DIM is the canonical "warning, not
+    urgent" colour in the graphite palette; full RED is reserved
+    for genuine failure states.
     """
     from muxdeck.theme import ORANGE_DIM, RED
     from muxdeck.widgets.sessions import _STATUS_COLORS

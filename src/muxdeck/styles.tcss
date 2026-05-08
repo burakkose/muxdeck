@@ -1,12 +1,18 @@
-/* ── Ayu Mirage — muxdeck ───────────────────────────────── */
+/* ── Muxdeck — graphite theme ─────────────────────────────
+ *
+ * Calm dark-mode palette. Hex values mirror src/muxdeck/theme.py so
+ * widgets and CSS reference the same source of truth. Borders are
+ * deliberately faint — panels read as separated by whitespace, not
+ * by visible rules. Selection uses a raised graphite surface, not a
+ * loud accent colour. */
 
 Screen {
-    background: #1F2430;
-    color: #CCCAC2;
+    background: #0B0D10;
+    color: #F2F4F8;
 }
 
 .ux-contrast-high Screen {
-    background: #181C26;
+    background: #0B0D10;
 }
 
 /* ── shell chrome ────────────────────────────────────────────────── */
@@ -14,61 +20,61 @@ Screen {
 #shell-tab-bar {
     dock: top;
     height: 1;
-    background: #181C26;
-    color: #C7C7C7;
+    background: #0B0D10;
+    color: #6F7887;
 }
 
 #shell-frame {
     height: 1fr;
     layout: vertical;
-    background: #1F2430;
+    background: #0B0D10;
     padding: 0 1;
 }
 
 #shell-footer {
     dock: bottom;
     height: 1;
-    background: #181C26;
+    background: #0B0D10;
 }
 
 /* ── shared frame: borderless content area ────────────────────────── */
 
 .frame {
     border: none;
-    background: #1F2430;
+    background: #0B0D10;
 }
 
 /* ── panel sections inside frames (borderless, thin separators) ─── */
 
 .section {
     border: none;
-    background: #1F2430;
+    background: #12151B;
     padding: 0 1;
 }
 
 .section-top {
     border: none;
-    border-top: solid #171B24;
-    background: #1F2430;
+    border-top: solid #191D25;
+    background: #12151B;
     padding: 0 1;
 }
 
 .divider-right {
     border: none;
-    border-right: solid #171B24;
+    border-right: solid #191D25;
     padding: 0 1;
 }
 
 /* legacy .panel for screens not yet fully migrated */
 .panel {
     border: none;
-    background: #1F2430;
+    background: #12151B;
     padding: 0 1;
 }
 
 .muted {
-    background: #242936;
-    color: #8A9199;
+    background: #0B0D10;
+    color: #6F7887;
     height: 1;
     padding: 0 1;
 }
@@ -79,8 +85,8 @@ Screen {
 }
 
 .focusable:focus {
-    background: #242936;
-    border-left: solid #73D0FF;
+    background: #191D25;
+    border-left: solid #5AC8FA;
 }
 
 /* ── screen roots ────────────────────────────────────────────────── */
@@ -99,7 +105,7 @@ Screen {
 
 #dashboard-status-bar {
     height: 2;
-    background: #1F2430;
+    background: #0B0D10;
     padding: 0 1;
 }
 
@@ -115,7 +121,7 @@ Screen {
 #dashboard-agents {
     width: 38%;
     min-width: 34;
-    border-right: solid #171B24;
+    border-right: solid #191D25;
 }
 
 #dashboard-sidebar {
@@ -127,26 +133,26 @@ Screen {
 #dashboard-detail {
     height: auto;
     min-height: 6;
-    max-height: 10;
+    max-height: 12;
 }
 
 #dashboard-log {
     height: 1fr;
-    min-height: 10;
-    border-top: solid #171B24;
+    min-height: 8;
+    border-top: solid #191D25;
     padding-top: 0;
 }
 
 #dashboard-alerts {
     height: auto;
     max-height: 6;
-    border-top: solid #171B24;
+    border-top: solid #191D25;
     padding-top: 0;
 }
 
 /* When the dashboard has no attention items, collapse the panel
-   completely instead of showing an empty section. The output panel
-   below it claims the released vertical space. */
+ * completely instead of showing an empty section. The output panel
+ * below it claims the released vertical space. */
 #dashboard-alerts.empty {
     display: none;
     height: 0;
@@ -208,13 +214,13 @@ Screen {
 #worktrees-conflicts {
     height: auto;
     max-height: 6;
-    border-top: solid #171B24;
+    border-top: solid #191D25;
 }
 
 #worktrees-intent {
     height: auto;
-    max-height: 10;
-    border-top: solid #171B24;
+    max-height: 12;
+    border-top: solid #191D25;
 }
 
 /* ── replay ──────────────────────────────────────────────────────── */
@@ -251,8 +257,8 @@ Screen {
 /* ── inputs ──────────────────────────────────────────────────────── */
 
 Input {
-    background: #181C26;
-    color: #8A9199;
+    background: #12151B;
+    color: #A7AFBD;
     border: none;
     height: 1;
     border-bottom: solid transparent;
@@ -260,20 +266,20 @@ Input {
 }
 
 Input:focus {
-    background: #242936;
-    border-bottom: solid #73D0FF;
-    color: #CCCAC2;
+    background: #191D25;
+    border-bottom: solid #5AC8FA;
+    color: #F2F4F8;
 }
 
 .ux-contrast-high Input {
-    background: #181C26;
-    color: #C7C7C7;
+    background: #12151B;
+    color: #D6DAE2;
 }
 
 .ux-contrast-high Input:focus {
-    background: #2F3744;
-    border-bottom: solid #FFCD66;
-    color: #CCCAC2;
+    background: #233044;
+    border-bottom: solid #5AC8FA;
+    color: #F2F4F8;
 }
 
 #dashboard-filter-input {
@@ -289,23 +295,23 @@ Input:focus {
 
 .filter-summary {
     height: 1;
-    color: #5C6773;
+    color: #6F7887;
     padding: 0 1;
 }
 
-/* ── scrollbars (subtle Ayu) ──────────────────────────────────────── */
+/* ── scrollbars (subtle graphite) ─────────────────────────────────── */
 
 Static {
-    scrollbar-background: #1F2430;
-    scrollbar-color: #2F3744;
-    scrollbar-color-hover: #48515F;
+    scrollbar-background: #0B0D10;
+    scrollbar-color: #191D25;
+    scrollbar-color-hover: #233044;
     scrollbar-size: 1 1;
 }
 
 ListView {
-    scrollbar-background: #1F2430;
-    scrollbar-color: #2F3744;
-    scrollbar-color-hover: #48515F;
+    scrollbar-background: #0B0D10;
+    scrollbar-color: #191D25;
+    scrollbar-color-hover: #233044;
     scrollbar-size: 1 1;
 }
 
@@ -314,7 +320,7 @@ ListView {
 #help-root {
     height: 1fr;
     layout: vertical;
-    background: #1F2430;
+    background: #0B0D10;
 }
 
 #help-filter-input {
@@ -325,10 +331,10 @@ ListView {
     height: 1fr;
     border: none;
     padding: 1 2;
-    background: #1F2430;
-    scrollbar-background: #1F2430;
-    scrollbar-color: #2F3744;
-    scrollbar-color-hover: #48515F;
+    background: #0B0D10;
+    scrollbar-background: #0B0D10;
+    scrollbar-color: #191D25;
+    scrollbar-color-hover: #233044;
     scrollbar-size: 1 1;
 }
 
@@ -351,12 +357,12 @@ ListItem {
 }
 
 ListView > ListItem.--highlight {
-    background: #2F3744;
+    background: #233044;
 }
 
 ListView:focus {
-    background: #242936;
-    border-left: solid #73D0FF;
+    background: #191D25;
+    border-left: solid #5AC8FA;
 }
 
 /* ── sessions ────────────────────────────────────────────────────── */
@@ -445,11 +451,11 @@ ListView:focus {
 .ux-contrast-high .panel,
 .ux-contrast-high .muted,
 .ux-contrast-high #help-scroll {
-    background: #181C26;
+    background: #0B0D10;
 }
 
 .ux-contrast-high .divider-right {
-    border-right: solid #48515F;
+    border-right: solid #2C3A52;
 }
 
 .ux-contrast-high .section-top,
@@ -457,17 +463,17 @@ ListView:focus {
 .ux-contrast-high #dashboard-alerts,
 .ux-contrast-high #worktrees-conflicts,
 .ux-contrast-high #worktrees-intent {
-    border-top: solid #48515F;
+    border-top: solid #2C3A52;
 }
 
 .ux-contrast-high .focusable:focus,
 .ux-contrast-high ListView:focus {
-    background: #2F3744;
-    border-left: solid #FFCD66;
+    background: #233044;
+    border-left: solid #5AC8FA;
 }
 
 .ux-decor-reduced .divider-right {
-    border-right: solid #242936;
+    border-right: solid #12151B;
 }
 
 .ux-decor-reduced .section-top,
@@ -475,5 +481,5 @@ ListView:focus {
 .ux-decor-reduced #dashboard-alerts,
 .ux-decor-reduced #worktrees-conflicts,
 .ux-decor-reduced #worktrees-intent {
-    border-top: solid #242936;
+    border-top: solid #12151B;
 }
