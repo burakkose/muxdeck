@@ -1139,6 +1139,104 @@ def test_log_preview_panel_renders_log_lines_with_timestamps() -> None:
     assert "thinking" in rendered
 
 
+def test_log_preview_panel_tails_to_visible_height_when_mounted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Long previews are tailed to the rows that physically fit on screen.
+
+    Without this the panel would render all 50 preview lines into a
+    Static, which clips from the bottom — hiding the freshest output
+    (the opposite of ``tail -f`` behaviour).
+    """
+    from textual.geometry import Size
+
+    panel = LogPreviewPanel()
+    monkeypatch.setattr(type(panel), "size", property(lambda _self: Size(80, 12)))
+    now = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    lines = tuple(
+        DashboardLogLineView(
+            captured_at=now,
+            source="stdout",
+            sequence_no=i,
+            content=f"line-{i:02d}",
+        )
+        for i in range(50)
+    )
+    item = _bare_item()
+    selected = _selected_view_with(item, log_preview=lines)
+    panel.set_logs(selected)
+    rendered = _render(panel)
+    # The most recent lines must be present, the oldest must be elided.
+    assert "line-49" in rendered
+    assert "line-48" in rendered
+    assert "line-00" not in rendered
+    assert "line-10" not in rendered
+
+
+def test_log_preview_panel_renders_full_preview_when_unmounted() -> None:
+    """Off-screen renders (unit tests, benchmarks) should not clip."""
+    panel = LogPreviewPanel()
+    # ``size`` is ``Size(0, 0)`` until the widget is mounted.
+    now = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    lines = tuple(
+        DashboardLogLineView(
+            captured_at=now,
+            source="stdout",
+            sequence_no=i,
+            content=f"row-{i:02d}",
+        )
+        for i in range(20)
+    )
+    item = _bare_item()
+    selected = _selected_view_with(item, log_preview=lines)
+    panel.set_logs(selected)
+    rendered = _render(panel)
+    assert "row-00" in rendered
+    assert "row-19" in rendered
+
+
+def test_log_preview_panel_re_renders_on_resize_with_cached_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resize re-tails the cached preview so the freshest lines stay visible."""
+    from textual import events
+    from textual.geometry import Size
+
+    panel = LogPreviewPanel()
+    now = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    lines = tuple(
+        DashboardLogLineView(
+            captured_at=now,
+            source="stdout",
+            sequence_no=i,
+            content=f"row-{i:02d}",
+        )
+        for i in range(40)
+    )
+    item = _bare_item()
+    selected = _selected_view_with(item, log_preview=lines)
+    monkeypatch.setattr(type(panel), "size", property(lambda _self: Size(80, 30)))
+    panel.set_logs(selected)
+    assert "row-39" in _render(panel)
+    # Shrink the panel; on_resize should re-tail to the smaller budget.
+    monkeypatch.setattr(type(panel), "size", property(lambda _self: Size(80, 6)))
+    panel.on_resize(events.Resize(Size(80, 6), Size(80, 30)))
+    rendered = _render(panel)
+    assert "row-39" in rendered
+    # 6 rows total → 4 visible after header+padding → only the very end.
+    assert "row-00" not in rendered
+    assert "row-30" not in rendered
+
+
+def test_log_preview_panel_no_cached_view_resize_is_noop() -> None:
+    """Resize without a cached view must not crash or render anything new."""
+    from textual import events
+    from textual.geometry import Size
+
+    panel = LogPreviewPanel()
+    panel.on_resize(events.Resize(Size(80, 12), Size(80, 30)))
+
+
 def test_alert_panel_renders_alerts_with_severity_badges() -> None:
     panel = AlertPanel()
     alerts = (

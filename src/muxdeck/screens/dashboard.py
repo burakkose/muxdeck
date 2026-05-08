@@ -1117,7 +1117,11 @@ class DashboardScreen(ShellScreen):
         )
 
     def _preview_line_limit(self) -> int:
-        return min(max(self.runtime.config.general.log_preview_lines, 12), 24)
+        # Send enough preview lines to fill a tall panel — the
+        # ``LogPreviewPanel`` widget tails this list to the rows that
+        # actually fit on screen, so over-fetching here is cheap and
+        # keeps the panel honest on terminals taller than ~25 rows.
+        return min(max(self.runtime.config.general.log_preview_lines, 12), 200)
 
     def _emit_notifications(self, notifications: tuple[AttentionNotification, ...]) -> None:
         if not notifications:

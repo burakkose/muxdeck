@@ -2685,9 +2685,7 @@ class DashboardLiveTailTests(unittest.TestCase):
             screen._selected_agent_id = item.agent_id
             screen._live_tail_token = 1
             # Should not raise even though the underlying stream throws.
-            screen._capture_live_tail(
-                cast("Any", stream), "%1", item.agent_id, 1
-            )
+            screen._capture_live_tail(cast("Any", stream), "%1", item.agent_id, 1)
             # Cache stays empty — transient errors should not blank the panel.
             assert item.agent_id not in screen._live_tail_lines
 

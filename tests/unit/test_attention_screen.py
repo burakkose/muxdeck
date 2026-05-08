@@ -523,11 +523,11 @@ class AttentionToggleAndMarkTests(unittest.TestCase):
 
 
 class AttentionPreviewLineLimitTests(unittest.TestCase):
-    def test_preview_line_limit_caps_at_24(self) -> None:
+    def test_preview_line_limit_caps_at_200(self) -> None:
         controller = _RecordingController(state=_state())
 
         class _GeneralBig:
-            log_preview_lines = 100
+            log_preview_lines = 500
             discovery_interval_sec = 2
 
         class _ConfigBig:
@@ -550,12 +550,12 @@ class AttentionPreviewLineLimitTests(unittest.TestCase):
                 await pilot.pause()
                 screen.refresh_data()
                 await pilot.pause()
-            assert all(call[2] == 24 for call in controller.build_state_calls), (
+            assert all(call[2] == 200 for call in controller.build_state_calls), (
                 controller.build_state_calls
             )
             return controller.build_state_calls[-1][2]
 
-        assert asyncio.run(scenario()) == 24
+        assert asyncio.run(scenario()) == 200
 
     def test_preview_line_limit_uses_configured_value_when_below_cap(self) -> None:
         controller = _RecordingController(state=_state())

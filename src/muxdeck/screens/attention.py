@@ -245,7 +245,10 @@ class AttentionScreen(ShellScreen):
         )
 
     def _preview_line_limit(self) -> int:
-        return min(self.runtime.config.general.log_preview_lines, 24)
+        # Send enough preview lines to fill a tall panel — the
+        # ``LogPreviewPanel`` widget tails this list to the rows that
+        # physically fit on screen.
+        return min(self.runtime.config.general.log_preview_lines, 200)
 
 
 __all__ = ["AttentionScreen"]

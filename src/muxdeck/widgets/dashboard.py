@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from rich.table import Table
 from rich.text import Text
+from textual import events
 from textual._context import NoActiveAppError
 from textual.app import ComposeResult
 from textual.containers import Vertical
@@ -1542,11 +1543,35 @@ def _truncate(value: str, limit: int) -> str:
 
 
 class LogPreviewPanel(Static):
-    """Recent pane output — ANSI-stripped, timestamp-grouped, syntax-highlighted."""
+    """Recent pane output — ANSI-stripped, timestamp-grouped, syntax-highlighted.
+
+    The panel is a non-scrolling ``Static`` that pins the most recent
+    output to the *top* of its render. If the supplied preview overflows
+    the panel's visible height, ``Static`` would clip from the bottom —
+    hiding the freshest lines (the opposite of a ``tail -f`` panel).
+
+    To fix that we cache the last view, render with ``no_wrap=True`` so
+    each preview line is exactly one visual row, and tail the preview
+    to the available rows on every paint plus on resize. The result is
+    that the last N lines that physically fit in the panel are always
+    visible, and longer history is only ever truncated from the *top*.
+    """
+
+    _DEFAULT_PREVIEW_ROWS = 24
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self._cached_agent: DashboardSelectedAgentView | None = None
 
     def set_logs(self, agent: DashboardSelectedAgentView | None) -> None:
+        self._cached_agent = agent
         preferences = resolve_ui_preferences(self)
-        result = Text()
+        # ``no_wrap=True`` keeps each preview line on a single visual
+        # row so the row-budget computation below is exact. Long lines
+        # are truncated horizontally rather than wrapping into the next
+        # row and pushing freshly-arrived lines out of the bottom of
+        # the panel.
+        result = Text(no_wrap=True, overflow="ellipsis")
         _section_header(result, "output", preferences=preferences)
         if agent is None:
             result.append("  no recent output\n", style=FG4)
@@ -1559,6 +1584,16 @@ class LogPreviewPanel(Static):
                 result.append("  no recent output\n", style=FG4)
             self.update(result)
             return
+        # Render only the tail that actually fits in the panel. ``size``
+        # is ``Size(0, 0)`` until the widget is mounted into a screen,
+        # so fall back to a sensible default for off-screen renders
+        # (used by the widget unit tests and the benchmark harness).
+        height = self.size.height
+        # ``-2`` reserves rows for the section header line and one row
+        # of bottom padding so the last preview line is never visually
+        # touching the panel border.
+        budget = max(height - 2, 1) if height > 0 else self._DEFAULT_PREVIEW_ROWS
+        visible_lines = agent.log_preview[-budget:]
         last_ts = ""
         src_map = {
             "stdout": "out",
@@ -1569,7 +1604,7 @@ class LogPreviewPanel(Static):
             "user": "you",
             "system": "sys",
         }
-        for line in agent.log_preview:
+        for line in visible_lines:
             ts = format_short_timestamp(line.captured_at)
             src = src_map.get(line.source, line.source[:3])
             source_style = _LOG_SOURCE_STYLES.get(line.source, FG2)
@@ -1585,6 +1620,13 @@ class LogPreviewPanel(Static):
             result.append(_highlight_log_line(content, source_style))
             result.append("\n")
         self.update(result)
+
+    def on_resize(self, _event: events.Resize) -> None:
+        # Re-tail the preview to the new height so the freshest lines
+        # remain visible after a layout change (e.g. terminal resize,
+        # toggling the help overlay, switching UI density preset).
+        if self._cached_agent is not None:
+            self.set_logs(self._cached_agent)
 
 
 def _highlight_log_line(content: str, default_style: str) -> Text:
