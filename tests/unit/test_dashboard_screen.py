@@ -2505,6 +2505,31 @@ class _FakeStream:
 class DashboardLiveTailTests(unittest.TestCase):
     """Behavioural coverage for the dashboard ``Selected agent · output`` live tail."""
 
+    # ``_start_live_tail`` dispatches the resolver round-trip + first
+    # capture into a worker thread, then ``call_from_thread`` posts
+    # ``_install_live_tail`` back to the UI loop where the periodic
+    # timer is wired up. On a fast local machine two ``pilot.pause()``
+    # turns are usually enough to drain that pipeline; on a slow CI
+    # runner the thread pool can take noticeably longer to schedule
+    # the worker, leaving the assertion racing the install. Poll up
+    # to ~3 s instead of relying on a fixed pause count so the test
+    # is deterministic regardless of host load.
+    _LIVE_TAIL_INSTALL_MAX_PAUSES = 60
+
+    @classmethod
+    async def _wait_for_live_tail_install(
+        cls,
+        screen: DashboardScreen,
+        pilot: object,
+    ) -> None:
+        """Block until ``_install_live_tail`` has wired up the timer."""
+        for _ in range(cls._LIVE_TAIL_INSTALL_MAX_PAUSES):
+            if screen._live_tail_timer is not None:
+                return
+            await pilot.pause()  # type: ignore[attr-defined]
+        msg = "live-tail install never wired up the timer"
+        raise AssertionError(msg)
+
     def _run(
         self,
         runtime: MuxdeckRuntime,
@@ -2706,11 +2731,7 @@ class DashboardLiveTailTests(unittest.TestCase):
         async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
             screen._selected_agent_id = item.agent_id
             screen._start_live_tail(item.agent_id)
-            # Two pauses: worker thread completes resolver, then
-            # ``call_from_thread`` delivers ``_install_live_tail`` to
-            # the UI loop where the periodic timer is wired up.
-            await pilot.pause()  # type: ignore[attr-defined]
-            await pilot.pause()  # type: ignore[attr-defined]
+            await self._wait_for_live_tail_install(screen, pilot)
             assert screen._live_tail_timer is not None
             token_before = screen._live_tail_token
             screen._stop_live_tail()
@@ -2765,8 +2786,7 @@ class DashboardLiveTailTests(unittest.TestCase):
             screen._resolve_live_mirror_target = _record  # type: ignore[method-assign]
             screen._selected_agent_id = item.agent_id
             screen._start_live_tail(item.agent_id)
-            await pilot.pause()  # type: ignore[attr-defined]
-            await pilot.pause()  # type: ignore[attr-defined]
+            await self._wait_for_live_tail_install(screen, pilot)
 
             assert resolver_thread_ids, "resolver was never invoked"
             assert all(tid != ui_thread_id for tid in resolver_thread_ids), (
@@ -2833,18 +2853,12 @@ class DashboardLiveTailTests(unittest.TestCase):
         async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
             screen._selected_agent_id = item.agent_id
             screen._start_live_tail(item.agent_id)
-            # Two pauses: first lets the worker thread complete the
-            # off-thread resolver round-trip, second lets
-            # ``call_from_thread`` deliver ``_install_live_tail`` to
-            # the UI thread where the periodic timer is wired up.
-            await pilot.pause()  # type: ignore[attr-defined]
-            await pilot.pause()  # type: ignore[attr-defined]
+            await self._wait_for_live_tail_install(screen, pilot)
             assert screen._live_tail_timer is not None
             screen.on_screen_suspend()
             assert screen._live_tail_timer is None
             screen.on_screen_resume()
-            await pilot.pause()  # type: ignore[attr-defined]
-            await pilot.pause()  # type: ignore[attr-defined]
+            await self._wait_for_live_tail_install(screen, pilot)
             assert screen._live_tail_timer is not None
 
         self._run(runtime, body, seed_state=st)
