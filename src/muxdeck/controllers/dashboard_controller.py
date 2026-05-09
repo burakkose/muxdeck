@@ -45,6 +45,8 @@ _output_hashes: dict[str, tuple[str, datetime]] = {}
 class DashboardStorePort(Protocol):
     def list_agents(self) -> Sequence[Agent]: ...
 
+    def get_agent(self, agent_id: str, /) -> Agent | None: ...
+
     def list_sessions(self, agent_id: str | None = None, /) -> Sequence[Session]: ...
 
     def get_latest_session_for_agent(self, agent_id: str, /) -> Session | None: ...
@@ -306,10 +308,7 @@ class DashboardController:
         friendly "no sub-agents" placeholder instead of hiding the
         toggle.
         """
-        agent = next(
-            (a for a in self._store.list_agents() if a.id == agent_id),
-            None,
-        )
+        agent = self._store.get_agent(agent_id)
         if agent is None or self._subagent_reader is None:
             return DashboardSubAgentTreeView(
                 agent_id=agent_id, session_id=None, running=(), recent=()
@@ -692,10 +691,7 @@ class DashboardController:
         *,
         preview_line_limit: int,
     ) -> DashboardSelectedAgentView:
-        agent = next(
-            (record for record in self._store.list_agents() if record.id == item.agent_id),
-            None,
-        )
+        agent = self._store.get_agent(item.agent_id)
         latest_session = self._store.get_latest_session_for_agent(item.agent_id)
         session_count = self._store.count_sessions_for_agent(item.agent_id)
         open_session = self._store.get_open_session_for_agent(item.agent_id)

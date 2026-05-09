@@ -127,6 +127,9 @@ class BenchmarkDashboardStore:
             )
         )
 
+    def get_agent(self, agent_id: str, /) -> Agent | None:
+        return self.agents.get(agent_id)
+
     def list_sessions(self, agent_id: str | None = None, /) -> tuple[Session, ...]:
         sessions = tuple(
             sorted(

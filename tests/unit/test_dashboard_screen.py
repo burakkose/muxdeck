@@ -2706,6 +2706,10 @@ class DashboardLiveTailTests(unittest.TestCase):
         async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
             screen._selected_agent_id = item.agent_id
             screen._start_live_tail(item.agent_id)
+            # Two pauses: worker thread completes resolver, then
+            # ``call_from_thread`` delivers ``_install_live_tail`` to
+            # the UI loop where the periodic timer is wired up.
+            await pilot.pause()  # type: ignore[attr-defined]
             await pilot.pause()  # type: ignore[attr-defined]
             assert screen._live_tail_timer is not None
             token_before = screen._live_tail_token
@@ -2728,6 +2732,48 @@ class DashboardLiveTailTests(unittest.TestCase):
             screen._start_live_tail(item.agent_id)
             assert screen._live_tail_timer is None
             assert screen._live_tail_agent_id is None
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_start_live_tail_defers_resolver_to_worker_thread(self) -> None:
+        """The resolver round-trip must not block the UI thread on j/k.
+
+        ``_resolve_live_mirror_target`` walks ``/proc`` and may stat
+        the SQLite store + spin up nested socket adapters. The
+        original implementation called it synchronously from
+        ``_start_live_tail`` on every cursor move, which on slow
+        filesystems (WSL ``/mnt/c``) made the dashboard feel laggy.
+        Pin the off-thread behaviour so a regression is caught.
+        """
+        from threading import get_ident
+
+        item = _agent_view()
+        stream = _FakeStream(capture_text="hello\n")
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
+            ui_thread_id = get_ident()
+            resolver_thread_ids: list[int] = []
+            original = screen._resolve_live_mirror_target
+
+            def _record(
+                agent: DashboardAgentListItemView,
+            ) -> tuple[str, Any]:
+                resolver_thread_ids.append(get_ident())
+                return original(agent)
+
+            screen._resolve_live_mirror_target = _record  # type: ignore[method-assign]
+            screen._selected_agent_id = item.agent_id
+            screen._start_live_tail(item.agent_id)
+            await pilot.pause()  # type: ignore[attr-defined]
+            await pilot.pause()  # type: ignore[attr-defined]
+
+            assert resolver_thread_ids, "resolver was never invoked"
+            assert all(tid != ui_thread_id for tid in resolver_thread_ids), (
+                "resolver must run off the UI thread "
+                f"(ui={ui_thread_id} resolver_threads={resolver_thread_ids})"
+            )
+            assert screen._live_tail_timer is not None
 
         self._run(runtime, body, seed_state=st)
 
@@ -2770,11 +2816,17 @@ class DashboardLiveTailTests(unittest.TestCase):
         async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
             screen._selected_agent_id = item.agent_id
             screen._start_live_tail(item.agent_id)
+            # Two pauses: first lets the worker thread complete the
+            # off-thread resolver round-trip, second lets
+            # ``call_from_thread`` deliver ``_install_live_tail`` to
+            # the UI thread where the periodic timer is wired up.
+            await pilot.pause()  # type: ignore[attr-defined]
             await pilot.pause()  # type: ignore[attr-defined]
             assert screen._live_tail_timer is not None
             screen.on_screen_suspend()
             assert screen._live_tail_timer is None
             screen.on_screen_resume()
+            await pilot.pause()  # type: ignore[attr-defined]
             await pilot.pause()  # type: ignore[attr-defined]
             assert screen._live_tail_timer is not None
 

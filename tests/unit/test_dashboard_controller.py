@@ -45,6 +45,9 @@ class InMemoryDashboardStore:
             )
         )
 
+    def get_agent(self, agent_id: str, /) -> Agent | None:
+        return self.agents.get(agent_id)
+
     def list_sessions(self, agent_id: str | None = None, /) -> tuple[Session, ...]:
         sessions = tuple(
             sorted(
@@ -899,6 +902,70 @@ class DashboardControllerTests(unittest.TestCase):
         self.assertLess(
             descending_ids.index("mmm-running"),
             descending_ids.index("aaa-running"),
+        )
+
+    def test_build_selected_agent_avoids_per_keystroke_list_agents_scan(self) -> None:
+        """Cursor (j/k) hot path must use ``get_agent`` not ``list_agents``.
+
+        Each ``build_selected_agent_view`` call is dispatched on
+        every cursor move. The previous implementation walked
+        ``list_agents()`` and did a Python-side linear scan to find
+        the highlighted row, which on a 30-agent fleet construct
+        30 ``Agent`` objects per keystroke even though only one was
+        needed. Pin the indexed lookup so a regression doesn't
+        re-introduce the per-keystroke fan-out.
+        """
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+        for i in range(5):
+            agent_id = f"agent-{i}"
+            store.agents[agent_id] = Agent(
+                id=agent_id,
+                name=agent_id,
+                tmux_session_name="muxdeck",
+                tmux_window_id=f"@{i}",
+                tmux_pane_id=f"%{i}",
+                cwd="/repo",
+                status=AgentStatus.RUNNING,
+                started_at=observed_at,
+                last_seen_at=observed_at,
+            )
+
+        list_agents_calls = 0
+        get_agent_calls: list[str] = []
+        original_list = store.list_agents
+        original_get = store.get_agent
+
+        def _count_list() -> tuple[Agent, ...]:
+            nonlocal list_agents_calls
+            list_agents_calls += 1
+            return original_list()
+
+        def _count_get(agent_id: str, /) -> Agent | None:
+            get_agent_calls.append(agent_id)
+            return original_get(agent_id)
+
+        store.list_agents = _count_list  # type: ignore[method-assign]
+        store.get_agent = _count_get  # type: ignore[method-assign]
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        state = controller.build_state()
+        assert state.agents
+        # Reset counters — we only care about the *cursor move* path.
+        list_agents_calls = 0
+        get_agent_calls.clear()
+
+        # Simulate a single j-press: build the selected view for one agent.
+        target = state.agents[0]
+        controller.build_selected_agent_view(target, preview_line_limit=8)
+
+        assert list_agents_calls == 0, (
+            "build_selected_agent_view must not call list_agents() on "
+            f"the cursor hot path (called {list_agents_calls}x)"
+        )
+        assert get_agent_calls == [target.agent_id], (
+            "build_selected_agent_view should fetch exactly one agent "
+            f"via get_agent (got {get_agent_calls!r})"
         )
 
 

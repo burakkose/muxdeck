@@ -38,6 +38,9 @@ class InMemoryDashboardStore:
     def list_agents(self) -> tuple[Agent, ...]:
         return tuple(sorted(self.agents.values(), key=lambda a: a.last_seen_at, reverse=True))
 
+    def get_agent(self, agent_id: str, /) -> Agent | None:
+        return self.agents.get(agent_id)
+
     def list_sessions(self, agent_id: str | None = None, /) -> tuple[Session, ...]:
         sessions = tuple(sorted(self.sessions.values(), key=lambda s: s.created_at, reverse=True))
         if agent_id is None:

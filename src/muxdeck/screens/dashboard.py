@@ -1015,25 +1015,75 @@ class DashboardScreen(ShellScreen):
         )
         if agent is None or not agent.pane_id:
             return
-        try:
-            pane_id, stream_adapter = self._resolve_live_mirror_target(agent)
-        except AttributeError:
-            # Runtime missing optional infra (e.g. ``pane_stream`` /
-            # ``tmux`` / ``store``) — common in lighter test harnesses
-            # and in production environments where tmux integration is
-            # disabled. Skip the tail rather than crashing the screen.
-            return
-        if stream_adapter is None or not pane_id:
-            return
+        # Claim the agent on the UI thread so subsequent stale-result
+        # checks have something to compare against, but defer the
+        # expensive part (``_resolve_live_mirror_target`` walks /proc
+        # and may stat the SQLite store + spin up nested socket
+        # adapters) to a worker thread. Without this defer, every j/k
+        # cursor move blocked the UI for the full resolver round-trip
+        # — on slow filesystems (WSL /mnt/c) that's tens to hundreds
+        # of milliseconds per keystroke and made the whole dashboard
+        # feel laggy.
         self._live_tail_agent_id = agent_id
+        self._live_tail_token += 1
+        token = self._live_tail_token
+        target_agent = agent
+
+        def _resolve_and_capture() -> None:
+            try:
+                pane_id, stream_adapter = self._resolve_live_mirror_target(target_agent)
+            except AttributeError:
+                # Runtime missing optional infra (e.g. ``pane_stream``
+                # / ``tmux`` / ``store``) — common in lighter test
+                # harnesses and in production environments where tmux
+                # integration is disabled.
+                return
+            if stream_adapter is None or not pane_id:
+                return
+            # Fold the first capture into the same worker call so the
+            # operator sees recent output without waiting one full
+            # tail interval after the resolver round-trip.
+            try:
+                captured_text = stream_adapter.capture_tail(
+                    pane_id, lines=_DASHBOARD_LIVE_TAIL_CAPTURE_LINES
+                )
+            except Exception:
+                captured_text = ""
+            self.app.call_from_thread(
+                self._install_live_tail,
+                agent_id,
+                token,
+                pane_id,
+                stream_adapter,
+                captured_text,
+            )
+
+        self.run_worker(
+            _resolve_and_capture,
+            thread=True,
+            exclusive=True,
+            name=_DASHBOARD_LIVE_TAIL_WORKER,
+        )
+
+    def _install_live_tail(
+        self,
+        agent_id: str,
+        token: int,
+        pane_id: str,
+        stream_adapter: PaneStreamAdapter,
+        captured_text: str,
+    ) -> None:
+        # Drop stale resolver results — the operator already moved on
+        # to a different agent or stopped the tail entirely. Both
+        # ``_start_live_tail`` and ``_stop_live_tail`` bump the token
+        # synchronously on the UI thread before this worker callback
+        # can land, so the token check alone catches every stale path.
+        if token != self._live_tail_token:
+            return
         self._live_tail_pane_id = pane_id
         self._live_tail_stream = stream_adapter
-        # Bumping the token here invalidates any in-flight capture so
-        # its result for the previous pane never lands in the cache.
-        self._live_tail_token += 1
-        # Kick a capture immediately so the panel reflects the new
-        # selection without waiting one full interval.
-        self._tick_live_tail()
+        if captured_text:
+            self._apply_live_tail(agent_id, token, captured_text)
         self._live_tail_timer = self.set_interval(
             _DASHBOARD_LIVE_TAIL_INTERVAL_SEC,
             self._tick_live_tail,

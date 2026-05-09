@@ -24,6 +24,11 @@ class _SingleAgentStore:
     def list_agents(self) -> tuple[Agent, ...]:
         return (self.agent,) if self.agent is not None else ()
 
+    def get_agent(self, agent_id: str, /) -> Agent | None:
+        if self.agent is None:
+            return None
+        return self.agent if self.agent.id == agent_id else None
+
     def list_sessions(self, agent_id: str | None = None, /) -> tuple[Session, ...]:
         if self.latest_session is None:
             return ()
