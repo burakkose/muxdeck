@@ -2777,15 +2777,32 @@ class DashboardLiveTailTests(unittest.TestCase):
 
         self._run(runtime, body, seed_state=st)
 
-    def test_build_live_preview_lines_strips_blank_and_trims_to_limit(self) -> None:
+    def test_build_live_preview_lines_preserves_interior_blanks_and_tails(self) -> None:
+        # Interior blank rows survive — the operator's tmux pane has
+        # those gaps for a reason (paragraph spacing, command/output
+        # separation, embedded tables) and the panel should look like
+        # the actual pane.
         text = "a\n\nbb\n   \nccc\n"
         ts = datetime(2024, 1, 1, tzinfo=UTC)
         out = DashboardScreen._build_live_preview_lines(
-            text, line_limit=2, captured_at=ts, sequence_no=1
+            text, line_limit=4, captured_at=ts, sequence_no=1
         )
-        assert tuple(line.content for line in out) == ("bb", "ccc")
+        # ``"   "`` is rstripped to ``""`` per row but stays as an
+        # empty visual line — same as the row above.
+        assert tuple(line.content for line in out) == ("", "bb", "", "ccc")
         assert all(line.captured_at == ts for line in out)
         assert all(line.source == "tmux_capture" for line in out)
+
+    def test_build_live_preview_lines_trims_trailing_pane_padding(self) -> None:
+        # tmux pads the captured region with blank rows when the
+        # prompt sits high in the pane. The panel should anchor at
+        # the freshest *content*, not at empty pane bottom.
+        text = "first\nsecond\n\n\n\n"
+        ts = datetime(2024, 1, 1, tzinfo=UTC)
+        out = DashboardScreen._build_live_preview_lines(
+            text, line_limit=10, captured_at=ts, sequence_no=1
+        )
+        assert tuple(line.content for line in out) == ("first", "second")
 
     def test_build_live_preview_lines_empty_inputs(self) -> None:
         ts = datetime(2024, 1, 1, tzinfo=UTC)

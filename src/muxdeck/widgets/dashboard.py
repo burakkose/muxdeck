@@ -19,6 +19,7 @@ from muxdeck.controllers import (
     DashboardAgentListItemView,
     DashboardAlertView,
     DashboardHealthSummary,
+    DashboardLogLineView,
     DashboardMetricView,
     DashboardSelectedAgentView,
     DashboardSubAgentTreeView,
@@ -1718,18 +1719,36 @@ def _truncate(value: str, limit: int) -> str:
 
 
 class LogPreviewPanel(Static):
-    """Recent pane output — ANSI-stripped, timestamp-grouped, syntax-highlighted.
+    """Recent pane output rendered with the same intent as ``tail -f``.
+
+    Two render paths share the panel:
+
+    * **Raw tmux capture** — the dashboard's live-tail loop writes
+      ``tmux_capture`` rows that are the unfiltered ``capture-pane
+      -p -e -J`` output. We render those via :meth:`Text.from_ansi`
+      so colours, dim/bold runs, embedded tables, and prompt glyphs
+      reach the operator unchanged. No per-line timestamp prefix,
+      no source badge, no severity re-colouring — the section header
+      carries the freshness metadata so the body reads as a faithful
+      replica of the actual tmux pane.
+
+    * **Stored log chunks** — when the live tail isn't wired up
+      (e.g. agent without a tmux pane), the controller falls back to
+      ``log_chunks`` rows from SQLite. Those keep the legacy
+      timestamp / source-badge formatting because the data shape is
+      different and the panel is acting as a discrete log viewer
+      rather than a pane mirror.
 
     The panel is a non-scrolling ``Static`` that pins the most recent
-    output to the *top* of its render. If the supplied preview overflows
-    the panel's visible height, ``Static`` would clip from the bottom —
-    hiding the freshest lines (the opposite of a ``tail -f`` panel).
-
-    To fix that we cache the last view, render with ``no_wrap=True`` so
-    each preview line is exactly one visual row, and tail the preview
-    to the available rows on every paint plus on resize. The result is
-    that the last N lines that physically fit in the panel are always
-    visible, and longer history is only ever truncated from the *top*.
+    output to the *top* of its render. If the supplied preview
+    overflows the panel's visible height, ``Static`` would clip from
+    the bottom — hiding the freshest lines (the opposite of a
+    ``tail -f`` panel). To fix that we cache the last view, render
+    with ``no_wrap=True`` so each preview line is exactly one visual
+    row, and tail the preview to the available rows on every paint
+    plus on resize. The result is that the last N lines that
+    physically fit in the panel are always visible, and longer
+    history is only ever truncated from the *top*.
     """
 
     _DEFAULT_PREVIEW_ROWS = 24
@@ -1737,22 +1756,33 @@ class LogPreviewPanel(Static):
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)  # type: ignore[arg-type]
         self._cached_agent: DashboardSelectedAgentView | None = None
+        # Track when the *content* last changed so the header can
+        # show "unchanged for Ns" without lying — the live-tail loop
+        # ticks on a fixed interval and resends identical text when
+        # the pane is idle. We stamp the actual change time, not the
+        # capture time.
+        self._raw_signature: tuple[str, ...] | None = None
+        self._raw_last_change_at: datetime | None = None
+        self._raw_last_seen_at: datetime | None = None
 
     def set_logs(self, agent: DashboardSelectedAgentView | None) -> None:
         self._cached_agent = agent
         preferences = resolve_ui_preferences(self)
-        # ``no_wrap=True`` keeps each preview line on a single visual
-        # row so the row-budget computation below is exact. Long lines
-        # are truncated horizontally rather than wrapping into the next
-        # row and pushing freshly-arrived lines out of the bottom of
-        # the panel.
-        result = Text(no_wrap=True, overflow="ellipsis")
-        _section_header(result, "output preview", preferences=preferences)
         if agent is None:
+            self._raw_signature = None
+            self._raw_last_change_at = None
+            self._raw_last_seen_at = None
+            result = Text(no_wrap=True, overflow="ellipsis")
+            _section_header(result, "output preview", preferences=preferences)
             result.append("  no recent output\n", style=FG4)
             self.update(result)
             return
         if not agent.log_preview:
+            self._raw_signature = None
+            self._raw_last_change_at = None
+            self._raw_last_seen_at = None
+            result = Text(no_wrap=True, overflow="ellipsis")
+            _section_header(result, "output preview", preferences=preferences)
             if _resolved_operator_status(agent.item).kind is OperatorStatusKind.STARTING:
                 # "Waiting for first output" is a transient placeholder.
                 # Keep it muted so it doesn't compete with steady-state
@@ -1762,14 +1792,93 @@ class LogPreviewPanel(Static):
                 result.append("  no recent output\n", style=FG4)
             self.update(result)
             return
-        # Render only the tail that actually fits in the panel. ``size``
-        # is ``Size(0, 0)`` until the widget is mounted into a screen,
-        # so fall back to a sensible default for off-screen renders
-        # (used by the widget unit tests and the benchmark harness).
+
+        if _is_raw_tmux_capture(agent.log_preview):
+            self._render_raw_tmux(agent, preferences=preferences)
+            return
+
+        # Legacy stored-log render path — kept for non-tmux sources
+        # (e.g. assistant transcript falling back to SQLite log_chunks
+        # when the agent has no live pane). Reset the raw freshness
+        # state so we don't carry stale "unchanged for Ns" data into
+        # a future raw render.
+        self._raw_signature = None
+        self._raw_last_change_at = None
+        self._raw_last_seen_at = None
+        self._render_stored_logs(agent, preferences=preferences)
+
+    def _render_raw_tmux(
+        self,
+        agent: DashboardSelectedAgentView,
+        *,
+        preferences: UiPreferences,
+    ) -> None:
+        # Most recent capture wins for "last update time" — even when
+        # the content is identical to the previous tick, the captured
+        # timestamp tells us tmux *was* polled. The content signature
+        # tracks whether the *bytes* changed, which is a separate
+        # signal the operator wants ("pane is alive but idle").
+        last_line = agent.log_preview[-1]
+        latest_seen_at = last_line.captured_at
+        signature = tuple(line.content for line in agent.log_preview)
+        if signature != self._raw_signature:
+            self._raw_signature = signature
+            self._raw_last_change_at = latest_seen_at
+        self._raw_last_seen_at = latest_seen_at
+
+        # ``no_wrap=True`` keeps each preview line on a single visual
+        # row so the row-budget computation below is exact. Long
+        # rows are truncated horizontally rather than wrapping into
+        # the next row and pushing freshly-arrived rows out of the
+        # bottom of the panel. tmux already laid the pane out at its
+        # own width; if the panel is narrower, ellipsis is honest.
+        result = Text(no_wrap=True, overflow="ellipsis")
+        _raw_output_header(
+            result,
+            preferences=preferences,
+            last_seen_at=latest_seen_at,
+            last_change_at=self._raw_last_change_at,
+        )
+
         height = self.size.height
-        # ``-2`` reserves rows for the section header line and one row
-        # of bottom padding so the last preview line is never visually
-        # touching the panel border.
+        # ``-3`` reserves rows for the header line, the freshness
+        # subtitle, and one row of bottom padding so the last preview
+        # line is never visually touching the panel border. Leaves
+        # room for a one-line truncation footer when present.
+        budget = max(height - 3, 1) if height > 0 else self._DEFAULT_PREVIEW_ROWS
+        total = len(agent.log_preview)
+        truncated = total > budget
+        if truncated:
+            # Reserve one more row for the "showing last N · scroll"
+            # footer so the footer doesn't push the freshest line
+            # off-screen.
+            budget = max(budget - 1, 1)
+        visible_lines = agent.log_preview[-budget:]
+        for line in visible_lines:
+            # ``Text.from_ansi`` parses CSI SGR sequences into Rich
+            # spans, preserving colours, bold, dim, italic, and the
+            # box-drawing colours agents draw tables with. Empty
+            # rows render as an actual blank line — the visual gap
+            # that tmux laid out for the operator stays intact.
+            rendered = Text.from_ansi(line.content, no_wrap=True, overflow="ellipsis")
+            result.append("  ")
+            result.append_text(rendered)
+            result.append("\n")
+        if truncated:
+            shown = len(visible_lines)
+            footer = f"  showing last {shown} of {total} lines · ↑ for full pane\n"
+            result.append(footer, style=FG4)
+        self.update(result)
+
+    def _render_stored_logs(
+        self,
+        agent: DashboardSelectedAgentView,
+        *,
+        preferences: UiPreferences,
+    ) -> None:
+        result = Text(no_wrap=True, overflow="ellipsis")
+        _section_header(result, "output preview", preferences=preferences)
+        height = self.size.height
         budget = max(height - 2, 1) if height > 0 else self._DEFAULT_PREVIEW_ROWS
         visible_lines = agent.log_preview[-budget:]
         last_ts = ""
@@ -1805,6 +1914,56 @@ class LogPreviewPanel(Static):
         # toggling the help overlay, switching UI density preset).
         if self._cached_agent is not None:
             self.set_logs(self._cached_agent)
+
+
+def _is_raw_tmux_capture(lines: Sequence[DashboardLogLineView]) -> bool:
+    """Heuristic: every line came from the live tmux capture loop.
+
+    The dashboard's live-tail path tags every emitted line with the
+    ``tmux_capture`` source. Stored log_chunks use ``stdout`` /
+    ``stderr`` / ``assistant`` etc. We require *all* visible lines to
+    be tmux_capture so a transient mixed batch can't accidentally
+    silence the freshness header.
+    """
+    return bool(lines) and all(line.source == "tmux_capture" for line in lines)
+
+
+def _raw_output_header(
+    result: Text,
+    *,
+    preferences: UiPreferences,
+    last_seen_at: datetime,
+    last_change_at: datetime | None,
+) -> None:
+    """Render the OUTPUT PREVIEW · raw tmux pane header + freshness line."""
+    result.append(ui_symbol("section-lead", preferences=preferences), style=FG4)
+    result.append("OUTPUT PREVIEW", style=f"bold {FG3}")
+    result.append(" · ", style=FG4)
+    result.append("raw tmux pane", style=FG3)
+    result.append(ui_symbol("section-fill", preferences=preferences), style=FG4)
+    result.append("\n", style=FG4)
+
+    now = datetime.now(UTC)
+    seen = format_short_timestamp(last_seen_at)
+    parts = [f"updated {seen}"]
+    age = (now - last_seen_at).total_seconds()
+    if age >= 2:
+        parts.append(f"{_format_delta_seconds(age)} ago")
+    if last_change_at is not None and last_change_at != last_seen_at:
+        unchanged_for = (last_seen_at - last_change_at).total_seconds()
+        if unchanged_for >= 2:
+            parts.append(f"unchanged for {_format_delta_seconds(unchanged_for)}")
+    result.append("  " + " · ".join(parts) + "\n", style=FG4)
+
+
+def _format_delta_seconds(seconds: float) -> str:
+    """Compact ``Ns`` / ``NmMs`` / ``NhMm`` for the freshness header."""
+    total = int(max(seconds, 0))
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m{total % 60:02d}s"
+    return f"{total // 3600}h{(total % 3600) // 60:02d}m"
 
 
 def _highlight_log_line(content: str, default_style: str) -> Text:

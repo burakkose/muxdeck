@@ -1174,10 +1174,18 @@ class DashboardScreen(ShellScreen):
     ) -> tuple[DashboardLogLineView, ...]:
         if line_limit <= 0:
             return ()
-        non_blank = [line.rstrip() for line in captured_text.splitlines() if line.strip()]
-        if not non_blank:
+        # Preserve interior blank lines so the panel reads like the
+        # actual tmux pane (paragraph spacing, command/output gaps,
+        # box-drawing tables). Trim only the trailing blank rows
+        # tmux emits as pane-bottom padding when the prompt is high
+        # in the pane, otherwise the panel would show empty rows at
+        # the bottom while real content scrolls off the top.
+        rows = [line.rstrip() for line in captured_text.splitlines()]
+        while rows and not rows[-1]:
+            rows.pop()
+        if not rows:
             return ()
-        tail = non_blank[-line_limit:]
+        tail = rows[-line_limit:]
         return tuple(
             DashboardLogLineView(
                 captured_at=captured_at,

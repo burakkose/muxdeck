@@ -133,7 +133,7 @@ class TestSeed:
 
 
 class TestCaptureTail:
-    def test_passes_negative_start_line_and_joins_wraps(self) -> None:
+    def test_passes_negative_start_line_joins_wraps_and_preserves_ansi(self) -> None:
         tmux = FakeTmuxPaneStream(capture_output="line1\nline2\n")
         adapter = PaneStreamAdapter(tmux)
         assert adapter.capture_tail("%1", lines=64) == "line1\nline2\n"
@@ -143,7 +143,11 @@ class TestCaptureTail:
                 "start_line": -64,
                 "end_line": None,
                 "join_wrapped_lines": True,
-                "include_escape_sequences": False,
+                # ``include_escape_sequences=True`` is what makes the
+                # dashboard's "OUTPUT PREVIEW · raw tmux pane" panel
+                # render the actual pane colours (ANSI SGR runs) and
+                # not a stripped plain-text approximation.
+                "include_escape_sequences": True,
             }
         ]
 

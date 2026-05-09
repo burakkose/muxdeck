@@ -140,8 +140,9 @@ Screen {
     height: 1fr;
     min-height: 8;
     max-height: 18;
-    border-top: solid #191D25;
-    padding-top: 0;
+    background: #0B0D10;
+    border-top: dashed #233044;
+    padding: 0 1;
 }
 
 #dashboard-alerts {

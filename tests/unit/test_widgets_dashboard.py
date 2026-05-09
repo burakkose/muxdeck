@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 import pytest
+from rich.text import Text
 from textual.app import App, ComposeResult
 
 from muxdeck.controllers import (
@@ -77,7 +78,30 @@ class _Renderable(Protocol):
 def _render(widget: _Renderable) -> str:
     renderable = widget.render()
     plain = getattr(renderable, "plain", None)
-    return plain if isinstance(plain, str) else str(renderable)
+    if isinstance(plain, str):
+        return plain
+    inner = getattr(renderable, "_renderable", None)
+    inner_plain = getattr(inner, "plain", None)
+    if isinstance(inner_plain, str):
+        return inner_plain
+    return str(renderable)
+
+
+def _rendered_text(widget: _Renderable) -> Text:
+    """Return the underlying Rich ``Text`` produced by the widget render.
+
+    Textual wraps Rich renderables in a ``RichVisual`` for compositing;
+    the test helpers want direct access to ``plain`` / ``spans`` for
+    structural assertions, so we unwrap one level when necessary.
+    """
+    renderable = widget.render()
+    if isinstance(renderable, Text):
+        return renderable
+    inner = getattr(renderable, "_renderable", None)
+    if isinstance(inner, Text):
+        return inner
+    msg = f"widget did not render a Rich Text (got {type(renderable).__name__})"
+    raise AssertionError(msg)
 
 
 # ── pure helpers ────────────────────────────────────────────────────
@@ -1351,6 +1375,198 @@ def test_log_preview_panel_no_cached_view_resize_is_noop() -> None:
 
     panel = LogPreviewPanel()
     panel.on_resize(events.Resize(Size(80, 12), Size(80, 30)))
+
+
+# ── raw-tmux render path ─────────────────────────────────────────────
+
+
+def _raw_tmux_lines(
+    *contents: str,
+    captured_at: datetime | None = None,
+) -> tuple[DashboardLogLineView, ...]:
+    """Build a tuple of ``tmux_capture`` rows for the raw render path."""
+    ts = captured_at if captured_at is not None else datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    return tuple(
+        DashboardLogLineView(
+            captured_at=ts,
+            source="tmux_capture",
+            sequence_no=index,
+            content=content,
+        )
+        for index, content in enumerate(contents)
+    )
+
+
+def test_log_preview_panel_raw_tmux_renders_pane_label_header() -> None:
+    """Raw tmux capture switches to the dedicated ``raw tmux pane`` heading."""
+    panel = LogPreviewPanel()
+    item = _bare_item()
+    selected = _selected_view_with(item, log_preview=_raw_tmux_lines("hello"))
+    panel.set_logs(selected)
+    rendered = _render(panel)
+    assert "OUTPUT PREVIEW" in rendered
+    assert "raw tmux pane" in rendered
+
+
+def test_log_preview_panel_raw_tmux_preserves_ansi_styles() -> None:
+    """``Text.from_ansi`` must turn CSI SGR runs into Rich spans, not strip them."""
+    panel = LogPreviewPanel()
+    item = _bare_item()
+    # Red "boom" via SGR. ``_strip_ansi`` would erase the escape; the
+    # raw render path must keep it as a styled span Rich rendered
+    # from the ANSI code.
+    selected = _selected_view_with(
+        item,
+        log_preview=_raw_tmux_lines("\x1b[31mboom\x1b[0m"),
+    )
+    panel.set_logs(selected)
+    rendered_text = _rendered_text(panel)
+    plain = rendered_text.plain
+    assert "boom" in plain
+    # Strip the ANSI escapes wouldn't leave a span over "boom" with
+    # a colour set. ``Text.from_ansi`` does. Locate the offset of
+    # "boom" and assert at least one span over it carries colour.
+    boom_start = plain.index("boom")
+    boom_end = boom_start + len("boom")
+    coloured_over_boom = [
+        span
+        for span in rendered_text.spans
+        if span.start <= boom_start
+        and span.end >= boom_end
+        and getattr(getattr(span.style, "color", None), "type", None) is not None
+    ]
+    assert coloured_over_boom, (
+        "raw output dropped ANSI colour over 'boom'; spans were "
+        f"{[(s.start, s.end, s.style) for s in rendered_text.spans]}"
+    )
+
+
+def test_log_preview_panel_raw_tmux_omits_per_line_timestamps_and_source_badges() -> None:
+    """No ``HH:MM:SS`` / ``tmx`` chrome inside the raw output rows."""
+    panel = LogPreviewPanel()
+    item = _bare_item()
+    selected = _selected_view_with(
+        item,
+        log_preview=_raw_tmux_lines("plain pane row"),
+    )
+    panel.set_logs(selected)
+    rendered = _render(panel)
+    body_lines = [line for line in rendered.splitlines() if "plain pane row" in line]
+    assert body_lines, rendered
+    body = body_lines[0]
+    # The legacy stored-log render prefixes ``12:00:00 tmx ``; the
+    # raw path must not. (The header subtitle does include a
+    # timestamp, but that's outside the body line.)
+    assert "12:00:00" not in body
+    assert "tmx " not in body
+
+
+def test_log_preview_panel_raw_tmux_skips_severity_recolor() -> None:
+    """``_highlight_log_line`` must not re-paint raw output as ``error`` red."""
+    panel = LogPreviewPanel()
+    item = _bare_item()
+    # The literal word "Traceback" in pane output is just a substring;
+    # the muxdeck "this row is a failure" signal must come from
+    # NEEDS ATTENTION, not from re-parsing pane bytes.
+    selected = _selected_view_with(
+        item,
+        log_preview=_raw_tmux_lines("Traceback (most recent call last):"),
+    )
+    panel.set_logs(selected)
+    rendered_text = _rendered_text(panel)
+    span_styles = [str(getattr(span, "style", "")).lower() for span in rendered_text.spans]
+    # ``_highlight_log_line`` would have produced ``bold #FF453A``
+    # (SEVERITY_ERROR) for any row containing "traceback".
+    assert not any("ff453a" in style and "bold" in style for style in span_styles), (
+        f"raw output was re-painted as severity-error; spans were {span_styles}"
+    )
+
+
+def test_log_preview_panel_raw_tmux_preserves_interior_blank_rows() -> None:
+    """Empty rows in the capture render as visible blank lines."""
+    panel = LogPreviewPanel()
+    item = _bare_item()
+    selected = _selected_view_with(
+        item,
+        log_preview=_raw_tmux_lines("first paragraph", "", "second paragraph"),
+    )
+    panel.set_logs(selected)
+    rendered = _render(panel)
+    first_idx = rendered.index("first paragraph")
+    second_idx = rendered.index("second paragraph")
+    between = rendered[first_idx:second_idx]
+    # At least two newlines between the two paragraph rows means
+    # the empty row survived as its own line.
+    assert between.count("\n") >= 2, between
+
+
+def test_log_preview_panel_raw_tmux_truncation_footer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the panel can't fit the full preview, surface a ``showing last`` footer."""
+    from textual.geometry import Size
+
+    panel = LogPreviewPanel()
+    monkeypatch.setattr(type(panel), "size", property(lambda _self: Size(80, 8)))
+    item = _bare_item()
+    lines = _raw_tmux_lines(*[f"row-{i:02d}" for i in range(40)])
+    selected = _selected_view_with(item, log_preview=lines)
+    panel.set_logs(selected)
+    rendered = _render(panel)
+    # Freshest row must still be visible; oldest row must not.
+    assert "row-39" in rendered
+    assert "row-00" not in rendered
+    assert "showing last" in rendered
+    assert "of 40 lines" in rendered
+
+
+def test_log_preview_panel_raw_tmux_header_shows_unchanged_for_when_idle() -> None:
+    """Identical capture across ticks surfaces ``unchanged for Ns`` in the header."""
+    panel = LogPreviewPanel()
+    item = _bare_item()
+    base = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    # First tick: panel records the change time.
+    panel.set_logs(_selected_view_with(item, log_preview=_raw_tmux_lines("idle", captured_at=base)))
+    # Second tick 30s later, identical content. Header should now
+    # show the staleness.
+    later = base + timedelta(seconds=30)
+    panel.set_logs(
+        _selected_view_with(item, log_preview=_raw_tmux_lines("idle", captured_at=later))
+    )
+    rendered = _render(panel)
+    assert "unchanged for" in rendered
+
+
+def test_log_preview_panel_raw_tmux_header_resets_change_when_content_changes() -> None:
+    """A capture whose content actually changes must clear ``unchanged for``."""
+    panel = LogPreviewPanel()
+    item = _bare_item()
+    base = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    panel.set_logs(_selected_view_with(item, log_preview=_raw_tmux_lines("v1", captured_at=base)))
+    later = base + timedelta(seconds=30)
+    panel.set_logs(_selected_view_with(item, log_preview=_raw_tmux_lines("v2", captured_at=later)))
+    rendered = _render(panel)
+    assert "unchanged for" not in rendered
+
+
+def test_log_preview_panel_falls_back_to_legacy_render_for_stored_log_chunks() -> None:
+    """Non-tmux sources keep the timestamp/source-badge stored-log render."""
+    panel = LogPreviewPanel()
+    now = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
+    item = _bare_item()
+    lines = (
+        DashboardLogLineView(
+            captured_at=now,
+            source="stdout",
+            sequence_no=1,
+            content="hello",
+        ),
+    )
+    selected = _selected_view_with(item, log_preview=lines)
+    panel.set_logs(selected)
+    rendered = _render(panel)
+    assert "raw tmux pane" not in rendered
+    assert "hello" in rendered
+    # Legacy path keeps the source badge.
+    assert "out" in rendered
 
 
 def test_alert_panel_renders_alerts_with_severity_badges() -> None:
