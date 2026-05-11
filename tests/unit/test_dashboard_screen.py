@@ -322,6 +322,7 @@ def _runtime_with(
     session_resolver: object | None = None,
     tmux: object | None = None,
     store: object | None = None,
+    sync_store: object | None = None,
     attention_obj: object | None = None,
 ) -> MuxdeckRuntime:
     attrs: dict[str, Any] = {
@@ -334,7 +335,7 @@ def _runtime_with(
         "session_resolver": session_resolver,
         "tmux": tmux,
         "store": store if store is not None else object(),
-        "sync_store": None,
+        "sync_store": sync_store,
     }
     if attention_obj is not None:
         attrs["attention"] = attention_obj
@@ -924,8 +925,10 @@ class _StubResolver:
 @dataclass
 class _StubStore:
     agents: dict[str, object] = field(default_factory=dict)
+    get_calls: list[str] = field(default_factory=list)
 
     def get_agent(self, agent_id: str) -> object | None:
+        self.get_calls.append(agent_id)
         return self.agents.get(agent_id)
 
 
@@ -1853,6 +1856,88 @@ class DashboardScreenAdditionalTests(unittest.TestCase):
             assert pane_id == "%nested"
             assert stream is not None
             assert tmux_obj.with_socket_calls == [socket]
+
+        self._run_with_screen(runtime, body, seed_state=st)
+
+    def test_resolve_live_mirror_target_prefers_sync_store(self) -> None:
+        """Thread-safety regression: worker-thread path must use sync_store.
+
+        ``_resolve_live_mirror_target`` runs from the live-tail worker
+        thread (``_resolve_and_capture``). Touching the UI-thread-bound
+        ``runtime.store`` from there raises ``sqlite3.ProgrammingError:
+        SQLite objects created in a thread can only be used in that
+        same thread`` -- exactly the crash operators reported when
+        navigating the dashboard. The resolver must look up agents
+        through ``sync_store`` (built with ``check_same_thread=False``)
+        whenever it is wired.
+        """
+        item = _agent_view()
+        st = _state(agents=(item,))
+
+        class _Stream:
+            pass
+
+        ui_store = _StubStore(agents={"agent-1": _RecordAgent()})
+        sync_store = _StubStore(agents={"agent-1": _RecordAgent()})
+        target = ResolvedCopilotTarget(session_id="sess-1", pane_id="%nested", socket_path=None)
+        resolver = _StubResolver(target=target)
+        runtime = _runtime_with(
+            dashboard_ctrl=_RecordingDashboardCtrl(state_to_return=st),
+            agents_ctrl=_RecordingAgents(),
+            pane_stream=_Stream(),
+            session_resolver=resolver,
+            store=ui_store,
+            sync_store=sync_store,
+        )
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            ui_store.get_calls.clear()
+            sync_store.get_calls.clear()
+            pane_id, stream = screen._resolve_live_mirror_target(item)
+            assert pane_id == "%nested"
+            assert stream is not None
+            assert sync_store.get_calls == ["agent-1"], (
+                "live-mirror resolution must read agents through the "
+                "thread-safe sync_store, not the UI-bound store"
+            )
+            assert ui_store.get_calls == [], (
+                "UI-bound store must never be touched when sync_store "
+                "is wired -- doing so crashes the live-tail worker"
+            )
+
+        self._run_with_screen(runtime, body, seed_state=st)
+
+    def test_resolve_live_mirror_target_falls_back_to_store_when_no_sync(self) -> None:
+        """Without sync_store, the resolver still works against the UI store.
+
+        Lighter test harnesses (and any production wiring without the
+        secondary connection) leave ``runtime.sync_store`` as ``None``;
+        the resolver must fall back to ``runtime.store`` rather than
+        crashing or returning empty results.
+        """
+        item = _agent_view()
+        st = _state(agents=(item,))
+
+        class _Stream:
+            pass
+
+        ui_store = _StubStore(agents={"agent-1": _RecordAgent()})
+        target = ResolvedCopilotTarget(session_id="sess-1", pane_id="%nested", socket_path=None)
+        resolver = _StubResolver(target=target)
+        runtime = _runtime_with(
+            dashboard_ctrl=_RecordingDashboardCtrl(state_to_return=st),
+            agents_ctrl=_RecordingAgents(),
+            pane_stream=_Stream(),
+            session_resolver=resolver,
+            store=ui_store,
+            sync_store=None,
+        )
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            ui_store.get_calls.clear()
+            pane_id, _stream = screen._resolve_live_mirror_target(item)
+            assert pane_id == "%nested"
+            assert ui_store.get_calls == ["agent-1"]
 
         self._run_with_screen(runtime, body, seed_state=st)
 

@@ -959,7 +959,17 @@ class DashboardScreen(ShellScreen):
         resolver = self.runtime.session_resolver
         if resolver is None:
             return agent.pane_id, stream_adapter
-        agent_record = self.runtime.store.get_agent(agent.agent_id)
+        # This method runs from the live-tail worker thread (see
+        # ``_resolve_and_capture``). The default ``runtime.store`` is
+        # bound to the UI thread and raises
+        # ``sqlite3.ProgrammingError: SQLite objects created in a
+        # thread can only be used in that same thread`` when touched
+        # from a worker. Prefer the dedicated ``sync_store`` (built
+        # with ``check_same_thread=False``) and only fall back to the
+        # UI store for lighter test harnesses that do not wire the
+        # secondary connection.
+        store = self.runtime.sync_store or self.runtime.store
+        agent_record = store.get_agent(agent.agent_id)
         if agent_record is None:
             return agent.pane_id, stream_adapter
         target = resolver.resolve_target_for_pid(getattr(agent_record, "pid", None))
