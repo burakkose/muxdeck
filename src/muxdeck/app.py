@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sqlite3
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -43,6 +44,7 @@ from muxdeck.controllers import (
     WorktreeController,
 )
 from muxdeck.controllers.sessions_controller import SessionsController
+from muxdeck.exceptions import PersistenceError
 from muxdeck.perf import log_summary as perf_log_summary
 from muxdeck.perf import timed
 from muxdeck.screens import (
@@ -521,7 +523,19 @@ class MuxdeckApp(App[None]):
                 attention_notifications=attention_notifications,
                 attention_unread_count=attention_unread_count,
             )
-        except Exception:
+        except Exception as exc:
+            # Thread workers cannot be hard-cancelled, so a sync started
+            # just before app shutdown can race the SQLite ``close()``
+            # in :func:`run_app`. Surfacing that race as an
+            # ``_log.exception`` traceback alarms operators who think
+            # the sync crashed mid-run, when in fact the app is just
+            # tearing down. Detect the closed-database signature and
+            # swallow it quietly; everything else still gets logged.
+            if isinstance(exc, PersistenceError) and "closed database" in str(exc).lower():
+                return None
+            cause = exc.__cause__
+            if isinstance(cause, sqlite3.ProgrammingError) and "closed" in str(cause).lower():
+                return None
             _log.exception("sync worker error")
             return None
 

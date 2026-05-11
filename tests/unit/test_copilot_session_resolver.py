@@ -108,8 +108,16 @@ class TestInuseLockResolver:
             extra_roots=(_FakeRoot(path=windows),),
         )
         primary.mkdir()
-        resolver = InuseLockResolver(store=store, proc_dir=proc)
-        assert resolver.resolve_for_pid(7777) == "sess-win"
+        # Extras are off by default — pane pids are always native to
+        # the host the resolver runs on, so a Windows-side mount holds
+        # no relevant locks. Callers must opt in explicitly.
+        opted_in = InuseLockResolver(store=store, proc_dir=proc, include_extra_roots=True)
+        assert opted_in.resolve_for_pid(7777) == "sess-win"
+
+        # Default constructor must NOT walk the extra root, even when
+        # the lock there would otherwise match.
+        default = InuseLockResolver(store=store, proc_dir=proc)
+        assert default.resolve_for_pid(7777) is None
 
     def test_missing_proc_dir_returns_none(self, tmp_path: Path) -> None:
         store = _FakeStore(session_state_dir=tmp_path)
@@ -601,5 +609,7 @@ class TestRoots:
 
         extras = (_BadRoot(path="not a path"),)
         store = _FakeStore(session_state_dir=tmp_path / "sess", extra_roots=extras)  # type: ignore[arg-type]
-        resolver = InuseLockResolver(store=store, proc_dir=tmp_path / "proc")
+        resolver = InuseLockResolver(
+            store=store, proc_dir=tmp_path / "proc", include_extra_roots=True
+        )
         assert list(resolver._enumerate_locks()) == []

@@ -195,33 +195,27 @@ class DashboardScreen(ShellScreen):
             self.query_one(AlertPanel),
         )
         first_load = self._state is None
-        # Cold open: when the synchronizer is configured but hasn't
-        # delivered a sync result yet, the SQLite store may still hold
-        # last-session agents whose status (active/working/idle) no
-        # longer reflects the running tmux fleet. The previous
-        # behaviour kicked off a local build anyway and painted that
-        # stale state for ~1 second before the sync result arrived,
-        # which made the dashboard show wrong status on first paint.
-        # Defer the local build so the loading overlay stays up until
-        # the sync worker delivers ``last_dashboard_state`` via
-        # ``_refresh_screen_widgets``. The synchronizer always runs
-        # ``call_after_refresh`` from app.on_mount, so we know it's
-        # already in flight by the time we get here.
+        # Cold open: the synchronizer (running in a worker thread) can
+        # take several seconds to walk tmux + ``/proc`` + git context
+        # before delivering a fresh ``DashboardState``. Previously the
+        # dashboard returned here without painting anything until that
+        # first sync arrived, which made the screen feel frozen during
+        # the entire sync window — and prevented mode switches because
+        # operators thought the app had hung.
         #
-        # ``sync_attempted`` flips True after the first sync finishes
-        # (success or failure). If the sync errored we still fall
-        # back to the local build so the dashboard isn't stuck on
-        # "syncing fleet…" forever.
-        synchronizer_pending = (
+        # Instead, dispatch a local build off the SQLite store right
+        # away so the operator sees the cached agent list within a few
+        # hundred milliseconds. The sync worker's result will overwrite
+        # via ``last_dashboard_state`` once it lands; ``_state_apply_seq``
+        # already drops the older worker if its result arrives second.
+        sync_in_flight = (
             first_load
             and not self.muxdeck_app.sync_attempted
             and getattr(self.runtime, "synchronizer", None) is not None
         )
         if first_load:
-            self.set_status("syncing fleet…" if synchronizer_pending else "loading dashboard…")
+            self.set_status("syncing fleet…" if sync_in_flight else "loading dashboard…")
             self.begin_loading(*loading_widgets)
-        if synchronizer_pending:
-            return
 
         # Snapshot inputs so the worker doesn't read mutable UI state.
         # ``sync_dashboard`` uses the thread-safe SQLite connection;

@@ -96,7 +96,23 @@ class InuseLockResolver:
 
     store: _RootProvider
     proc_dir: Path = field(default_factory=lambda: Path("/proc"))
-    enumeration_ttl_seconds: float = 2.0
+    # Lock enumeration is cached so per-pane resolves in the same sync
+    # cycle (and across consecutive cycles a few seconds apart) reuse
+    # one filesystem walk. Even a Linux-only walk costs a few ms per
+    # session dir; on WSL with a Windows mount included it can run
+    # into seconds. Cache invalidation is handled at action boundaries
+    # via :meth:`invalidate_lock_cache`, not by waiting out the TTL.
+    enumeration_ttl_seconds: float = 15.0
+    # ``inuse.<pid>.lock`` files only carry pids that ran on the host
+    # the resolver is hosted on. On WSL the secondary Windows root
+    # (``/mnt/c/.../session-state``) holds locks belonging to *Windows*
+    # pids that will never appear in the Linux ``/proc`` tree and can
+    # never match a tmux pane pid. Walking that mount is pure waste --
+    # and on WSL it can take 1-3 seconds per scan, making the dashboard
+    # feel frozen during the first sync. Default to primary-root-only;
+    # callers (and tests) that genuinely want to enumerate extra roots
+    # can opt in explicitly.
+    include_extra_roots: bool = False
     _max_ancestors: int = 16
     _lock_cache: tuple[tuple[Path, int], ...] | None = field(default=None, init=False, repr=False)
     _lock_cache_at: float = field(default=0.0, init=False, repr=False)
@@ -221,6 +237,8 @@ class InuseLockResolver:
 
     def _roots(self) -> Iterable[Path]:
         yield self.store.session_state_dir
+        if not self.include_extra_roots:
+            return
         for extra in self.store.extra_roots:
             path = getattr(extra, "path", None)
             if isinstance(path, Path):
