@@ -15,6 +15,7 @@ from textual.worker import Worker, WorkerState
 
 from muxdeck.adapters.pane_stream import PaneStreamAdapter
 from muxdeck.bindings import SESSIONS_BINDINGS, SESSIONS_HINTS
+from muxdeck.domain.enums import AgentStatus
 from muxdeck.screens.base import ShellScreen
 from muxdeck.screens.compose_mirror import ComposeWithMirrorScreen
 from muxdeck.widgets.sessions import (
@@ -31,6 +32,19 @@ if TYPE_CHECKING:
 
 
 _WORKER_NAME = "sessions_load"
+
+# Terminal agent statuses are excluded from the SESSIONS screen's
+# "live" set. The dashboard already filters on the same pair (see
+# ``controllers/dashboard_controller.py``); using one shared
+# definition keeps the two views consistent. Without this filter a
+# session whose Copilot CLI process exited (and was correctly marked
+# DEAD/COMPLETED by the synchronizer after dead_grace_period_sec)
+# would stay pinned to the green "active" status in the SESSIONS list
+# forever, because the agent record carrying the original
+# copilot_session_id is never deleted from SQLite.
+_TERMINAL_AGENT_STATUSES: frozenset[AgentStatus] = frozenset(
+    {AgentStatus.DEAD, AgentStatus.COMPLETED}
+)
 
 # tmux's target syntax is ``<session>:<window>`` so a literal ``:`` in
 # a window name confuses the address parser; control chars render as
@@ -193,10 +207,21 @@ class SessionsScreen(ShellScreen):
             # Live agent ids correlate running tmux panes with session
             # files on disk. Use the dedicated thread-safe SQLite store
             # when available because this function runs in a worker thread.
+            #
+            # Skip terminal-state agents (DEAD/COMPLETED) so a session
+            # whose Copilot CLI process has exited stops claiming
+            # "active" status. The synchronizer marks an agent
+            # terminal once the backing tmux pane has been gone for
+            # ``dead_grace_period_sec`` (default 10 s); by the next
+            # sync cycle the SESSIONS screen sees the terminal status
+            # here and demotes the row to "completed"/"unclosed"
+            # based on whether ``session.shutdown`` was emitted.
             live_ids: set[str] = set()
             live_targets: dict[str, _LiveSessionTarget] = {}
             agents = live_store.list_agents()
             for agent in agents:
+                if getattr(agent, "status", None) in _TERMINAL_AGENT_STATUSES:
+                    continue
                 session_id = agent.copilot_session_id
                 if not session_id:
                     continue

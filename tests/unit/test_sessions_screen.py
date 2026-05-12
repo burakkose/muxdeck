@@ -25,6 +25,7 @@ from muxdeck.controllers.sessions_controller import (
     SessionListItemView,
     SessionsState,
 )
+from muxdeck.domain.enums import AgentStatus
 from muxdeck.screens.sessions import (
     _WORKER_NAME,
     SessionsScreen,
@@ -1065,6 +1066,10 @@ class _StubAgent:
     tmux_window_id: str = ""
     tmux_session_name: str = ""
     pid: int | None = None
+    # Default to RUNNING so existing tests keep their previous
+    # "alive" semantics; new tests opt into terminal statuses
+    # explicitly to cover the dead-agent filter.
+    status: AgentStatus = AgentStatus.RUNNING
 
 
 class SessionsLoaderTests(unittest.TestCase):
@@ -1125,6 +1130,109 @@ class SessionsLoaderTests(unittest.TestCase):
         assert targets["sess-b"].window_id == "@1"
         assert targets["sess-b"].session_name == "muxdeck"
         assert targets["sess-b"].pane_pid == 4242
+
+    def test_load_excludes_dead_agents_from_live_session_ids(self) -> None:
+        """Dead-agent session ids must not pin the row to "active".
+
+        When a Copilot CLI process exits, the synchronizer marks
+        the agent record DEAD after ``dead_grace_period_sec``. The
+        SQLite row, however, persists with its original
+        ``copilot_session_id``. Without this filter that id would
+        keep showing up in ``live_session_ids`` forever, so the
+        SESSIONS table would never demote the row from "active" to
+        "completed"/"unclosed". This test pins the contract.
+        """
+
+        async def scenario() -> tuple[frozenset[str], dict[str, _LiveSessionTarget]]:
+            agents = (
+                _StubAgent(
+                    copilot_session_id="sess-running",
+                    tmux_pane_id="%1",
+                    status=AgentStatus.RUNNING,
+                ),
+                _StubAgent(
+                    copilot_session_id="sess-dead",
+                    tmux_pane_id="%2",
+                    status=AgentStatus.DEAD,
+                ),
+                _StubAgent(
+                    copilot_session_id="sess-completed",
+                    tmux_pane_id="%3",
+                    status=AgentStatus.COMPLETED,
+                ),
+            )
+            store = _RecordingStore(agents=agents)
+            ctrl = _RecordingSessionsCtrl(state=_state())
+            runtime = _runtime_with(sessions_ctrl=ctrl, store=store)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+                return screen._live_session_ids, dict(screen._live_targets)
+
+        live_ids, targets = asyncio.run(scenario())
+        # Running agent counts as live; dead/completed do not.
+        assert live_ids == frozenset({"sess-running"})
+        # ``live_targets`` must mirror the same exclusion so action
+        # handlers (focus_pane, live tail) don't try to attach to a
+        # tmux pane that no longer hosts a Copilot CLI process.
+        assert set(targets) == {"sess-running"}
+
+    def test_load_includes_non_terminal_intermediate_statuses(self) -> None:
+        """Non-terminal statuses besides RUNNING also count as live.
+
+        A freshly resumed session may report STARTING, IDLE, or
+        WAITING_INPUT depending on which sync cycle catches it
+        first; all of those mean a Copilot CLI process is alive
+        and the SESSIONS row should reflect that.
+        """
+
+        async def scenario() -> frozenset[str]:
+            agents = tuple(
+                _StubAgent(
+                    copilot_session_id=f"sess-{name}",
+                    tmux_pane_id=f"%{i}",
+                    status=status,
+                )
+                for i, (name, status) in enumerate(
+                    (
+                        ("starting", AgentStatus.STARTING),
+                        ("running", AgentStatus.RUNNING),
+                        ("idle", AgentStatus.IDLE),
+                        ("waiting", AgentStatus.WAITING_INPUT),
+                        ("blocked", AgentStatus.BLOCKED),
+                        ("error", AgentStatus.ERROR),
+                        ("discovered", AgentStatus.DISCOVERED),
+                        ("unknown", AgentStatus.UNKNOWN),
+                    )
+                )
+            )
+            store = _RecordingStore(agents=agents)
+            ctrl = _RecordingSessionsCtrl(state=_state())
+            runtime = _runtime_with(sessions_ctrl=ctrl, store=store)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+                return screen._live_session_ids
+
+        live_ids = asyncio.run(scenario())
+        assert live_ids == frozenset(
+            {
+                "sess-starting",
+                "sess-running",
+                "sess-idle",
+                "sess-waiting",
+                "sess-blocked",
+                "sess-error",
+                "sess-discovered",
+                "sess-unknown",
+            }
+        )
 
 
 class SessionsWorkerCallbackTests(unittest.TestCase):
