@@ -28,6 +28,7 @@ from muxdeck.controllers.sessions_controller import (
 from muxdeck.screens.sessions import (
     _WORKER_NAME,
     SessionsScreen,
+    _build_window_name,
     _LiveSessionTarget,
     _LoadedSessionsState,
 )
@@ -221,6 +222,8 @@ def _runtime_with(
     sessions_ctrl: _RecordingSessionsCtrl | None,
     actions: _RecordingActions | None = None,
     store: _RecordingStore | None = None,
+    session_resolver: object | None = None,
+    copilot_session_store: object | None = None,
 ) -> MuxdeckRuntime:
     return cast(
         MuxdeckRuntime,
@@ -234,8 +237,9 @@ def _runtime_with(
                 "sync_store": None,
                 "actions": actions,
                 "pane_stream": None,
-                "session_resolver": None,
+                "session_resolver": session_resolver,
                 "tmux": None,
+                "copilot_session_store": copilot_session_store,
             },
         )(),
     )
@@ -393,7 +397,11 @@ class SessionsActionTests(unittest.TestCase):
         call = asyncio.run(scenario())
         assert call["origin"] == "local"
         assert call["cwd"] == Path("/repo/wt")
-        assert call["window_name"].startswith("copilot-")
+        # Window name now mirrors the session summary directly (sans
+        # control chars, colons, and excessive length) so tmux shows
+        # the operator the actual session title rather than the
+        # generic ``copilot-…`` truncation.
+        assert call["window_name"] == "Review"
 
     def test_action_resume_session_windows_keeps_no_cwd(self) -> None:
         async def scenario() -> dict[str, Any]:
@@ -436,6 +444,185 @@ class SessionsActionTests(unittest.TestCase):
                 return screen._status
 
         assert "cannot resume" in asyncio.run(scenario())
+
+    def test_action_resume_session_invalidates_caches_and_kicks_sync(self) -> None:
+        """Resume should drop both caches and ask the app to refresh.
+
+        Without the cache invalidations the next sync cycle would
+        either persist the agent without ``copilot_session_id`` (lock
+        cache stale) or paint the SESSIONS list against a stale
+        workspace.yaml view (store cache stale), so the operator's
+        resumed session would keep its "completed/unclosed" status
+        for up to 15 s -- the hand-off this test pins.
+        """
+
+        class _RecordingResolver:
+            def __init__(self) -> None:
+                self.invalidations = 0
+
+            def invalidate_lock_cache(self) -> None:
+                self.invalidations += 1
+
+        class _RecordingStore:
+            def __init__(self) -> None:
+                self.invalidations = 0
+
+            def invalidate(self) -> None:
+                self.invalidations += 1
+
+        async def scenario() -> tuple[int, int, int]:
+            ctrl = _RecordingSessionsCtrl(state=_state())
+            actions = _RecordingActions()
+            resolver = _RecordingResolver()
+            session_store = _RecordingStore()
+            runtime = _runtime_with(
+                sessions_ctrl=ctrl,
+                actions=actions,
+                session_resolver=resolver,
+                copilot_session_store=session_store,
+            )
+            app = _Harness(runtime)
+            kicks = 0
+
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+
+                # _Harness lacks ``action_refresh_screen``; install
+                # one to count the sync-kick path.
+                def _kick() -> None:
+                    nonlocal kicks
+                    kicks += 1
+
+                app.action_refresh_screen = _kick  # type: ignore[attr-defined]
+
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_session_id = "session-1"
+                screen._selected_detail = _detail()
+                screen.action_resume_session()
+                await pilot.pause()
+                return resolver.invalidations, session_store.invalidations, kicks
+
+        resolver_calls, store_calls, kicks = asyncio.run(scenario())
+        assert resolver_calls == 1
+        assert store_calls == 1
+        assert kicks == 1
+
+    def test_action_resume_session_failure_does_not_invalidate_caches(self) -> None:
+        """Cache invalidation only fires after a successful resume.
+
+        A failed resume (already-running session, missing cwd, etc.)
+        leaves disk state untouched, so dropping the resolver/store
+        caches would just trigger a wasted rescan on the next sync.
+        """
+
+        class _RecordingResolver:
+            def __init__(self) -> None:
+                self.invalidations = 0
+
+            def invalidate_lock_cache(self) -> None:
+                self.invalidations += 1
+
+        class _RecordingStore:
+            def __init__(self) -> None:
+                self.invalidations = 0
+
+            def invalidate(self) -> None:
+                self.invalidations += 1
+
+        async def scenario() -> tuple[int, int]:
+            ctrl = _RecordingSessionsCtrl(state=_state())
+            actions = _RecordingActions(
+                resume_result=ActionResult(success=False, message="cannot resume")
+            )
+            resolver = _RecordingResolver()
+            session_store = _RecordingStore()
+            runtime = _runtime_with(
+                sessions_ctrl=ctrl,
+                actions=actions,
+                session_resolver=resolver,
+                copilot_session_store=session_store,
+            )
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_session_id = "session-1"
+                screen._selected_detail = _detail()
+                screen.action_resume_session()
+                await pilot.pause()
+                return resolver.invalidations, session_store.invalidations
+
+        resolver_calls, store_calls = asyncio.run(scenario())
+        assert resolver_calls == 0
+        assert store_calls == 0
+
+    def test_action_resume_session_uses_summary_as_window_name(self) -> None:
+        """tmux window name should mirror the session title verbatim."""
+
+        async def scenario() -> str:
+            ctrl = _RecordingSessionsCtrl(state=_state())
+            actions = _RecordingActions()
+            runtime = _runtime_with(sessions_ctrl=ctrl, actions=actions)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_session_id = "session-1"
+                screen._selected_detail = _detail(
+                    summary="Refactor ReplicationSequence Abstraction"
+                )
+                screen.action_resume_session()
+                await pilot.pause()
+                return cast(str, actions.resume_calls[-1]["window_name"])
+
+        assert asyncio.run(scenario()) == "Refactor ReplicationSequence Abstraction"
+
+
+class WindowNameSanitizationTests(unittest.TestCase):
+    """``_build_window_name`` keeps tmux happy across pathological input.
+
+    tmux uses ``session:window`` syntax to address windows, control
+    chars render as garbage in the status bar, and overlong names
+    overflow the bar so the right-hand status indicators get
+    clobbered. The helper enforces all three constraints in one
+    place; these tests pin the contract.
+    """
+
+    def test_returns_summary_when_safe(self) -> None:
+        assert _build_window_name("Review", "abc123") == "Review"
+
+    def test_replaces_colon_with_space(self) -> None:
+        # ``:`` would be parsed by tmux as ``session:window`` boundary.
+        assert _build_window_name("foo:bar", "abc12345") == "foo bar"
+
+    def test_strips_control_chars_and_collapses_whitespace(self) -> None:
+        assert _build_window_name("foo\x07\tbar\n\r baz", "abc12345") == "foo bar baz"
+
+    def test_truncates_to_max_length(self) -> None:
+        # 50 chars in, 40 max out.
+        long_summary = "abcdefghij" * 5
+        result = _build_window_name(long_summary, "abc12345")
+        assert len(result) == 40
+        assert result == long_summary[:40]
+
+    def test_falls_back_when_summary_missing(self) -> None:
+        assert _build_window_name(None, "abc12345xyz") == "copilot-abc12345"
+        assert _build_window_name("", "abc12345xyz") == "copilot-abc12345"
+        assert _build_window_name("—", "abc12345xyz") == "copilot-abc12345"
+
+    def test_falls_back_when_summary_sanitizes_to_empty(self) -> None:
+        # All-control-char title leaves an empty string after cleanup.
+        assert _build_window_name("\x00\x01\x02", "abc12345xyz") == "copilot-abc12345"
+        # All-colon title likewise -- collapses to a single space then
+        # strips back to empty.
+        assert _build_window_name(":::", "abc12345xyz") == "copilot-abc12345"
+
+    def test_short_session_id_fallback(self) -> None:
+        # If session id is shorter than 8 chars, take what's there.
+        assert _build_window_name(None, "abc") == "copilot-abc"
 
     def test_action_focus_pane_without_target_sets_helpful_message(self) -> None:
         async def scenario() -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -30,6 +31,36 @@ if TYPE_CHECKING:
 
 
 _WORKER_NAME = "sessions_load"
+
+# tmux's target syntax is ``<session>:<window>`` so a literal ``:`` in
+# a window name confuses the address parser; control chars render as
+# garbage in the status line; very long titles overflow the bar and
+# truncate the more useful right-hand edge. The 40-char ceiling is
+# wide enough for human session titles ("Refactor ReplicationSequence
+# Abstraction") yet short enough to fit alongside the session
+# indicator in tmux's default status format.
+_WINDOW_NAME_FORBIDDEN = re.compile(r"[\x00-\x1f\t\n\r:]+")
+_WINDOW_NAME_WHITESPACE = re.compile(r"\s+")
+_WINDOW_NAME_MAX_LEN = 40
+
+
+def _build_window_name(summary: str | None, session_id: str) -> str:
+    """Sanitize a session summary into a tmux-safe window name.
+
+    Falls back to ``copilot-<id8>`` when ``summary`` is missing or
+    sanitizes to empty (e.g. a title made entirely of control chars
+    or colons).
+    """
+    fallback = f"copilot-{session_id[:8]}"
+    if not summary or summary == "—":
+        return fallback
+    cleaned = _WINDOW_NAME_FORBIDDEN.sub(" ", summary)
+    cleaned = _WINDOW_NAME_WHITESPACE.sub(" ", cleaned).strip()
+    if not cleaned:
+        return fallback
+    if len(cleaned) > _WINDOW_NAME_MAX_LEN:
+        cleaned = cleaned[:_WINDOW_NAME_MAX_LEN].rstrip()
+    return cleaned or fallback
 
 
 @dataclass(frozen=True, slots=True)
@@ -389,12 +420,52 @@ class SessionsScreen(ShellScreen):
         result = self.runtime.actions.resume_session(
             detail.session_id,
             cwd=start_directory,
-            window_name=f"copilot-{(detail.summary or detail.session_id)[:20]}",
+            window_name=_build_window_name(detail.summary, detail.session_id),
             origin=detail.origin,
             windows_cwd=detail.windows_cwd,
         )
         if result.success:
-            self.set_status(f"✓ {result.message}")
+            # Resume just spawned a fresh ``copilot`` process. Two
+            # caches are about to be wrong:
+            #   * The InuseLockResolver lock-cache (15 s TTL) does
+            #     not yet contain the new ``inuse.<pid>.lock`` so the
+            #     next sync would persist the agent without a
+            #     ``copilot_session_id`` and the SESSIONS row would
+            #     keep its stale "completed/unclosed" status.
+            #   * The CopilotSessionStore TTL cache (10 s) does not
+            #     yet contain the freshly-touched workspace.yaml so
+            #     a subsequent ``/name`` rename inside the resumed
+            #     session would also be invisible until the TTL
+            #     elapsed.
+            # Drop both caches so the sync we trigger right after
+            # paints the active state on the very next refresh tick.
+            resolver = getattr(self.runtime, "session_resolver", None)
+            if resolver is not None:
+                resolver.invalidate_lock_cache()
+            session_store = getattr(self.runtime, "copilot_session_store", None)
+            if session_store is not None:
+                session_store.invalidate()
+            self.set_status(f"✓ {result.message} · waiting for sync…")
+            # Manual refresh threads through ``MuxdeckApp._refresh_current_screen``
+            # which kicks the synchronizer worker and on completion
+            # calls ``_refresh_screen_widgets(force=True)``. That
+            # invokes ``SessionsScreen.refresh_data`` which runs the
+            # ``_load`` worker against ``live_store.list_agents()``;
+            # by then the freshly persisted agent carries its
+            # ``copilot_session_id`` so ``live_session_ids`` includes
+            # this row and the status flips to "active". No periodic
+            # screen-level timer is needed: the app sync loop is the
+            # single source of truth for "the world might have
+            # changed".
+            kicker = getattr(self.muxdeck_app, "action_refresh_screen", None)
+            if callable(kicker):
+                kicker()
+            else:
+                # Test harnesses without the full MuxdeckApp shape
+                # (e.g. ``_Harness`` in unit tests) won't have a sync
+                # loop to drive; refresh the screen directly so the
+                # next assertion sees the post-resume state.
+                self.refresh_data()
         else:
             self.set_status(f"✗ {result.message}")
 

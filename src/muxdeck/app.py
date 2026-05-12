@@ -146,6 +146,7 @@ class MuxdeckRuntime:
     pane_stream: PaneStreamAdapter | None = None
     session_resolver: InuseLockResolver | None = None
     notifier: OsNotifier | None = None
+    copilot_session_store: CopilotSessionStore | None = None
 
 
 def _get_tmux_safe_driver() -> type[Driver] | None:
@@ -829,6 +830,7 @@ def build_runtime(config: AppConfig | None = None) -> MuxdeckRuntime:
         pane_stream=pane_stream_adapter,
         session_resolver=session_resolver,
         notifier=detect_os_notifier(),
+        copilot_session_store=copilot_session_store,
     )
 
 

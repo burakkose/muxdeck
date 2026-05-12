@@ -701,6 +701,74 @@ def test_set_extra_roots_invalidates_top_level_cache(tmp_path: Path) -> None:
     assert any(s.session_id == "warm-1" for s in refreshed)
 
 
+def test_invalidate_drops_top_level_cache_keeps_entry_cache(tmp_path: Path) -> None:
+    """``invalidate`` flushes the TTL gate but keeps the mtime cache.
+
+    Action handlers (e.g. resume) call this so the next disk-read
+    sees fresh state without paying the cost of a full re-parse for
+    files that didn't change. We pin both halves: the TTL cache
+    drops to zero, and the per-entry cache preserves the entries
+    keyed by absolute path so a follow-up ``discover()`` only pays
+    for new/changed dirs.
+    """
+    _make_session(tmp_path, "preserve-1", summary="A")
+    store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=60)
+    first = store.discover()
+    assert len(first) == 1
+    assert store._cache_time > 0.0
+    assert store._entry_cache, "discover should have populated the entry cache"
+    entry_cache_snapshot = dict(store._entry_cache)
+
+    store.invalidate()
+
+    assert store._cache == []
+    assert store._cache_time == 0.0
+    assert store._by_id == {}
+    # Per-entry cache must survive so the next scan can hit the warm
+    # mtime path for files that didn't change.
+    assert store._entry_cache == entry_cache_snapshot
+
+
+def test_invalidate_makes_subsequent_discover_see_new_session(tmp_path: Path) -> None:
+    """The post-invalidate discover must observe disk changes.
+
+    This is the Sessions-screen contract: after the operator
+    presses ``R``, the resume action invalidates the cache so the
+    next sync-driven refresh paints the freshly active session
+    rather than the stale "completed" state.
+    """
+    _make_session(tmp_path, "before-1", summary="A")
+    # Long TTL so we know discover() would have returned the cache
+    # without invalidation -- the only way the new session can
+    # appear is via the explicit invalidate() call.
+    store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=600)
+    initial = store.discover()
+    assert len(initial) == 1
+
+    _make_session(tmp_path, "after-1", summary="B")
+
+    # Without invalidate(), the long TTL hides the new session.
+    cached = store.discover()
+    assert len(cached) == 1
+
+    store.invalidate()
+    refreshed = store.discover()
+    ids = {s.session_id for s in refreshed}
+    assert ids == {"before-1", "after-1"}
+
+
+def test_default_cache_ttl_is_short_enough_for_renames() -> None:
+    """The TTL must keep ``/name`` edits visible within ~10 s.
+
+    The previous 300 s ceiling masked Copilot CLI state changes for
+    five minutes after the operator renamed a session inside the
+    resumed shell. Pin the contract so a future tweak doesn't
+    silently regress operator UX.
+    """
+    store = CopilotSessionStore()
+    assert store.cache_ttl_sec <= 10.0
+
+
 def test_count_by_origin_categorises_sessions(tmp_path: Path) -> None:
     _make_session(tmp_path, "local-1", summary="L")
     store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=0)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -430,50 +431,81 @@ class CopilotSessionStore:
 
     Two caches work together:
 
-    * ``_cache`` / ``_cache_time`` — short-TTL gate that returns the
+    * ``_cache`` / ``_cache_time`` -- short-TTL gate that returns the
       most recent scan verbatim so rapid successive calls don't even
       hit the filesystem.
-    * ``_entry_cache`` — per-session-dir cache keyed by (events mtime,
+    * ``_entry_cache`` -- per-session-dir cache keyed by (events mtime,
       workspace mtime). Survives across scans and lets repeat
       discoveries skip re-reading files that haven't changed. This is
       what turns a slow 9P-mounted Windows root (~3 s cold) into a
       ~100 ms warm rescan.
+
+    The store is shared by the runtime synchronizer worker and the
+    SESSIONS screen worker, both of which can call :meth:`discover`
+    concurrently, and the UI thread can call :meth:`invalidate`
+    around action boundaries (e.g. after resume) to drop the TTL
+    cache without touching the per-entry mtime cache. A single lock
+    serialises every cache mutation so concurrent readers cannot
+    observe a partially-updated index (e.g. a fresh ``_cache_time``
+    paired with a stale ``_cache`` list).
     """
 
     session_state_dir: Path = field(default_factory=lambda: _DEFAULT_SESSION_DIR)
     max_age_days: int = 60
-    # 5 minutes. The old 30 s ceiling expired during normal idle and
-    # forced a multi-second 9P rescan on the UI thread the next time
-    # someone moved the cursor in the Sessions screen. The per-entry
-    # mtime cache already keeps rescans cheap when they do run; the
-    # TTL only governs how often we touch the filesystem at all.
-    cache_ttl_sec: float = 300.0
+    # 10 seconds. The previous 300 s ceiling masked Copilot CLI state
+    # changes -- newly resumed sessions, '/name' edits, and other
+    # workspace.yaml mutations stayed invisible to the SESSIONS list
+    # for up to five minutes after the change. The per-entry mtime
+    # cache makes a "warm" rescan cheap (~100 ms on WSL with the
+    # Windows mount), so paying that cost roughly once per sync cycle
+    # is acceptable in exchange for fresher data.
+    cache_ttl_sec: float = 10.0
     extra_roots: tuple[SessionStoreRoot, ...] = ()
 
     _cache: list[CopilotLocalSession] = field(default_factory=list, init=False, repr=False)
     _cache_time: float = field(default=0.0, init=False, repr=False)
     _entry_cache: dict[Path, _CachedEntry] = field(default_factory=dict, init=False, repr=False)
     _by_id: dict[str, CopilotLocalSession] = field(default_factory=dict, init=False, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def discover(self, *, force: bool = False) -> list[CopilotLocalSession]:
         """Return all local sessions, using cache if fresh."""
-        now = time.monotonic()
-        if not force and self._cache and (now - self._cache_time) < self.cache_ttl_sec:
+        with self._lock:
+            now = time.monotonic()
+            if not force and self._cache and (now - self._cache_time) < self.cache_ttl_sec:
+                return list(self._cache)
+            self._cache = self._scan()
+            self._by_id = {s.session_id: s for s in self._cache}
+            self._cache_time = now
             return list(self._cache)
-        self._cache = self._scan()
-        self._by_id = {s.session_id: s for s in self._cache}
-        self._cache_time = now
-        return list(self._cache)
+
+    def invalidate(self) -> None:
+        """Drop the TTL cache so the next :meth:`discover` re-scans.
+
+        Call from action handlers that just changed disk state (e.g.
+        after resuming a session, which causes Copilot CLI to write
+        an ``inuse.<pid>.lock`` and may rename ``workspace.yaml`` via
+        '/name') so the next sync-driven refresh paints fresh data
+        without waiting out the TTL. The per-entry mtime cache is
+        preserved -- workspace.yaml/events.jsonl files that have not
+        changed will still hit the cache and skip a full re-parse.
+        """
+        with self._lock:
+            self._cache = []
+            self._by_id = {}
+            self._cache_time = 0.0
 
     def set_extra_roots(self, roots: Sequence[SessionStoreRoot]) -> None:
         """Replace the secondary roots and invalidate the cache."""
-        self.extra_roots = tuple(roots)
-        self._cache = []
-        self._by_id = {}
-        self._cache_time = 0.0
-        # Per-entry cache stays valid — it's keyed by absolute path, so
-        # entries under removed or added roots simply go unused. This
-        # avoids paying the cold-scan cost again when a root toggles.
+        with self._lock:
+            self.extra_roots = tuple(roots)
+            self._cache = []
+            self._by_id = {}
+            self._cache_time = 0.0
+            # Per-entry cache stays valid -- it's keyed by absolute
+            # path, so entries under removed or added roots simply go
+            # unused. This avoids paying the cold-scan cost again
+            # when a root toggles.
 
     def get_session(
         self, session_id: str, *, warm_only: bool = False
@@ -485,21 +517,27 @@ class CopilotSessionStore:
         if the cache is stale so the result is never a wrong answer
         from a deleted session.
 
-        Set ``warm_only=True`` to skip the fallback entirely — callers
+        Set ``warm_only=True`` to skip the fallback entirely -- callers
         on the UI thread (e.g. cursor movement in the Sessions screen)
         use this so they never block on a multi-second rescan. Returns
         None if the id is not in the warm index; callers should surface
         stale data instead of freezing the UI.
         """
-        now = time.monotonic()
-        if self._cache and (now - self._cache_time) < self.cache_ttl_sec:
-            cached = self._by_id.get(session_id)
-            if cached is not None:
-                return cached
-            # Not in the warm index — may be a freshly created session
-            # that we haven't seen yet. Fall through to a rescan.
-        if warm_only:
-            return self._by_id.get(session_id)
+        with self._lock:
+            now = time.monotonic()
+            warm = bool(self._cache) and (now - self._cache_time) < self.cache_ttl_sec
+            if warm:
+                cached = self._by_id.get(session_id)
+                if cached is not None:
+                    return cached
+                # Not in the warm index -- may be a freshly created
+                # session that we haven't seen yet. Fall through to a
+                # rescan when allowed.
+            if warm_only:
+                return self._by_id.get(session_id)
+        # Rescan outside the lock so concurrent ``get_session`` calls
+        # don't block on each other unnecessarily; ``discover`` takes
+        # the lock again and is idempotent under it.
         for s in self.discover():
             if s.session_id == session_id:
                 return s
