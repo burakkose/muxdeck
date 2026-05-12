@@ -27,6 +27,7 @@ def _session(
     *,
     repository: str = "user/repo",
     branch: str = "main",
+    name: str | None = None,
     summary: str = "Test",
     is_cleanly_closed: bool = False,
     updated_at: datetime | None = None,
@@ -41,6 +42,7 @@ def _session(
         git_root=Path("/home/user/test"),
         repository=repository,
         branch=branch,
+        name=name,
         summary=summary,
         created_at=now - timedelta(hours=2),
         updated_at=updated_at or now,
@@ -178,6 +180,24 @@ def test_controller_filter_text() -> None:
     assert state.sessions[0].session_id == "s1"
 
 
+def test_controller_filter_text_searches_name_field() -> None:
+    """Filter haystack must include the canonical ``name`` title.
+
+    Newer Copilot CLI sessions only carry ``name`` (no
+    ``summary``); searching by the visible title would otherwise
+    miss them entirely even though that title is what the operator
+    sees in the table.
+    """
+
+    sessions = [
+        _session("s1", name="Build Configuration Subscriber", summary="", repository="x/y"),
+        _session("s2", name="Refactor Storage", summary="", repository="x/z"),
+    ]
+    ctrl = SessionsController(FakeSessionStore(sessions))  # type: ignore[arg-type]
+    state = ctrl.build_state(filter_text="configuration")
+    assert [item.session_id for item in state.sessions] == ["s1"]
+
+
 def test_controller_selected_detail() -> None:
     sessions = [_session("s1", summary="Selected", checkpoint_count=5)]
     ctrl = SessionsController(FakeSessionStore(sessions))  # type: ignore[arg-type]
@@ -298,6 +318,55 @@ def test_summary_for_with_all_fallbacks() -> None:
     )
     result = _summary_for(s)
     assert result == "myproject"
+
+
+def test_summary_for_prefers_name_over_summary() -> None:
+    """``name`` (Copilot CLI's canonical session title) wins over ``summary``.
+
+    Newer Copilot CLI sessions write the session title to the
+    ``name`` field; some sessions still carry an older ``summary``
+    alongside it. Operators reported sessions appearing as nameless
+    rows because the controller only consulted ``summary``. The
+    canonical ``name`` must take precedence so newer sessions and
+    explicitly user-named sessions surface their real title.
+    """
+
+    s = CopilotLocalSession(
+        session_id="test",
+        cwd=Path("/home/user/myproject"),
+        git_root=Path("/home/user/myproject"),
+        repository="user/repo",
+        branch="main",
+        name="Build Configuration Subscriber",
+        summary="legacy autosummary text",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    result = _summary_for(s)
+    assert result == "Build Configuration Subscriber"
+
+
+def test_summary_for_falls_back_to_summary_without_name() -> None:
+    """Older sessions without a ``name`` still surface ``summary``.
+
+    Pre-name-field sessions on disk only carry ``summary``. The
+    controller must keep treating that as a valid display label so
+    historical rows do not regress to the cwd/session-id fallbacks.
+    """
+
+    s = CopilotLocalSession(
+        session_id="test",
+        cwd=Path("/home/user/myproject"),
+        git_root=Path("/home/user/myproject"),
+        repository="user/repo",
+        branch="main",
+        name=None,
+        summary="legacy summary text",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    result = _summary_for(s)
+    assert result == "legacy summary text"
 
 
 def test_summary_for_prefers_explicit_summary() -> None:

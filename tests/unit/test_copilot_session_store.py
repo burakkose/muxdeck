@@ -224,6 +224,52 @@ def test_parse_session_dir_complete(tmp_path: Path) -> None:
     assert session.last_event_type == "session.shutdown"
 
 
+def test_parse_session_dir_reads_name_field(tmp_path: Path) -> None:
+    """Newer Copilot CLI sessions only carry the canonical ``name``.
+
+    Operators reported sessions appearing as nameless rows in the
+    UI even though ``copilot --resume`` showed a clear title -- the
+    title lives in ``workspace.yaml`` under the ``name:`` key (set
+    by the ``/name`` command or auto-generated). The parser must
+    surface it on ``CopilotLocalSession.name`` so the controller
+    can prefer it over the legacy ``summary`` field.
+    """
+    session_dir = tmp_path / "name-session"
+    session_dir.mkdir()
+    (session_dir / "workspace.yaml").write_text(
+        "id: name-session\ncwd: /tmp/work\nname: Build Configuration Subscriber\nuser_named: true\n"
+    )
+
+    session = _parse_session_dir(session_dir)
+    assert session is not None
+    assert session.name == "Build Configuration Subscriber"
+    assert session.summary is None
+
+
+def test_parse_session_dir_reads_both_name_and_summary(tmp_path: Path) -> None:
+    """Older sessions carry both fields -- both must round-trip.
+
+    For sessions in the transition window Copilot CLI writes
+    ``name`` and ``summary`` side by side, often with identical
+    values. Surfacing both lets the controller still treat ``name``
+    as canonical without losing the legacy ``summary`` for any
+    consumer that wants it.
+    """
+    session_dir = tmp_path / "dual-session"
+    session_dir.mkdir()
+    (session_dir / "workspace.yaml").write_text(
+        "id: dual-session\n"
+        "cwd: /tmp/work\n"
+        "name: Limit Agent Model Choices\n"
+        "summary: Limit Agent Model Choices\n"
+    )
+
+    session = _parse_session_dir(session_dir)
+    assert session is not None
+    assert session.name == "Limit Agent Model Choices"
+    assert session.summary == "Limit Agent Model Choices"
+
+
 def test_parse_session_dir_extracts_shutdown_usage(tmp_path: Path) -> None:
     events: list[dict[str, object]] = [
         {"type": "session.start", "timestamp": "2026-01-15T10:00:00Z"},

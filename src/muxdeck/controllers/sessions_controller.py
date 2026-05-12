@@ -46,14 +46,23 @@ def _session_status(session: CopilotLocalSession, live_session_ids: frozenset[st
 
 
 def _summary_for(session: CopilotLocalSession) -> str:
-    """Pick a human-useful summary for a local Copilot session row.
+    """Pick a human-useful label for a local Copilot session row.
 
-    Copilot CLI does not always write a ``summary`` into ``workspace.yaml``,
-    so the old "(no summary)" placeholder dominated the list and made it
-    impossible to tell rows apart. Fall back to cheaper signals already
-    parsed from disk: the repository slug, the cwd tail, and finally a
-    short form of the session id so every row still renders distinctly.
+    Copilot CLI populates two related fields in ``workspace.yaml``:
+
+    * ``name`` -- the canonical session title surfaced by the CLI
+      itself (set explicitly via ``/name`` or auto-generated). Newer
+      sessions only carry this field.
+    * ``summary`` -- a legacy field present on older sessions; when
+      both fields exist they are typically identical.
+
+    Prefer ``name`` so newer sessions stop showing as nameless rows.
+    Fall back to ``summary`` for historical sessions, then to cheaper
+    signals already parsed from disk so every row still renders
+    distinctly even when neither label is present.
     """
+    if session.name:
+        return session.name
     if session.summary:
         return session.summary
     if session.repository and session.branch:
@@ -231,7 +240,7 @@ class SessionsController:
             if filter_text:
                 needle = filter_text.lower()
                 haystack = " ".join(
-                    str(v) for v in (s.summary, s.repository, s.branch, s.session_id) if v
+                    str(v) for v in (s.name, s.summary, s.repository, s.branch, s.session_id) if v
                 ).lower()
                 if needle not in haystack:
                     continue

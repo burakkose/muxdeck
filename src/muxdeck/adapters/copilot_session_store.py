@@ -65,6 +65,13 @@ class CopilotLocalSession:
     git_root: Path | None = None
     repository: str | None = None
     branch: str | None = None
+    # ``name`` is the canonical Copilot CLI session title written to
+    # ``workspace.yaml`` for newer sessions (set by the ``/name``
+    # command or auto-generated). ``summary`` is the older field that
+    # some sessions still carry, sometimes alongside an identical
+    # ``name``. Prefer ``name`` when surfacing a label; fall back to
+    # ``summary`` so historical sessions remain identifiable.
+    name: str | None = None
     summary: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
@@ -382,6 +389,7 @@ def _parse_session_dir(
         git_root=Path(git_root_str) if git_root_str else None,
         repository=ws.get("repository"),
         branch=ws.get("branch"),
+        name=ws.get("name"),
         summary=ws.get("summary"),
         created_at=_parse_iso(ws.get("created_at")),
         updated_at=_parse_iso(ws.get("updated_at")),
