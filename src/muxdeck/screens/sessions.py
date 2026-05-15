@@ -202,6 +202,10 @@ class SessionsScreen(ShellScreen):
         show_completed = self._show_completed
         sessions_ctrl = self.runtime.sessions_ctrl
         live_store = self.runtime.sync_store or self.runtime.store
+        # Capture the resolver locally so the worker thread doesn't
+        # touch the runtime later (and so the explicit None-check is
+        # next to the call site below).
+        session_resolver = self.runtime.session_resolver
 
         def _load() -> _LoadedSessionsState | None:
             # Live agent ids correlate running tmux panes with session
@@ -234,6 +238,19 @@ class SessionsScreen(ShellScreen):
                     session_name=agent.tmux_session_name or None,
                     pane_pid=getattr(agent, "pid", None),
                 )
+            # Agent records only exist for sessions whose Copilot CLI
+            # process is hosted inside a WSL tmux pane that muxdeck
+            # tracks. Sessions launched from pwsh.exe / cmd.exe on the
+            # Windows side never get an agent row, so the agent-derived
+            # set above misses them entirely and they show as
+            # "completed"/"unclosed" even while actively running. Fold
+            # in any session id that has a live ``inuse.*.lock`` file
+            # under any configured root — for the primary Linux root
+            # the resolver still validates pids via ``/proc``, for the
+            # Windows mount it falls back to a lock-mtime freshness
+            # check.
+            if session_resolver is not None:
+                live_ids.update(session_resolver.live_session_ids())
             state = sessions_ctrl.build_state(
                 live_session_ids=frozenset(live_ids),
                 selected_session_id=selected_id,

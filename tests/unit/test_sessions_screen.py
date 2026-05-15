@@ -464,6 +464,9 @@ class SessionsActionTests(unittest.TestCase):
             def invalidate_lock_cache(self) -> None:
                 self.invalidations += 1
 
+            def live_session_ids(self) -> frozenset[str]:
+                return frozenset()
+
         class _RecordingStore:
             def __init__(self) -> None:
                 self.invalidations = 0
@@ -523,6 +526,9 @@ class SessionsActionTests(unittest.TestCase):
 
             def invalidate_lock_cache(self) -> None:
                 self.invalidations += 1
+
+            def live_session_ids(self) -> frozenset[str]:
+                return frozenset()
 
         class _RecordingStore:
             def __init__(self) -> None:
@@ -974,12 +980,21 @@ class _SessionTargetStub:
 
 
 class _StubResolver:
-    def __init__(self, target: _SessionTargetStub | None) -> None:
+    def __init__(
+        self,
+        target: _SessionTargetStub | None,
+        *,
+        live_ids: frozenset[str] = frozenset(),
+    ) -> None:
         self._target = target
+        self._live_ids = live_ids
 
     def resolve_target_for_pid(self, pid: int) -> _SessionTargetStub | None:
         del pid
         return self._target
+
+    def live_session_ids(self) -> frozenset[str]:
+        return self._live_ids
 
 
 class SessionsResolveLiveMirrorTargetTests(unittest.TestCase):
@@ -1233,6 +1248,47 @@ class SessionsLoaderTests(unittest.TestCase):
                 "sess-unknown",
             }
         )
+
+    def test_load_folds_resolver_live_session_ids(self) -> None:
+        """Sessions launched outside muxdeck (e.g. Windows pwsh.exe) have no
+        agent record and so never appear in the agent-derived live set.
+        ``InuseLockResolver.live_session_ids()`` walks the on-disk
+        ``inuse.*.lock`` files across every configured root and reports
+        those running sessions; the SESSIONS screen must fold them in
+        so the row reflects reality instead of always showing
+        "completed"/"unclosed".
+        """
+
+        async def scenario() -> frozenset[str]:
+            agents = (
+                _StubAgent(
+                    copilot_session_id="sess-wsl",
+                    tmux_pane_id="%1",
+                    status=AgentStatus.RUNNING,
+                ),
+            )
+            store = _RecordingStore(agents=agents)
+            ctrl = _RecordingSessionsCtrl(state=_state())
+            runtime = _runtime_with(
+                sessions_ctrl=ctrl,
+                store=store,
+                session_resolver=_StubResolver(
+                    target=None,
+                    live_ids=frozenset({"sess-windows-1", "sess-windows-2"}),
+                ),
+            )
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+                return screen._live_session_ids
+
+        live_ids = asyncio.run(scenario())
+        # Agent-derived live id PLUS the resolver's lock-file-derived
+        # ones must all appear together.
+        assert live_ids == frozenset({"sess-wsl", "sess-windows-1", "sess-windows-2"})
 
 
 class SessionsWorkerCallbackTests(unittest.TestCase):

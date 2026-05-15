@@ -113,9 +113,20 @@ class InuseLockResolver:
     # callers (and tests) that genuinely want to enumerate extra roots
     # can opt in explicitly.
     include_extra_roots: bool = False
+    # When :meth:`live_session_ids` walks non-primary roots (typically
+    # the WSL→Windows mount), it cannot validate lock pids via
+    # ``/proc`` because Windows pids live in a separate kernel and are
+    # absent from the WSL ``/proc`` tree. Fall back to lock-file
+    # freshness: locks whose mtime is older than this are treated as
+    # fossils left behind by crashed sessions. 24 hours is generous
+    # enough to cover long Copilot CLI sessions but excludes the
+    # weeks- and months-old detritus that accumulates in real
+    # ``session-state`` directories.
+    live_lock_max_age_seconds: float = 24 * 60 * 60
     _max_ancestors: int = 16
     _lock_cache: tuple[tuple[Path, int], ...] | None = field(default=None, init=False, repr=False)
     _lock_cache_at: float = field(default=0.0, init=False, repr=False)
+    _live_cache: tuple[frozenset[str], float] | None = field(default=None, init=False, repr=False)
 
     def resolve(self, pane_pid: int | None) -> CopilotSessionResolution:
         """Return the live-session resolution for ``pane_pid``.
@@ -216,6 +227,116 @@ class InuseLockResolver:
         """
         self._lock_cache = None
         self._lock_cache_at = 0.0
+        self._live_cache = None
+
+    def live_session_ids(self) -> frozenset[str]:
+        """Return session ids that look currently live across every root.
+
+        Unlike :meth:`resolve_for_pid` (which only walks the primary
+        root unless :attr:`include_extra_roots` is true), this scan
+        always includes the extra roots. The SESSIONS screen needs
+        live status for Windows-origin sessions launched outside of
+        WSL tmux, so we *must* look at the Windows mount even when
+        the resolver was configured primary-root-only for pid
+        resolution.
+
+        Per-lock validation differs by root:
+
+        * Primary root (Linux ``~/.copilot/session-state``) — when
+          ``/proc`` is available, validate the lock pid against
+          ``/proc/<pid>/cmdline`` exactly the way :meth:`resolve`
+          does. Stale locks left behind by crashed sessions are
+          rejected. ``--resume=<uuid>`` in the cmdline overrides the
+          lock-path session id (a recycled pid hosting an unrelated
+          Copilot session would otherwise mark the wrong dir live).
+        * Extra roots (WSL→Windows mount) — Windows pids never appear
+          in WSL's ``/proc`` so the pid check is impossible. Fall
+          back to lock mtime: locks fresher than
+          :attr:`live_lock_max_age_seconds` are treated as live, the
+          rest as fossils.
+
+        Cached for :attr:`enumeration_ttl_seconds`; the SESSIONS
+        screen calls this on every reload, and on WSL the Windows
+        mount walk costs ~200 ms per scan.
+        """
+        if self.enumeration_ttl_seconds > 0.0:
+            now = time.monotonic()
+            cache = self._live_cache
+            if cache is not None and (now - cache[1]) < self.enumeration_ttl_seconds:
+                return cache[0]
+        live = self._compute_live_session_ids()
+        self._live_cache = (live, time.monotonic())
+        return live
+
+    def _compute_live_session_ids(self) -> frozenset[str]:
+        primary_root = self.store.session_state_dir
+        try:
+            primary_resolved = primary_root.resolve()
+        except OSError:
+            primary_resolved = primary_root
+        have_proc = self.proc_dir.is_dir()
+        wall_now = time.time()
+        max_age = self.live_lock_max_age_seconds
+        live: set[str] = set()
+        for root in self._roots_for_live_scan():
+            try:
+                root_resolved = root.resolve()
+            except OSError:
+                root_resolved = root
+            is_primary = root_resolved == primary_resolved or root == primary_root
+            try:
+                entries = list(root.iterdir())
+            except OSError:
+                continue
+            for session_dir in entries:
+                if not session_dir.is_dir():
+                    continue
+                try:
+                    lock_files = list(session_dir.glob("inuse.*.lock"))
+                except OSError:
+                    continue
+                if not lock_files:
+                    continue
+                if is_primary and have_proc:
+                    for lock in lock_files:
+                        effective = self._effective_session_id_via_proc(session_dir, lock)
+                        if effective is not None:
+                            live.add(effective)
+                else:
+                    if any(
+                        self._lock_is_fresh(lock, wall_now=wall_now, max_age=max_age)
+                        for lock in lock_files
+                    ):
+                        live.add(session_dir.name)
+        return frozenset(live)
+
+    def _roots_for_live_scan(self) -> Iterable[Path]:
+        # Always include extras here, independent of
+        # ``include_extra_roots``, because the SESSIONS screen needs
+        # Windows-side live status even when the resolver is
+        # configured for primary-only pid resolution.
+        yield self.store.session_state_dir
+        for extra in self.store.extra_roots:
+            path = getattr(extra, "path", None)
+            if isinstance(path, Path):
+                yield path
+
+    def _effective_session_id_via_proc(self, session_dir: Path, lock: Path) -> str | None:
+        pid = _parse_lock_pid(lock.name)
+        if pid is None:
+            return None
+        cmdline = self._read_cmdline(pid)
+        if cmdline is None or not _looks_like_copilot(cmdline):
+            return None
+        return _extract_resume_session(cmdline) or session_dir.name
+
+    @staticmethod
+    def _lock_is_fresh(lock: Path, *, wall_now: float, max_age: float) -> bool:
+        try:
+            mtime = lock.stat().st_mtime
+        except OSError:
+            return False
+        return (wall_now - mtime) <= max_age
 
     def _enumerate_locks(self) -> Iterable[tuple[Path, int]]:
         for root in self._roots():

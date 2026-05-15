@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -613,3 +615,131 @@ class TestRoots:
             store=store, proc_dir=tmp_path / "proc", include_extra_roots=True
         )
         assert list(resolver._enumerate_locks()) == []
+
+
+class TestLiveSessionIds:
+    def test_primary_root_uses_proc_validation(self, tmp_path: Path) -> None:
+        # A live Copilot pid on the primary root must be reported.
+        primary = tmp_path / "primary"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(primary, "sess-live", lock_pid=4242)
+        _write_proc(proc, pid=4242, ppid=1)
+        store = _FakeStore(session_state_dir=primary)
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.live_session_ids() == frozenset({"sess-live"})
+
+    def test_primary_root_drops_stale_lock(self, tmp_path: Path) -> None:
+        # Lock pid no longer exists in /proc — the resolver must
+        # treat the lock as a fossil and drop it.
+        primary = tmp_path / "primary"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(primary, "sess-stale", lock_pid=9999)
+        # No /proc entry for 9999.
+        store = _FakeStore(session_state_dir=primary)
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.live_session_ids() == frozenset()
+
+    def test_primary_root_drops_recycled_pid(self, tmp_path: Path) -> None:
+        # Lock pid exists in /proc but its cmdline doesn't look like
+        # Copilot — the pid was recycled for an unrelated process.
+        primary = tmp_path / "primary"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(primary, "sess-recycled", lock_pid=1234)
+        _write_proc(proc, pid=1234, ppid=1, cmdline="/usr/bin/vim /etc/hosts")
+        store = _FakeStore(session_state_dir=primary)
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.live_session_ids() == frozenset()
+
+    def test_primary_root_uses_resume_uuid_over_lock_path(self, tmp_path: Path) -> None:
+        # When the cmdline carries --resume=<uuid> the live id is the
+        # uuid from the cmdline, not the directory name. Mirrors the
+        # PID-recycle defence in resolve().
+        primary = tmp_path / "primary"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(primary, "sess-old", lock_pid=5555)
+        actual = "11111111-1111-1111-1111-111111111111"
+        _write_proc(
+            proc,
+            pid=5555,
+            ppid=1,
+            cmdline=(f"/usr/local/lib/node_modules/@github/copilot/copilot --resume={actual}"),
+        )
+        store = _FakeStore(session_state_dir=primary)
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.live_session_ids() == frozenset({actual})
+
+    def test_extra_root_uses_mtime_fallback(self, tmp_path: Path) -> None:
+        # The Windows mount can't be /proc-validated. A fresh lock
+        # mtime is the live signal; an old one is a fossil.
+        primary = tmp_path / "primary"
+        windows = tmp_path / "windows"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        primary.mkdir()
+        # Fresh lock — should be reported live.
+        _make_session(windows, "sess-fresh", lock_pid=1111)
+        # Stale lock — older than the threshold, should be dropped.
+        stale_dir = _make_session(windows, "sess-stale", lock_pid=2222)
+        stale_lock = stale_dir / "inuse.2222.lock"
+        # Backdate the stale lock 30 days into the past so it's
+        # safely outside the default 24-hour window.
+        old = time.time() - 30 * 24 * 60 * 60
+        os.utime(stale_lock, (old, old))
+        store = _FakeStore(
+            session_state_dir=primary,
+            extra_roots=(_FakeRoot(path=windows),),
+        )
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.live_session_ids() == frozenset({"sess-fresh"})
+
+    def test_scans_extras_even_when_pid_resolution_skips_them(self, tmp_path: Path) -> None:
+        # ``include_extra_roots=False`` is the default for pid
+        # resolution but must NOT suppress live-session scanning.
+        # Otherwise Windows-origin live sessions would never appear.
+        primary = tmp_path / "primary"
+        windows = tmp_path / "windows"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        primary.mkdir()
+        _make_session(windows, "sess-win", lock_pid=8080)
+        store = _FakeStore(
+            session_state_dir=primary,
+            extra_roots=(_FakeRoot(path=windows),),
+        )
+        resolver = InuseLockResolver(store=store, proc_dir=proc)
+        assert resolver.include_extra_roots is False
+        assert resolver.live_session_ids() == frozenset({"sess-win"})
+
+    def test_results_are_cached_until_invalidated(self, tmp_path: Path) -> None:
+        primary = tmp_path / "primary"
+        proc = tmp_path / "proc"
+        proc.mkdir()
+        _make_session(primary, "sess-a", lock_pid=4242)
+        _write_proc(proc, pid=4242, ppid=1)
+        store = _FakeStore(session_state_dir=primary)
+        resolver = InuseLockResolver(store=store, proc_dir=proc, enumeration_ttl_seconds=60.0)
+        first = resolver.live_session_ids()
+        # Add a new live session — it should NOT appear until the
+        # cache is invalidated.
+        _make_session(primary, "sess-b", lock_pid=5252)
+        _write_proc(proc, pid=5252, ppid=1)
+        cached = resolver.live_session_ids()
+        assert cached == first
+        resolver.invalidate_lock_cache()
+        refreshed = resolver.live_session_ids()
+        assert refreshed == frozenset({"sess-a", "sess-b"})
+
+    def test_missing_root_directories_are_silently_skipped(self, tmp_path: Path) -> None:
+        # Primary root absent + extra root absent ⇒ empty set, no
+        # exception. Mirrors the resilience the resolver already has
+        # for ``resolve``.
+        store = _FakeStore(
+            session_state_dir=tmp_path / "missing-primary",
+            extra_roots=(_FakeRoot(path=tmp_path / "missing-windows"),),
+        )
+        resolver = InuseLockResolver(store=store, proc_dir=tmp_path / "proc")
+        assert resolver.live_session_ids() == frozenset()

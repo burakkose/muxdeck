@@ -611,11 +611,15 @@ class FakeActionService:
 class FakeSessionResolver:
     def __init__(self) -> None:
         self.targets: dict[int, object] = {}
+        self.live_ids: frozenset[str] = frozenset()
 
     def resolve_target_for_pid(self, pane_pid: int | None) -> object | None:
         if pane_pid is None:
             return None
         return self.targets.get(pane_pid)
+
+    def live_session_ids(self) -> frozenset[str]:
+        return self.live_ids
 
 
 class FakeWorktreeController:
