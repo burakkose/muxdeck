@@ -706,17 +706,38 @@ def test_scan_root_swallows_scandir_oserror(
         monkeypatch.setattr(mod.os, "scandir", real_scandir)  # type: ignore[attr-defined]
 
 
-def test_scan_drops_session_dir_without_workspace_from_entry_cache(tmp_path: Path) -> None:
-    # First scan populates the cache with one session.
+def test_scan_drops_session_dir_when_directory_disappears(tmp_path: Path) -> None:
+    """Full deletion of a session dir must drop it from the cache.
+
+    The per-entry cache holds parsed sessions keyed by absolute path,
+    so the scan also has to prune entries whose directory has gone
+    away. We pin this via the live-paths cleanup pass in
+    :meth:`CopilotSessionStore._scan`: after the scan, any cached
+    entry whose path was not seen by ``os.scandir`` is dropped.
+
+    Note: this test specifically exercises *full* directory deletion.
+    Surgical removal of just ``workspace.yaml`` (with the directory and
+    ``events.jsonl`` left intact) is intentionally NOT detected on the
+    warm path -- the cache key is the events.jsonl mtime and workspace
+    deletes that don't bump it are accepted as the cost of skipping
+    the second stat per session per scan. ``/name`` and resume always
+    bump events.jsonl, and Copilot CLI removes the whole directory
+    when a session is deleted.
+    """
     _make_session(tmp_path, "to-be-removed", summary="Now you see me")
     store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=0)
     first = store.discover()
     assert any(s.session_id == "to-be-removed" for s in first)
-    # Remove workspace.yaml — directory still exists but is no longer
-    # a session. Next scan must drop it from the entry cache.
-    (tmp_path / "to-be-removed" / "workspace.yaml").unlink()
+    # Remove the entire session directory -- the realistic teardown.
+    import shutil
+
+    shutil.rmtree(tmp_path / "to-be-removed")
     second = store.discover(force=True)
     assert all(s.session_id != "to-be-removed" for s in second)
+    # And the per-entry cache entry must be gone too.
+    assert not any(path.name == "to-be-removed" for path in store._entry_cache), (
+        "stale per-entry cache entry should be evicted by the live-paths sweep"
+    )
 
 
 def test_scan_dedups_when_same_id_appears_in_local_and_windows(tmp_path: Path) -> None:
@@ -755,6 +776,85 @@ def test_set_extra_roots_invalidates_top_level_cache(tmp_path: Path) -> None:
     assert store._cache == []
     refreshed = store.discover()
     assert any(s.session_id == "warm-1" for s in refreshed)
+
+
+def test_warm_path_uses_events_mtime_only_for_cache_validation(tmp_path: Path) -> None:
+    """The cache-hit path keys only on ``events.jsonl`` mtime.
+
+    Bumping ``workspace.yaml`` without touching ``events.jsonl`` must
+    NOT bust the cache: ``/name`` and resume both also emit events,
+    so the events mtime is the right invalidation signal. Skipping
+    the second stat halves the per-session syscall cost on 9P-mounted
+    Windows session-state roots, where every stat is a network round
+    trip.
+    """
+    import os
+
+    sd = _make_session(
+        tmp_path,
+        "warm-1",
+        summary="initial summary",
+        events=[{"type": "session.start", "timestamp": "2026-01-15T10:00:00Z"}],
+    )
+    store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=0)
+
+    first = store.discover()
+    assert len(first) == 1
+    assert first[0].summary == "initial summary"
+
+    # Edit workspace.yaml only -- bump its mtime well past the cached
+    # value but leave events.jsonl untouched.
+    ws = sd / "workspace.yaml"
+    text = ws.read_text().replace("initial summary", "edited summary")
+    ws.write_text(text)
+    new_ws_ts = ws.stat().st_mtime + 5
+    os.utime(ws, (new_ws_ts, new_ws_ts))
+
+    # Cache must hit -- the workspace mtime change is intentionally
+    # ignored on the warm path, so the parser is NOT re-invoked and
+    # we still see the original summary.
+    second = store.discover(force=True)
+    assert len(second) == 1
+    assert second[0].summary == "initial summary"
+
+
+def test_warm_path_revalidates_when_events_mtime_changes(tmp_path: Path) -> None:
+    """Touching ``events.jsonl`` must trigger a re-parse.
+
+    Companion to the workspace-only test above: this is the change
+    signal we DO trust. Once events.jsonl moves, the cached
+    ``CopilotLocalSession`` is dropped and the next discover() reads
+    the updated workspace.yaml.
+    """
+    import os
+
+    sd = _make_session(
+        tmp_path,
+        "warm-2",
+        summary="initial summary",
+        events=[{"type": "session.start", "timestamp": "2026-01-15T10:00:00Z"}],
+    )
+    store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=0)
+
+    first = store.discover()
+    assert first[0].summary == "initial summary"
+
+    # Update workspace.yaml AND bump events.jsonl mtime explicitly --
+    # mtime granularity on some filesystems is too coarse to trust an
+    # in-test append within the same second.
+    ws = sd / "workspace.yaml"
+    ws.write_text(ws.read_text().replace("initial summary", "edited summary"))
+
+    ev = sd / "events.jsonl"
+    with ev.open("a") as fh:
+        fh.write(json.dumps({"type": "session.note", "timestamp": "2026-01-15T11:00:00Z"}))
+        fh.write("\n")
+    new_ev_ts = ev.stat().st_mtime + 5
+    os.utime(ev, (new_ev_ts, new_ev_ts))
+
+    second = store.discover(force=True)
+    assert len(second) == 1
+    assert second[0].summary == "edited summary"
 
 
 def test_invalidate_drops_top_level_cache_keeps_entry_cache(tmp_path: Path) -> None:

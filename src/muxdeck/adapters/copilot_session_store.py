@@ -436,10 +436,12 @@ def _stat_mtime(path: Path) -> datetime | None:
 class _CachedEntry:
     """Parsed session plus the mtimes that make it current.
 
-    Cheap mtime stats are enough to invalidate an entry: the Copilot CLI
-    appends to ``events.jsonl`` on every exchange and rewrites
-    ``workspace.yaml`` when metadata changes, so if neither mtime has
-    moved the previously-parsed ``CopilotLocalSession`` is still good.
+    The Copilot CLI appends to ``events.jsonl`` on every exchange and
+    rewrites ``workspace.yaml`` only on ``/name`` and resume -- both of
+    which also emit events. So the warm-path validator only needs to
+    track the events mtime; the workspace mtime is recorded for
+    diagnostics and as an audit trail but is not consulted on cache
+    hits. See :meth:`CopilotSessionStore._scan` for the lookup.
     """
 
     session: CopilotLocalSession
@@ -651,20 +653,24 @@ class CopilotSessionStore:
         def _resolve(entry: Path) -> CopilotLocalSession | None:
             """Return a session for one directory, using cache when possible.
 
-            Fast path: stat the two small files whose mtimes change when
-            the session does. If both match the cache, skip the full
-            parse entirely.
+            Fast path: stat just ``events.jsonl`` -- the file Copilot
+            appends to on every exchange and the one whose mtime
+            actually drives "did this session change?" detection. When
+            its mtime matches the cached entry, return the cached
+            session and skip the second stat on ``workspace.yaml``
+            entirely. ``workspace.yaml`` only changes on ``/name`` and
+            on resume, both of which also bump ``events.jsonl``, so
+            tracking only the events mtime in the warm path keeps the
+            cache correct in practice while halving stat traffic --
+            material on 9P-mounted Windows roots where every stat is
+            a network round trip.
+
+            Slow path: stat ``workspace.yaml`` for the cache key (and
+            as the "is this a session dir at all?" gate) and run a
+            full :func:`_parse_session_dir`.
             """
             workspace_path = entry / "workspace.yaml"
             events_path = entry / "events.jsonl"
-
-            try:
-                workspace_mtime = workspace_path.stat().st_mtime_ns
-            except OSError:
-                # No workspace.yaml → not a session dir. Drop any stale
-                # cache entry and skip.
-                entry_cache.pop(entry, None)
-                return None
 
             try:
                 events_mtime = events_path.stat().st_mtime_ns
@@ -675,10 +681,20 @@ class CopilotSessionStore:
             if (
                 cached is not None
                 and cached.events_mtime_ns == events_mtime
-                and cached.workspace_mtime_ns == workspace_mtime
                 and cached.session.origin == origin
             ):
+                # Warm hit. Trust the cache, do not stat
+                # ``workspace.yaml`` -- on 9P mounts that's an extra
+                # round trip per session per refresh.
                 return cached.session
+
+            try:
+                workspace_mtime = workspace_path.stat().st_mtime_ns
+            except OSError:
+                # No workspace.yaml → not a session dir. Drop any stale
+                # cache entry and skip.
+                entry_cache.pop(entry, None)
+                return None
 
             try:
                 session = _parse_session_dir(entry, origin=origin)
