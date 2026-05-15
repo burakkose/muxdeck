@@ -22,6 +22,7 @@ _TS = datetime(2025, 1, 1, tzinfo=UTC)
 
 def _agent(
     *,
+    agent_id: str = "agent-1",
     name: str = "node",
     repo_name: str | None = "myrepo",
     worktree_name: str | None = "myworktree",
@@ -40,15 +41,16 @@ def _agent(
     token_output: int | None = None,
     estimated_cost_usd: str | None = None,
     last_event_kind: str | None = "agent.updated",
+    pane_id: str = "%1",
 ) -> DashboardAgentListItemView:
     return DashboardAgentListItemView(
-        agent_id="agent-1",
+        agent_id=agent_id,
         name=name,
         status=status,
         repo_name=repo_name,
         branch=branch,
         worktree_name=worktree_name,
-        pane_id="%1",
+        pane_id=pane_id,
         task_title=task_title,
         worktree_path="/repo/wt",
         latest_session_id="session-1",
@@ -225,6 +227,168 @@ class TestAgentListTable:
         table = panel._build_table()
         row_cells = table.columns[2]._cells
         assert "python" in str(row_cells[0])
+
+    def test_display_name_drops_redundant_shared_prefix(self):
+        # Real-world workflow: every pane is spawned inside the same
+        # repo, so every agent ends up named after the repo basename.
+        # Prepending that basename to every row consumes column space
+        # without distinguishing anything — the shared prefix is just
+        # noise. The descriptive disambiguator (worktree/window) must
+        # carry the row by itself.
+        from muxdeck.widgets.dashboard import _display_name
+
+        a1 = _agent(
+            agent_id="a1",
+            name="muxdeck",
+            repo_name="muxdeck",
+            worktree_name="muxdeck",
+            window_name="Investigating tmux flake",
+            pane_id="%11",
+        )
+        a2 = _agent(
+            agent_id="a2",
+            name="muxdeck",
+            repo_name="muxdeck",
+            worktree_name="muxdeck",
+            window_name="Replay parser refactor",
+            pane_id="%12",
+        )
+        a3 = _agent(
+            agent_id="a3",
+            name="muxdeck",
+            repo_name="muxdeck",
+            worktree_name="muxdeck",
+            window_name="node",
+            pane_id="%13",
+        )
+
+        all_agents = (a1, a2, a3)
+        assert _display_name(a1, all_agents) == "Investigating tmux flake"
+        assert _display_name(a2, all_agents) == "Replay parser refactor"
+        assert _display_name(a3, all_agents) == "node"
+        for displayed in (
+            _display_name(a1, all_agents),
+            _display_name(a2, all_agents),
+            _display_name(a3, all_agents),
+        ):
+            assert not displayed.startswith("muxdeck/")
+
+    def test_display_name_ignores_dead_duplicates_for_live_agents(self):
+        # Operators triage live agents. A dead row that happens to
+        # share a window_name with a live one shouldn't push the live
+        # row into the ugly ``(%pane)`` fallback — the status column
+        # already separates them visually, and the live row deserves
+        # the clean descriptive label.
+        from muxdeck.widgets.dashboard import _display_name
+
+        live = _agent(
+            agent_id="live",
+            name="muxdeck",
+            repo_name="muxdeck",
+            worktree_name="muxdeck",
+            window_name="ReplicationSequencer perf",
+            pane_id="%11",
+            status=AgentStatus.RUNNING,
+        )
+        old_dead = _agent(
+            agent_id="dead-1",
+            name="muxdeck",
+            repo_name="muxdeck",
+            worktree_name="muxdeck",
+            window_name="ReplicationSequencer perf",
+            pane_id="%9",
+            status=AgentStatus.DEAD,
+        )
+        older_completed = _agent(
+            agent_id="dead-2",
+            name="muxdeck",
+            repo_name="muxdeck",
+            worktree_name="muxdeck",
+            window_name="ReplicationSequencer perf",
+            pane_id="%4",
+            status=AgentStatus.COMPLETED,
+        )
+
+        all_agents = (live, old_dead, older_completed)
+        # Live row is unique among live agents, so the descriptive
+        # window name surfaces unembellished.
+        assert _display_name(live, all_agents) == "ReplicationSequencer perf"
+        # Terminal rows still need a distinguisher between themselves.
+        dead_label = _display_name(old_dead, all_agents)
+        completed_label = _display_name(older_completed, all_agents)
+        assert dead_label != completed_label
+        assert "%9" in dead_label
+        assert "%4" in completed_label
+
+    def test_display_name_appends_pane_id_when_no_unique_descriptive_label(self):
+        # Two live agents that share *every* descriptive field force a
+        # pane-id discriminator. Critically, the result still avoids
+        # the redundant ``muxdeck/`` prefix and surfaces something
+        # readable rather than a bare pane id.
+        from muxdeck.widgets.dashboard import _display_name
+
+        a1 = _agent(
+            agent_id="a1",
+            name="muxdeck",
+            repo_name="muxdeck",
+            worktree_name="muxdeck",
+            window_name="node",
+            pane_id="%5",
+        )
+        a2 = _agent(
+            agent_id="a2",
+            name="muxdeck",
+            repo_name="muxdeck",
+            worktree_name="muxdeck",
+            window_name="node",
+            pane_id="%6",
+        )
+        all_agents = (a1, a2)
+        label_1 = _display_name(a1, all_agents)
+        label_2 = _display_name(a2, all_agents)
+        assert label_1 != label_2
+        assert "node" in label_1
+        assert "%5" in label_1
+        assert "%6" in label_2
+        assert not label_1.startswith("muxdeck/")
+        assert not label_2.startswith("muxdeck/")
+
+    def test_display_name_avoids_collision_with_unrelated_agent_name(self):
+        # Edge case: a "muxdeck" agent's window_name happens to match
+        # another agent's plain name. Returning just the suffix would
+        # make two rows display the same label even though they refer
+        # to different agents.
+        from muxdeck.widgets.dashboard import _display_name
+
+        muxdeck_python = _agent(
+            agent_id="a1",
+            name="muxdeck",
+            repo_name="muxdeck",
+            worktree_name="muxdeck",
+            window_name="python",
+            pane_id="%5",
+        )
+        sibling_muxdeck = _agent(
+            agent_id="a2",
+            name="muxdeck",
+            repo_name="muxdeck",
+            worktree_name="muxdeck",
+            window_name="other-task",
+            pane_id="%6",
+        )
+        unrelated_python = _agent(
+            agent_id="a3",
+            name="python",
+            repo_name="other-repo",
+            worktree_name="python",
+            window_name="repl",
+            pane_id="%7",
+        )
+        all_agents = (muxdeck_python, sibling_muxdeck, unrelated_python)
+        muxdeck_label = _display_name(muxdeck_python, all_agents)
+        unrelated_label = _display_name(unrelated_python, all_agents)
+        assert muxdeck_label != unrelated_label
+        assert muxdeck_label != "python"
 
     def test_attention_agent_gets_attention_row_style(self):
         """Agents needing attention get a distinct row background."""

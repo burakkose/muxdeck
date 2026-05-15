@@ -340,22 +340,58 @@ def _display_name(
     agent: DashboardAgentListItemView,
     all_agents: tuple[DashboardAgentListItemView, ...],
 ) -> str:
-    """Pick a unique, human-readable display name for the agent list."""
+    """Pick a unique, human-readable display name for the agent list.
+
+    When several agents share the same ``name`` (the common case in
+    multi-pane workflows where ``name`` is just the repo basename),
+    the old ``"{name}/{suffix}"`` format spent the whole column on a
+    redundant prefix and left only ``%11`` / ``%5`` for the actually
+    distinguishing tail. That made rows like ``muxdeck/%11`` —
+    indistinguishable from each other at a glance and unreadable as a
+    label of *what* the agent is doing.
+
+    Drop the redundant prefix entirely when ``name`` is shared and
+    surface the most descriptive disambiguator (worktree, then window
+    name, then repo) instead. Historical (dead/completed) duplicates
+    are excluded from the uniqueness check for live agents — they are
+    already separated visually by the status column, and letting old
+    rows poison the check would push every active row back into the
+    ugly ``(%pane)`` fallback.
+    """
+
     name = agent.name
     duplicates = tuple(a for a in all_agents if a.name == name)
     if len(duplicates) <= 1:
         return name
+    terminal_statuses = {AgentStatus.DEAD, AgentStatus.COMPLETED}
+    if agent.status not in terminal_statuses:
+        contenders = tuple(d for d in duplicates if d.status not in terminal_statuses) or duplicates
+    else:
+        contenders = duplicates
+    other_agent_names = {a.name for a in all_agents if a.agent_id != agent.agent_id}
     for values, suffix in (
-        (tuple(item.worktree_name for item in duplicates), agent.worktree_name),
-        (tuple(item.repo_name for item in duplicates), agent.repo_name),
-        (tuple(item.window_name for item in duplicates), agent.window_name),
-        (tuple(item.pane_id for item in duplicates), agent.pane_id),
+        (tuple(d.worktree_name for d in contenders), agent.worktree_name),
+        (tuple(d.window_name for d in contenders), agent.window_name),
+        (tuple(d.repo_name for d in contenders), agent.repo_name),
     ):
-        if suffix is None or suffix == name:
+        if not suffix or suffix == name:
             continue
-        if values.count(suffix) == 1:
-            return f"{name}/{suffix}"
-    return name
+        if values.count(suffix) != 1:
+            continue
+        if suffix in other_agent_names:
+            continue
+        return suffix
+    descriptive = next(
+        (
+            value
+            for value in (agent.window_name, agent.worktree_name, agent.repo_name)
+            if value and value != name
+        ),
+        None,
+    )
+    if descriptive:
+        return f"{descriptive} ({agent.pane_id})"
+    return f"{name} ({agent.pane_id})"
 
 
 def _humanize_event_kind(kind: str | None) -> str:
