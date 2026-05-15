@@ -216,6 +216,8 @@ SESSIONS_BINDINGS: Final[list[BindingSpec]] = [
     Binding("x", "toggle_completed", "Toggle completed", show=False),
     Binding("y", "copy_details", "Copy details", show=False),
     Binding("p", "focus_pane", "Focus pane", show=False),
+    Binding("D", "delete_session", "Delete session", show=False),
+    Binding("M", "session_maintenance", "Bulk maintenance", show=False),
 ]
 
 SESSIONS_HINTS = (
@@ -227,6 +229,8 @@ SESSIONS_HINTS = (
     KeyHint("y", "copy"),
     KeyHint("x", "completed"),
     KeyHint("p", "focus pane"),
+    KeyHint("D", "delete"),
+    KeyHint("M", "maintenance"),
 )
 
 SETUP_BINDINGS: Final[list[BindingSpec]] = [

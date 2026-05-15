@@ -1499,6 +1499,10 @@ class WorktreesRefreshFlowTests(unittest.TestCase):
                 # First show after mount should swallow the redundant refresh.
                 screen.on_show()
                 first = len(refreshes)
+                # The activation throttle would otherwise gate the
+                # second call too -- expire it so we measure ONLY the
+                # latch behavior this test was written to cover.
+                screen._last_refresh_completed_at = 0.0
                 # A subsequent show triggers a fresh refresh.
                 screen.on_show()
                 second = len(refreshes)
@@ -2512,6 +2516,50 @@ class ForceDeleteFlowTests(unittest.TestCase):
         status, calls = asyncio.run(scenario())
         assert calls == [("wt-1", False)]
         assert status.startswith("✓")
+
+
+class WorktreesActivationThrottleTests(unittest.TestCase):
+    def test_on_show_skips_refresh_when_recently_loaded(self) -> None:
+        # The throttle prevents the implicit on_show refresh from
+        # re-listing worktrees every time the tab is re-activated.
+        @dataclass(slots=True)
+        class _CountingService(_RecordingWorktreeService):
+            list_calls: int = 0
+
+            def list_worktrees(self) -> tuple[WorktreeSummaryView, ...]:
+                self.list_calls += 1
+                return self.summaries
+
+        async def scenario() -> tuple[int, int]:
+            import time as _time
+
+            wts = _CountingService(summaries=(_summary(),), detail=_detail())
+            runtime = _runtime_with(worktrees=wts, actions=None)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                # The initial mount drives one list_worktrees call --
+                # snapshot the count so we measure only what on_show does.
+                baseline = wts.list_calls
+                screen._last_refresh_completed_at = _time.monotonic()
+                screen._loading = False
+                screen._skip_next_show_refresh = False
+                screen.on_show()
+                await pilot.pause()
+                after_throttled = wts.list_calls - baseline
+                # Now expire the throttle and confirm a fresh on_show
+                # does drive a list call.
+                screen._last_refresh_completed_at = 0.0
+                screen.on_show()
+                await pilot.pause()
+                after_expired = wts.list_calls - baseline - after_throttled
+                return after_throttled, after_expired
+
+        throttled, expired = asyncio.run(scenario())
+        assert throttled == 0
+        assert expired >= 1
 
 
 # Touch unused refs so they don't trip ruff.

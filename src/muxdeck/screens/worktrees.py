@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -178,6 +179,14 @@ class WorktreesScreen(ShellScreen):
         # so the user-visible "✓ created …" survives the async reload
         # that would otherwise overwrite it with "X worktrees loaded".
         self._pending_status_after_refresh: str | None = None
+        # Activation-refresh throttle — see SessionsScreen for context.
+        # ``git worktree list --porcelain`` shells out for every row
+        # and on WSL with Windows-mounted repos that adds up to
+        # multiple seconds per refresh. Skip the implicit reload if the
+        # previous one completed within the throttle window.
+        self._last_refresh_completed_at: float = 0.0
+
+    _ACTIVATION_REFRESH_TTL_SEC: float = 3.0
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="worktrees-root"):  # noqa: SIM117
@@ -198,6 +207,11 @@ class WorktreesScreen(ShellScreen):
     def on_show(self) -> None:
         if self._skip_next_show_refresh:
             self._skip_next_show_refresh = False
+            return
+        if self._loading:
+            return
+        elapsed = time.monotonic() - self._last_refresh_completed_at
+        if elapsed < self._ACTIVATION_REFRESH_TTL_SEC:
             return
         self.refresh_data()
 
@@ -482,6 +496,7 @@ class WorktreesScreen(ShellScreen):
             return
         self._apply_loaded_state(result)
         self._loaded_once = True
+        self._last_refresh_completed_at = time.monotonic()
         self._schedule_pending_refresh()
 
     def action_cursor_down(self) -> None:

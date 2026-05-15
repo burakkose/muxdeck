@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -19,6 +20,8 @@ from muxdeck.bindings import SESSIONS_BINDINGS, SESSIONS_HINTS
 from muxdeck.domain.enums import AgentStatus
 from muxdeck.screens.base import ShellScreen
 from muxdeck.screens.compose_mirror import ComposeWithMirrorScreen
+from muxdeck.screens.confirm_dialog import ConfirmScreen
+from muxdeck.screens.session_maintenance import SessionMaintenanceScreen
 from muxdeck.widgets.sessions import (
     SessionActionBar,
     SessionDetailPanel,
@@ -29,7 +32,11 @@ from muxdeck.widgets.sessions import (
 
 if TYPE_CHECKING:
     from muxdeck.app import MuxdeckApp, MuxdeckRuntime
-    from muxdeck.controllers.sessions_controller import SessionDetailView, SessionsState
+    from muxdeck.controllers.sessions_controller import (
+        BulkDeleteResult,
+        SessionDetailView,
+        SessionsState,
+    )
 
 
 _WORKER_NAME = "sessions_load"
@@ -153,6 +160,21 @@ class SessionsScreen(ShellScreen):
         self._live_session_ids: frozenset[str] = frozenset()
         self._live_targets: dict[str, _LiveSessionTarget] = {}
         self._skip_next_show_refresh: bool = True
+        # Action-result message that should persist past the next
+        # refresh worker. Without this, ``_apply_state`` would
+        # overwrite "✓ deleted 3" with the default "X sessions · Y
+        # active" line as soon as the worker finishes.
+        self._pending_status_after_refresh: str | None = None
+        # Activation-refresh throttle. Switching tabs back to this
+        # screen would otherwise trigger a full discover() rescan
+        # (slow on WSL / Windows-mounted roots) every time, even when
+        # the data is seconds-fresh. Keep the previous result if the
+        # last successful refresh was less than ``_ACTIVATION_REFRESH_TTL``
+        # seconds ago so quick j/k-style tab hopping is fluid; periodic
+        # syncs and explicit user actions bypass this gate.
+        self._last_refresh_completed_at: float = 0.0
+
+    _ACTIVATION_REFRESH_TTL_SEC: float = 3.0
 
     @property
     def muxdeck_app(self) -> MuxdeckApp:
@@ -196,6 +218,12 @@ class SessionsScreen(ShellScreen):
             self._skip_next_show_refresh = False
             return
         if self._loading:
+            return
+        # Skip if we just refreshed -- prevents the visible spinner
+        # flash when the operator flips between tabs every few hundred
+        # ms. Periodic sync still drives fresh data via refresh_data().
+        elapsed = time.monotonic() - self._last_refresh_completed_at
+        if elapsed < self._ACTIVATION_REFRESH_TTL_SEC:
             return
         self.refresh_data()
 
@@ -370,6 +398,7 @@ class SessionsScreen(ShellScreen):
         self._live_session_ids = loaded.live_session_ids
         self._live_targets = loaded.live_targets
         self._apply_state(loaded.state)
+        self._last_refresh_completed_at = time.monotonic()
         self._schedule_pending_refresh()
 
     def _schedule_pending_refresh(self) -> None:
@@ -444,6 +473,14 @@ class SessionsScreen(ShellScreen):
             parts.append(f"filter:{query}")
         if not self._show_completed:
             parts.append("hide-done")
+        # Action callbacks (delete, bulk maintenance) frequently set
+        # an outcome message right before triggering a refresh that
+        # would otherwise overwrite it with the default summary line.
+        # Honor the pending message if one is queued, then clear it.
+        if self._pending_status_after_refresh is not None:
+            self.set_status(self._pending_status_after_refresh)
+            self._pending_status_after_refresh = None
+            return
         self.set_status(" · ".join(parts))
 
     def on_session_selected(self, event: SessionSelected) -> None:
@@ -759,6 +796,162 @@ class SessionsScreen(ShellScreen):
         if self._selected_session_id is None:
             return None
         return self._live_targets.get(self._selected_session_id)
+
+    # ── delete / maintenance ─────────────────────────────────────────
+
+    def action_delete_session(self) -> None:
+        """Delete the selected session after a confirm prompt."""
+        detail = self._selected_detail
+        selected = self._selected_session_id
+        if detail is None or selected is None:
+            self.set_status("no session selected")
+            return
+        if self.runtime.sessions_ctrl is None:
+            self.set_status("✗ session controller unavailable")
+            return
+        if selected in self._live_session_ids:
+            self.set_status("✗ session is live — close its pane before deleting")
+            return
+        label = self._delete_label_for(detail)
+        message = (
+            f"Delete session {label}?\n\n"
+            "This permanently removes the on-disk state for this session. "
+            "Replay history and any in-progress conversation will be lost."
+        )
+
+        def _on_close(confirmed: bool | None) -> None:
+            if confirmed:
+                self._delete_session_now(selected, label)
+
+        self.app.push_screen(
+            ConfirmScreen(message, title="Delete session"),
+            _on_close,
+        )
+
+    @staticmethod
+    def _delete_label_for(detail: SessionDetailView) -> str:
+        summary = detail.summary if detail.summary and detail.summary != "—" else None
+        if summary:
+            return f"{summary} ({detail.session_id[:8]})"
+        return detail.session_id
+
+    def _delete_session_now(self, session_id: str, label: str) -> None:
+        sessions_ctrl = self.runtime.sessions_ctrl
+        if sessions_ctrl is None:
+            self.set_status("✗ session controller unavailable")
+            return
+        try:
+            sessions_ctrl.delete_session(
+                session_id,
+                live_session_ids=self._live_session_ids,
+            )
+        except PermissionError as exc:
+            self.set_status(f"✗ {exc}")
+            return
+        except OSError as exc:
+            self.set_status(f"✗ delete failed: {exc}")
+            return
+
+        # Selection survives across refreshes via remember_session_selection,
+        # so clear it explicitly here — otherwise the next refresh would
+        # ask the controller to re-select an id that no longer exists
+        # and the list would land on whatever surfaces alphabetically.
+        if self._selected_session_id == session_id:
+            self._selected_session_id = None
+            self._selected_detail = None
+            self._rendered_detail_session_id = None
+            self.muxdeck_app.selected_session_id = None
+        message = f"✓ deleted {label}"
+        self.set_status(message)
+        # Stash so the post-refresh ``_apply_state`` doesn't overwrite
+        # the outcome with the default "X sessions" summary line.
+        self._pending_status_after_refresh = message
+        self.refresh_data()
+
+    def action_session_maintenance(self) -> None:
+        """Open the bulk-delete cohort picker."""
+        sessions_ctrl = self.runtime.sessions_ctrl
+        if sessions_ctrl is None:
+            self.set_status("✗ session controller unavailable")
+            return
+        view = sessions_ctrl.maintenance_cohorts(
+            live_session_ids=self._live_session_ids,
+        )
+        if view.total_eligible == 0:
+            self.set_status("nothing to clean up")
+            return
+
+        def _on_close(days: int | None) -> None:
+            if days is None:
+                return
+            self._confirm_bulk_delete(days)
+
+        self.app.push_screen(SessionMaintenanceScreen(view), _on_close)
+
+    def _confirm_bulk_delete(self, days: int) -> None:
+        sessions_ctrl = self.runtime.sessions_ctrl
+        if sessions_ctrl is None:
+            return
+        # Re-snapshot cohorts so the displayed count matches what's about
+        # to be removed even if the screen was open for a while; the
+        # `live_session_ids` may also have grown in the meantime.
+        view = sessions_ctrl.maintenance_cohorts(
+            live_session_ids=self._live_session_ids,
+        )
+        cohort = next(
+            (c for c in view.cohorts if c.older_than_days == days),
+            None,
+        )
+        if cohort is None or cohort.count == 0:
+            self.set_status("no sessions in that cohort")
+            return
+        message = (
+            f"Delete {cohort.count} session(s) {cohort.label.lower()}?\n\n"
+            "This permanently removes their on-disk state. Live sessions are "
+            "always preserved."
+        )
+
+        def _on_close(confirmed: bool | None) -> None:
+            if confirmed:
+                self._run_bulk_delete(days)
+
+        self.app.push_screen(
+            ConfirmScreen(message, title="Bulk delete sessions"),
+            _on_close,
+        )
+
+    def _run_bulk_delete(self, days: int) -> None:
+        sessions_ctrl = self.runtime.sessions_ctrl
+        if sessions_ctrl is None:
+            return
+        result: BulkDeleteResult = sessions_ctrl.bulk_delete_older_than(
+            days,
+            live_session_ids=self._live_session_ids,
+        )
+        deleted = len(result.deleted_ids)
+        failed = len(result.failures)
+        skipped = len(result.skipped_live)
+        parts = [f"✓ deleted {deleted}"]
+        if failed:
+            parts.append(f"✗ {failed} failed")
+        if skipped:
+            parts.append(f"skipped {skipped} live")
+        message = " · ".join(parts)
+        self.set_status(message)
+        # Stash so the post-refresh ``_apply_state`` keeps the outcome
+        # visible -- otherwise the worker's "X sessions" summary wins.
+        self._pending_status_after_refresh = message
+        # If the previously selected session was reaped, drop the
+        # selection so the post-refresh paint doesn't try to revive it.
+        if (
+            self._selected_session_id is not None
+            and self._selected_session_id in result.deleted_ids
+        ):
+            self._selected_session_id = None
+            self._selected_detail = None
+            self._rendered_detail_session_id = None
+            self.muxdeck_app.selected_session_id = None
+        self.refresh_data()
 
     def _resolve_live_mirror_target(
         self,

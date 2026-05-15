@@ -1790,6 +1790,23 @@ async def test_replay_and_sessions_skip_duplicate_initial_show_refresh() -> None
             assert "session-1" in rendered_text(app.screen.query_one("#sessions-detail"))
             assert runtime.sessions_ctrl.build_state_calls == 1
 
+            # Quickly hopping away and back within the activation
+            # throttle TTL must NOT trigger an extra refresh -- this
+            # is the change that makes navigation feel smooth on WSL.
+            app.action_show_dashboard()
+            await pilot.pause()
+            app.action_show_sessions()
+            for _ in range(3):
+                await pilot.pause()
+                if not cast(Any, app.screen)._loading:
+                    break
+            assert runtime.sessions_ctrl.build_state_calls == 1
+
+            # Once the throttle window has been pushed into the past
+            # (simulated by zeroing the timestamp), the next activation
+            # refreshes normally so stale data can't be pinned forever.
+            sessions_screen = cast(Any, app.screen)
+            sessions_screen._last_refresh_completed_at = 0.0
             app.action_show_dashboard()
             await pilot.pause()
             app.action_show_sessions()
@@ -1814,6 +1831,9 @@ async def test_replay_and_sessions_skip_duplicate_initial_show_refresh() -> None
                 await pilot.pause()
                 if not cast(Any, app.screen)._loading:
                     break
+            # Replay screen does NOT have the activation throttle (its
+            # load is cheap and operator-driven), so each visit still
+            # reloads.
             assert runtime.replay.load_state_calls == 2
     finally:
         runtime.cleanup()

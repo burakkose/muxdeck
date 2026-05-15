@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+
+import pytest
 
 from muxdeck.adapters.copilot_session_store import (
     CopilotLocalSession,
@@ -514,3 +517,228 @@ def test_usage_view_for_with_only_output_tokens() -> None:
 
     assert "250 out" in summary
     assert available is True
+
+
+# ── delete & maintenance ─────────────────────────────────────────
+
+
+class _DeletingFakeStore:
+    """Fake store with a controllable delete surface.
+
+    Mirrors the subset of :class:`CopilotSessionStore` the controller
+    touches. ``deleted_calls`` records every id passed to ``delete_session``
+    so tests can assert on exact call sequences; ``raise_for_ids`` makes
+    the named ids raise to exercise the bulk-failure aggregation path.
+    """
+
+    def __init__(
+        self,
+        sessions: list[CopilotLocalSession],
+        *,
+        raise_for_ids: frozenset[str] = frozenset(),
+    ) -> None:
+        self._sessions = sessions
+        self._raise_for_ids = raise_for_ids
+        self.deleted_calls: list[str] = []
+
+    def discover(self, *, force: bool = False) -> list[CopilotLocalSession]:
+        return list(self._sessions)
+
+    def get_session(
+        self, session_id: str, *, warm_only: bool = False
+    ) -> CopilotLocalSession | None:
+        for s in self._sessions:
+            if s.session_id == session_id:
+                return s
+        return None
+
+    def delete_session(self, session_id: str) -> Path | None:
+        self.deleted_calls.append(session_id)
+        if session_id in self._raise_for_ids:
+            msg = f"simulated delete failure for {session_id}"
+            raise OSError(msg)
+        self._sessions = [s for s in self._sessions if s.session_id != session_id]
+        return Path(f"/state/{session_id}")
+
+    def delete_sessions(
+        self, session_ids: Sequence[str]
+    ) -> tuple[list[str], list[tuple[str, str]]]:
+        deleted: list[str] = []
+        failures: list[tuple[str, str]] = []
+        for sid in session_ids:
+            try:
+                self.delete_session(sid)
+            except OSError as exc:
+                failures.append((sid, str(exc)))
+                continue
+            deleted.append(sid)
+        return deleted, failures
+
+
+def test_delete_session_refuses_live_id() -> None:
+    s = _session("live-1", is_cleanly_closed=False)
+    store = _DeletingFakeStore([s])
+    ctrl = SessionsController(store)  # type: ignore[arg-type]
+
+    with pytest.raises(PermissionError, match="live"):
+        ctrl.delete_session("live-1", live_session_ids=frozenset({"live-1"}))
+
+    # The store must not be touched -- otherwise the live agent's
+    # working directory disappears underneath it.
+    assert store.deleted_calls == []
+
+
+def test_delete_session_forwards_to_store_when_not_live() -> None:
+    s = _session("done-1", is_cleanly_closed=True)
+    store = _DeletingFakeStore([s])
+    ctrl = SessionsController(store)  # type: ignore[arg-type]
+
+    result = ctrl.delete_session("done-1", live_session_ids=frozenset({"other"}))
+
+    assert store.deleted_calls == ["done-1"]
+    assert result == Path("/state/done-1")
+
+
+def test_maintenance_cohorts_buckets_by_threshold() -> None:
+    now = datetime(2026, 5, 15, 12, 0, tzinfo=UTC)
+    # Mix of ages spanning every cohort plus a few that should fall in
+    # none of them (newer than 1 day).
+    sessions = [
+        _session("fresh-1", updated_at=now - timedelta(hours=1)),
+        _session("day-1", updated_at=now - timedelta(days=2)),
+        _session("week-1", updated_at=now - timedelta(days=10)),
+        _session("month-1", updated_at=now - timedelta(days=45)),
+        _session("ancient-1", updated_at=now - timedelta(days=200)),
+    ]
+    store = _DeletingFakeStore(sessions)
+    ctrl = SessionsController(store)  # type: ignore[arg-type]
+
+    view = ctrl.maintenance_cohorts(now=now)
+
+    by_days = {c.older_than_days: c.count for c in view.cohorts}
+    # Each older threshold is a superset of the older ones below it.
+    assert by_days == {1: 4, 7: 3, 30: 2, 90: 1}
+    assert view.total_eligible == 5
+    assert view.skipped_live == 0
+
+
+def test_maintenance_cohorts_excludes_live_sessions() -> None:
+    now = datetime(2026, 5, 15, 12, 0, tzinfo=UTC)
+    sessions = [
+        _session("stale", updated_at=now - timedelta(days=100)),
+        _session("live", updated_at=now - timedelta(days=100)),
+    ]
+    store = _DeletingFakeStore(sessions)
+    ctrl = SessionsController(store)  # type: ignore[arg-type]
+
+    view = ctrl.maintenance_cohorts(
+        live_session_ids=frozenset({"live"}),
+        now=now,
+    )
+
+    # Live session must not contribute to any cohort even though its
+    # age would qualify -- otherwise bulk delete would target it.
+    assert all(c.count == 1 for c in view.cohorts)
+    assert view.total_eligible == 1
+    assert view.skipped_live == 1
+
+
+def test_maintenance_cohorts_treats_missing_timestamp_as_ancient() -> None:
+    # A session with neither updated_at nor created_at is treated as
+    # arbitrarily old so it can still be reaped. The alternative --
+    # silently skipping it -- would leave orphan dirs that the
+    # operator has no way to clean up from the picker.
+    now = datetime(2026, 5, 15, 12, 0, tzinfo=UTC)
+    sessions = [
+        CopilotLocalSession(
+            session_id="orphan",
+            cwd=None,
+            git_root=None,
+            repository=None,
+            branch=None,
+            summary=None,
+            created_at=None,
+            updated_at=None,
+        ),
+    ]
+    store = _DeletingFakeStore(sessions)
+    ctrl = SessionsController(store)  # type: ignore[arg-type]
+
+    view = ctrl.maintenance_cohorts(now=now)
+
+    assert {c.count for c in view.cohorts} == {1}
+
+
+def test_bulk_delete_older_than_targets_only_qualifying_ids() -> None:
+    now = datetime(2026, 5, 15, 12, 0, tzinfo=UTC)
+    sessions = [
+        _session("fresh", updated_at=now - timedelta(hours=2)),
+        _session("week-old", updated_at=now - timedelta(days=10)),
+        _session("month-old", updated_at=now - timedelta(days=45)),
+    ]
+    store = _DeletingFakeStore(sessions)
+    ctrl = SessionsController(store)  # type: ignore[arg-type]
+
+    result = ctrl.bulk_delete_older_than(7, now=now)
+
+    assert sorted(result.deleted_ids) == ["month-old", "week-old"]
+    assert result.failures == ()
+    assert result.skipped_live == ()
+    # The fresh row must never be passed to the store.
+    assert "fresh" not in store.deleted_calls
+
+
+def test_bulk_delete_older_than_skips_live_and_records_them() -> None:
+    now = datetime(2026, 5, 15, 12, 0, tzinfo=UTC)
+    sessions = [
+        _session("stale-done", updated_at=now - timedelta(days=10)),
+        _session("stale-live", updated_at=now - timedelta(days=10)),
+    ]
+    store = _DeletingFakeStore(sessions)
+    ctrl = SessionsController(store)  # type: ignore[arg-type]
+
+    result = ctrl.bulk_delete_older_than(
+        7,
+        live_session_ids=frozenset({"stale-live"}),
+        now=now,
+    )
+
+    assert result.deleted_ids == ("stale-done",)
+    assert result.skipped_live == ("stale-live",)
+    assert store.deleted_calls == ["stale-done"]
+
+
+def test_bulk_delete_older_than_returns_failures_without_aborting() -> None:
+    now = datetime(2026, 5, 15, 12, 0, tzinfo=UTC)
+    sessions = [
+        _session("good-1", updated_at=now - timedelta(days=10)),
+        _session("bad-1", updated_at=now - timedelta(days=10)),
+        _session("good-2", updated_at=now - timedelta(days=10)),
+    ]
+    store = _DeletingFakeStore(sessions, raise_for_ids=frozenset({"bad-1"}))
+    ctrl = SessionsController(store)  # type: ignore[arg-type]
+
+    result = ctrl.bulk_delete_older_than(7, now=now)
+
+    # The good ids must come through even though "bad-1" raised --
+    # mid-batch failures cannot stop the rest of the bulk delete.
+    assert sorted(result.deleted_ids) == ["good-1", "good-2"]
+    assert len(result.failures) == 1
+    assert result.failures[0][0] == "bad-1"
+    assert "simulated" in result.failures[0][1]
+
+
+def test_bulk_delete_older_than_with_non_positive_days_is_noop() -> None:
+    # Zero or negative thresholds would otherwise sweep every session,
+    # which is dangerous (and meaningless) for a bulk operation.
+    sessions = [_session("any-1")]
+    store = _DeletingFakeStore(sessions)
+    ctrl = SessionsController(store)  # type: ignore[arg-type]
+
+    result_zero = ctrl.bulk_delete_older_than(0)
+    result_negative = ctrl.bulk_delete_older_than(-5)
+
+    assert result_zero.deleted_ids == ()
+    assert result_zero.failures == ()
+    assert result_negative.deleted_ids == ()
+    assert store.deleted_calls == []

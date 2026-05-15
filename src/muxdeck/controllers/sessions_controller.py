@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -204,6 +205,39 @@ class SessionsState:
     selected_session_id: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class MaintenanceCohort:
+    """A grouping of removable sessions older than ``older_than_days``.
+
+    ``count`` excludes any session whose id is in ``live_session_ids``
+    at the time the cohort was built — those are filtered out before
+    the operator ever sees the row so a confirm dialog can't
+    accidentally promise to kill an active agent.
+    """
+
+    older_than_days: int
+    label: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class MaintenanceCohortsView:
+    """All cohorts shown in the bulk-delete picker, plus context."""
+
+    cohorts: tuple[MaintenanceCohort, ...]
+    total_eligible: int
+    skipped_live: int
+
+
+@dataclass(frozen=True, slots=True)
+class BulkDeleteResult:
+    """Outcome of a bulk delete request from the maintenance modal."""
+
+    deleted_ids: tuple[str, ...]
+    failures: tuple[tuple[str, str], ...]
+    skipped_live: tuple[str, ...]
+
+
 class SessionsController:
     """Builds view models from CopilotSessionStore data."""
 
@@ -366,8 +400,137 @@ class SessionsController:
             premium_requests=premium_requests,
         )
 
+    # ── Maintenance / delete ─────────────────────────────────────
+
+    # The cohort thresholds shown in the bulk-delete picker. Anything
+    # newer than the smallest threshold is intentionally never offered
+    # because the operator can still delete recent sessions one at a
+    # time from the screen; bulk-delete is meant for reclaiming space
+    # from stale work that has aged out of usefulness.
+    _COHORT_AGES_DAYS: tuple[tuple[int, str], ...] = (
+        (1, "Older than 1 day"),
+        (7, "Older than 7 days"),
+        (30, "Older than 30 days"),
+        (90, "Older than 90 days"),
+    )
+
+    def delete_session(
+        self,
+        session_id: str,
+        *,
+        live_session_ids: frozenset[str] = frozenset(),
+    ) -> Path | None:
+        """Delete a single session by id.
+
+        Refuses to touch a session that is currently live so the
+        operator can't accidentally kill a session whose Copilot CLI
+        process is still attached. Raises :class:`PermissionError`
+        rather than failing silently so the UI can surface a clear
+        message instead of a misleading success.
+        """
+        if session_id in live_session_ids:
+            msg = f"session {session_id} is live; stop the agent before deleting"
+            raise PermissionError(msg)
+        return self._store.delete_session(session_id)
+
+    def maintenance_cohorts(
+        self,
+        *,
+        live_session_ids: frozenset[str] = frozenset(),
+        now: datetime | None = None,
+    ) -> MaintenanceCohortsView:
+        """Build cohort counts for the maintenance picker.
+
+        ``now`` is an injection seam for tests; production callers
+        leave it None so the controller stamps the current UTC time.
+        Each cohort counts only sessions whose ``updated_at`` (falling
+        back to ``created_at``) places them at or before the cohort
+        threshold, and never includes live ids.
+        """
+        from datetime import timedelta
+
+        reference = now if now is not None else datetime.now(UTC)
+        sessions = self._store.discover()
+        eligible_total = 0
+        skipped_live = 0
+
+        # Pre-compute the timestamp we'll compare against -- sessions
+        # without any timestamp at all are treated as "ancient" so they
+        # show up in every cohort and can be reaped along with the rest.
+        def _age_anchor(session: CopilotLocalSession) -> datetime:
+            return session.updated_at or session.created_at or datetime.min.replace(tzinfo=UTC)
+
+        ages: list[tuple[CopilotLocalSession, datetime]] = []
+        for session in sessions:
+            if session.session_id in live_session_ids:
+                skipped_live += 1
+                continue
+            ages.append((session, _age_anchor(session)))
+            eligible_total += 1
+
+        cohorts: list[MaintenanceCohort] = []
+        for days, label in self._COHORT_AGES_DAYS:
+            threshold = reference - timedelta(days=days)
+            count = sum(1 for _, anchor in ages if anchor <= threshold)
+            cohorts.append(MaintenanceCohort(older_than_days=days, label=label, count=count))
+
+        return MaintenanceCohortsView(
+            cohorts=tuple(cohorts),
+            total_eligible=eligible_total,
+            skipped_live=skipped_live,
+        )
+
+    def bulk_delete_older_than(
+        self,
+        older_than_days: int,
+        *,
+        live_session_ids: frozenset[str] = frozenset(),
+        now: datetime | None = None,
+    ) -> BulkDeleteResult:
+        """Delete all non-live sessions older than the cohort threshold.
+
+        Recomputes the candidate set at delete time using the same
+        anchor rule as :meth:`maintenance_cohorts`, so cohort counts
+        shown in the picker stay consistent with what the operator
+        actually deletes (subject to natural drift between the picker
+        render and the confirmation). Live sessions discovered between
+        the two calls are surfaced in ``skipped_live`` rather than
+        silently absorbed.
+        """
+        from datetime import timedelta
+
+        if older_than_days <= 0:
+            return BulkDeleteResult(deleted_ids=(), failures=(), skipped_live=())
+
+        reference = now if now is not None else datetime.now(UTC)
+        threshold = reference - timedelta(days=older_than_days)
+        sessions = self._store.discover()
+
+        def _age_anchor(session: CopilotLocalSession) -> datetime:
+            return session.updated_at or session.created_at or datetime.min.replace(tzinfo=UTC)
+
+        skipped_live: list[str] = []
+        candidates: list[str] = []
+        for session in sessions:
+            if _age_anchor(session) > threshold:
+                continue
+            if session.session_id in live_session_ids:
+                skipped_live.append(session.session_id)
+                continue
+            candidates.append(session.session_id)
+
+        deleted, failures = self._store.delete_sessions(candidates)
+        return BulkDeleteResult(
+            deleted_ids=tuple(deleted),
+            failures=tuple(failures),
+            skipped_live=tuple(skipped_live),
+        )
+
 
 __all__ = [
+    "BulkDeleteResult",
+    "MaintenanceCohort",
+    "MaintenanceCohortsView",
     "SessionDetailView",
     "SessionListItemView",
     "SessionsController",

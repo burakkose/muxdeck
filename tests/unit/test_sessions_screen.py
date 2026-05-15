@@ -2035,5 +2035,333 @@ class SessionsResolveLiveMirrorAdvancedTests(unittest.TestCase):
         assert asyncio.run(scenario()) == "%outer"
 
 
-# Touch unused refs so they don't trip ruff.
-_ = (SessionListItemView, SessionsState)
+# ── delete + maintenance ─────────────────────────────────────────────
+
+
+from muxdeck.controllers.sessions_controller import (  # noqa: E402
+    BulkDeleteResult,
+    MaintenanceCohort,
+    MaintenanceCohortsView,
+)
+
+
+@dataclass(slots=True)
+class _DeletingSessionsCtrl(_RecordingSessionsCtrl):
+    """Sessions controller that records delete/maintenance interactions."""
+
+    deleted_calls: list[tuple[str, frozenset[str]]] = field(default_factory=list)
+    maintenance_calls: list[frozenset[str]] = field(default_factory=list)
+    bulk_calls: list[tuple[int, frozenset[str]]] = field(default_factory=list)
+
+    delete_exc: BaseException | None = None
+    cohorts_view: MaintenanceCohortsView | None = None
+    bulk_result: BulkDeleteResult | None = None
+
+    def delete_session(self, session_id: str, *, live_session_ids: frozenset[str]) -> Path | None:
+        self.deleted_calls.append((session_id, live_session_ids))
+        if self.delete_exc is not None:
+            raise self.delete_exc
+        return Path(f"/state/{session_id}")
+
+    def maintenance_cohorts(
+        self,
+        *,
+        live_session_ids: frozenset[str] = frozenset(),
+        now: object | None = None,
+    ) -> MaintenanceCohortsView:
+        del now
+        self.maintenance_calls.append(live_session_ids)
+        if self.cohorts_view is not None:
+            return self.cohorts_view
+        return MaintenanceCohortsView(
+            cohorts=(),
+            total_eligible=0,
+            skipped_live=0,
+        )
+
+    def bulk_delete_older_than(
+        self,
+        days: int,
+        *,
+        live_session_ids: frozenset[str] = frozenset(),
+        now: object | None = None,
+    ) -> BulkDeleteResult:
+        del now
+        self.bulk_calls.append((days, live_session_ids))
+        if self.bulk_result is not None:
+            return self.bulk_result
+        return BulkDeleteResult(deleted_ids=(), failures=(), skipped_live=())
+
+
+class SessionsDeleteActionTests(unittest.TestCase):
+    def test_action_delete_session_without_selection_sets_status(self) -> None:
+        async def scenario() -> tuple[str, list[tuple[str, frozenset[str]]]]:
+            ctrl = _DeletingSessionsCtrl(state=_state())
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen.action_delete_session()
+                await pilot.pause()
+                return screen._status, ctrl.deleted_calls
+
+        status, calls = asyncio.run(scenario())
+        assert "no session" in status
+        assert calls == []
+
+    def test_action_delete_session_for_live_id_refuses_without_confirm(self) -> None:
+        async def scenario() -> tuple[str, list[tuple[str, frozenset[str]]]]:
+            ctrl = _DeletingSessionsCtrl(state=_state())
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_session_id = "session-1"
+                screen._selected_detail = _detail()
+                screen._live_session_ids = frozenset({"session-1"})
+                screen.action_delete_session()
+                await pilot.pause()
+                return screen._status, ctrl.deleted_calls
+
+        status, calls = asyncio.run(scenario())
+        assert "live" in status
+        assert calls == []
+
+    def test_action_delete_session_pushes_confirm_dialog(self) -> None:
+        async def scenario() -> str:
+            ctrl = _DeletingSessionsCtrl(state=_state())
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_session_id = "session-1"
+                screen._selected_detail = _detail()
+                screen.action_delete_session()
+                await pilot.pause()
+                return type(app.screen).__name__
+
+        assert asyncio.run(scenario()) == "ConfirmScreen"
+
+    def test_delete_session_now_clears_selection_and_refreshes(self) -> None:
+        async def scenario() -> tuple[str | None, list[tuple[str, frozenset[str]]]]:
+            ctrl = _DeletingSessionsCtrl(state=_state())
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_session_id = "session-1"
+                screen._selected_detail = _detail()
+                screen._delete_session_now("session-1", "Review")
+                await pilot.pause()
+                return screen._selected_session_id, ctrl.deleted_calls
+
+        selected, calls = asyncio.run(scenario())
+        assert selected is None
+        assert calls == [("session-1", frozenset())]
+
+    def test_delete_session_now_surfaces_oserror_status(self) -> None:
+        async def scenario() -> tuple[str, str | None]:
+            ctrl = _DeletingSessionsCtrl(
+                state=_state(),
+                delete_exc=OSError("disk full"),
+            )
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_session_id = "session-1"
+                screen._selected_detail = _detail()
+                screen._delete_session_now("session-1", "Review")
+                await pilot.pause()
+                return screen._status, screen._selected_session_id
+
+        status, selected = asyncio.run(scenario())
+        assert "disk full" in status
+        # Selection survives on failure -- the session still exists on disk.
+        assert selected == "session-1"
+
+
+class SessionsMaintenanceActionTests(unittest.TestCase):
+    def test_action_maintenance_with_no_eligible_sessions_sets_status(self) -> None:
+        async def scenario() -> tuple[str, str]:
+            ctrl = _DeletingSessionsCtrl(state=_state())
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen.action_session_maintenance()
+                await pilot.pause()
+                return screen._status, type(app.screen).__name__
+
+        status, top_screen = asyncio.run(scenario())
+        assert "nothing to clean up" in status
+        assert top_screen == "SessionsScreen"
+
+    def test_action_maintenance_with_eligible_pushes_modal(self) -> None:
+        async def scenario() -> str:
+            ctrl = _DeletingSessionsCtrl(
+                state=_state(),
+                cohorts_view=MaintenanceCohortsView(
+                    cohorts=(
+                        MaintenanceCohort(
+                            older_than_days=7,
+                            label="Older than 7 days",
+                            count=3,
+                        ),
+                    ),
+                    total_eligible=3,
+                    skipped_live=0,
+                ),
+            )
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen.action_session_maintenance()
+                await pilot.pause()
+                return type(app.screen).__name__
+
+        assert asyncio.run(scenario()) == "SessionMaintenanceScreen"
+
+    def test_confirm_bulk_delete_pushes_confirm_with_cohort_label(self) -> None:
+        async def scenario() -> str:
+            ctrl = _DeletingSessionsCtrl(
+                state=_state(),
+                cohorts_view=MaintenanceCohortsView(
+                    cohorts=(
+                        MaintenanceCohort(
+                            older_than_days=30,
+                            label="Older than 30 days",
+                            count=5,
+                        ),
+                    ),
+                    total_eligible=5,
+                    skipped_live=0,
+                ),
+            )
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._confirm_bulk_delete(30)
+                await pilot.pause()
+                return type(app.screen).__name__
+
+        assert asyncio.run(scenario()) == "ConfirmScreen"
+
+    def test_run_bulk_delete_records_result_and_refreshes(self) -> None:
+        async def scenario() -> tuple[str, list[tuple[int, frozenset[str]]]]:
+            ctrl = _DeletingSessionsCtrl(
+                state=_state(),
+                bulk_result=BulkDeleteResult(
+                    deleted_ids=("s1", "s2", "s3"),
+                    failures=(("s4", "permission denied"),),
+                    skipped_live=("live-1",),
+                ),
+            )
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._run_bulk_delete(7)
+                await pilot.pause()
+                return screen._status, ctrl.bulk_calls
+
+        status, bulk_calls = asyncio.run(scenario())
+        assert bulk_calls == [(7, frozenset())]
+        assert "deleted 3" in status
+        assert "1 failed" in status
+        assert "skipped 1 live" in status
+
+    def test_run_bulk_delete_clears_selection_if_it_was_reaped(self) -> None:
+        async def scenario() -> str | None:
+            ctrl = _DeletingSessionsCtrl(
+                state=_state(),
+                bulk_result=BulkDeleteResult(
+                    deleted_ids=("session-1",),
+                    failures=(),
+                    skipped_live=(),
+                ),
+            )
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_session_id = "session-1"
+                screen._run_bulk_delete(7)
+                await pilot.pause()
+                return screen._selected_session_id
+
+        assert asyncio.run(scenario()) is None
+
+
+class SessionsActivationThrottleTests(unittest.TestCase):
+    def test_activation_refresh_throttle_skips_repeat_refresh(self) -> None:
+        # After the initial mount completes and stamps the throttle
+        # timestamp, an immediate ``on_show`` should NOT trigger a
+        # second refresh -- previously every tab switch rescanned.
+        async def scenario() -> int:
+            import time as _time
+
+            ctrl = _DeletingSessionsCtrl(state=_state())
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._last_refresh_completed_at = _time.monotonic()
+                screen._loading = False
+                # Consume the mount-time skip latch so the next
+                # ``_refresh_on_activate`` reaches the throttle check.
+                screen._skip_next_show_refresh = False
+                builds_before = ctrl.build_calls
+                screen._refresh_on_activate()
+                await pilot.pause()
+                return ctrl.build_calls - builds_before
+
+        assert asyncio.run(scenario()) == 0
+
+    def test_activation_refresh_throttle_runs_after_ttl_expires(self) -> None:
+        # When enough time has elapsed since the last refresh, the
+        # activation refresh path must run again so stale data is not
+        # pinned forever.
+        async def scenario() -> int:
+            ctrl = _DeletingSessionsCtrl(state=_state())
+            runtime = _runtime_with(sessions_ctrl=ctrl)
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                # 0.0 is far enough in the past that the throttle gate
+                # is always open regardless of how long the test took.
+                screen._last_refresh_completed_at = 0.0
+                screen._loading = False
+                screen._skip_next_show_refresh = False
+                builds_before = ctrl.build_calls
+                screen._refresh_on_activate()
+                await pilot.pause()
+                return ctrl.build_calls - builds_before
+
+        assert asyncio.run(scenario()) >= 1

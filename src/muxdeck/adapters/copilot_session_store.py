@@ -801,6 +801,93 @@ class CopilotSessionStore:
             # unused. This avoids paying the cold-scan cost again
             # when a root toggles.
 
+    def resolve_session_dir(self, session_id: str) -> Path | None:
+        """Locate the on-disk directory for ``session_id``.
+
+        Walks the configured roots in priority order (primary local,
+        then extras) and returns the first directory that contains a
+        ``workspace.yaml`` (the marker Copilot CLI writes to claim a
+        session UUID). Returns ``None`` when no root carries that
+        session id -- callers should treat that as "already gone" or
+        "never existed". Resolution does not hit the TTL cache so
+        callers immediately after a delete still see a fresh answer.
+        """
+        if not session_id:
+            return None
+        for root in self._iter_roots():
+            candidate = root.path / session_id
+            if (candidate / "workspace.yaml").exists():
+                return candidate
+        return None
+
+    def delete_session(self, session_id: str) -> Path | None:
+        """Remove a session's on-disk directory and drop cached state.
+
+        Returns the path that was removed, or ``None`` when the session
+        directory could not be located (likely already deleted). Raises
+        :class:`OSError` if the rmtree itself fails -- callers surface
+        that to the operator rather than silently swallowing partial
+        deletions.
+
+        The TTL cache and per-entry cache are both invalidated for the
+        removed path so the next :meth:`discover` reflects the new
+        on-disk reality. Concurrent ``discover`` callers see a
+        consistent snapshot because mutations happen under ``_lock``.
+        """
+        target = self.resolve_session_dir(session_id)
+        if target is None:
+            self._forget_session_id_locked_external(session_id)
+            return None
+
+        import shutil
+
+        # ``rmtree`` outside the lock so a slow 9P delete doesn't block
+        # concurrent reads. The lookup above is the only step that
+        # needs synchronisation with cache writers; cache invalidation
+        # happens after the rmtree so a failed delete keeps the cache
+        # consistent with what is still on disk.
+        shutil.rmtree(target)
+        with self._lock:
+            self._entry_cache.pop(target, None)
+            self._by_id.pop(session_id, None)
+            self._cache = [s for s in self._cache if s.session_id != session_id]
+        return target
+
+    def delete_sessions(
+        self, session_ids: Sequence[str]
+    ) -> tuple[list[str], list[tuple[str, str]]]:
+        """Bulk-delete sessions. Returns (deleted_ids, failures).
+
+        Each entry in ``failures`` is a ``(session_id, error_message)``
+        tuple. The method never raises -- bulk maintenance should
+        surface partial successes rather than abort on the first
+        permission error or stale-handle hiccup.
+        """
+        deleted: list[str] = []
+        failures: list[tuple[str, str]] = []
+        for sid in session_ids:
+            try:
+                path = self.delete_session(sid)
+            except OSError as exc:
+                failures.append((sid, str(exc)))
+                continue
+            if path is not None:
+                deleted.append(sid)
+        return deleted, failures
+
+    def _forget_session_id_locked_external(self, session_id: str) -> None:
+        """Drop any cached references to ``session_id`` without rmtree.
+
+        Used when a delete is requested but the on-disk directory is
+        already missing -- typically because another muxdeck instance
+        or the operator removed it externally. We still want our cache
+        to forget the id so the next refresh doesn't surface a phantom
+        row.
+        """
+        with self._lock:
+            self._by_id.pop(session_id, None)
+            self._cache = [s for s in self._cache if s.session_id != session_id]
+
     def get_session(
         self, session_id: str, *, warm_only: bool = False
     ) -> CopilotLocalSession | None:
