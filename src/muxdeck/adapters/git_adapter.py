@@ -109,6 +109,46 @@ def _wsl_path_to_windows(path: PathLike) -> str | None:
     return f"{drive}:" + chr(92) + windows_remainder
 
 
+def _is_windows_stamped_worktree(cwd: Path) -> bool:
+    """Detect a linked worktree whose ``.git`` file references Windows paths.
+
+    A linked worktree (anything except the main repo) on disk has a
+    ``.git`` file (not directory) shaped like::
+
+        gitdir: C:\\src\\foo\\.git\\worktrees\\name
+
+    When that gitdir reference uses a Windows-native path (backslashes
+    or a drive letter), WSL ``git`` cannot follow it and every command
+    that touches the worktree (``rev-parse``, ``status``, ``worktree
+    remove``) fails before the routed remove call can run. Detecting
+    this stamp lets ``_run_command`` switch to ``git.exe`` for exactly
+    these worktrees while leaving WSL-native ``/mnt`` repos
+    (whose ``.git`` file references POSIX paths, or whose ``.git`` is
+    a directory) untouched.
+    """
+
+    git_marker = cwd / ".git"
+    try:
+        if not git_marker.is_file():
+            return False
+        contents = git_marker.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    for raw_line in contents.splitlines():
+        line = raw_line.strip()
+        prefix, _, ref = line.partition(":")
+        if prefix.strip().lower() != "gitdir":
+            continue
+        ref = ref.strip()
+        if not ref:
+            continue
+        if "\\" in ref:
+            return True
+        if len(ref) >= 2 and ref[1] == ":" and ref[0].isascii() and ref[0].isalpha():
+            return True
+    return False
+
+
 @functools.cache
 def _detect_wsl_runtime() -> bool:
     """Best-effort WSL detection used when the runtime flag is unset.
@@ -254,6 +294,28 @@ class GitAdapter:
         self._windows_binary = windows_binary
         self._is_wsl_runtime = _detect_wsl_runtime() if is_wsl_runtime is None else is_wsl_runtime
         self._timeout_sec = timeout_sec
+        self._windows_routing_cache: dict[Path, bool] = {}
+
+    def _should_route_to_windows(self, cwd: Path) -> bool:
+        """Decide whether ``_run_command`` must swap to ``git.exe`` for *cwd*.
+
+        Routes only when the worktree at *cwd* is provably Windows-
+        stamped (linked-worktree ``.git`` file references a native
+        ``C:\\…`` / backslash path). Plain ``/mnt`` cwds without that
+        evidence keep using the configured POSIX binary so existing
+        WSL-native repos on Windows mounts are not regressed.
+        """
+
+        if not self._is_wsl_runtime:
+            return False
+        if _wsl_path_to_windows(cwd) is None:
+            return False
+        cached = self._windows_routing_cache.get(cwd)
+        if cached is not None:
+            return cached
+        result = _is_windows_stamped_worktree(cwd)
+        self._windows_routing_cache[cwd] = result
+        return result
 
     def _select_worktree_binary_and_path(self, normalized_path: Path) -> tuple[str, str]:
         """Pick the git binary + path representation for *normalized_path*.
@@ -267,7 +329,10 @@ class GitAdapter:
 
         Outside WSL or for any non-mount path, return the configured
         POSIX binary and the path unchanged so existing behaviour is
-        preserved.
+        preserved. The cwd-based ``_run_command`` routing only swaps
+        the *binary*; this helper is still needed for commands that
+        also take a worktree path as an argv element (e.g. ``worktree
+        remove <path>``).
         """
         if not self._is_wsl_runtime:
             return (self._binary, str(normalized_path))
@@ -728,8 +793,13 @@ class GitAdapter:
         return self._run_command((self._binary, *args), cwd=cwd)
 
     def _run_command(self, command: tuple[str, ...], *, cwd: Path) -> CommandResult:
+        routed_command = self._route_command_for_cwd(command, cwd)
         try:
-            result = self._command_runner.run(command, cwd=cwd, timeout_sec=self._timeout_sec)
+            result = self._command_runner.run(
+                routed_command,
+                cwd=cwd,
+                timeout_sec=self._timeout_sec,
+            )
         except CommandError as exc:
             raise GitCommandError(
                 exc.command,
@@ -745,6 +815,31 @@ class GitAdapter:
             exit_code=result.exit_code,
             stdout=result.stdout,
         )
+
+    def _route_command_for_cwd(
+        self,
+        command: tuple[str, ...],
+        cwd: Path,
+    ) -> tuple[str, ...]:
+        """Swap the WSL git binary for ``git.exe`` when *cwd* is Windows-stamped.
+
+        Pre-validation calls inside ``remove_worktree`` (``rev-parse
+        --show-toplevel``, ``rev-parse --git-common-dir``, ``status``)
+        fail under WSL git when the worktree's ``.git`` file references
+        a native ``C:\\…`` path. Routing through ``git.exe`` lets those
+        commands resolve the gitdir correctly. The cwd stays POSIX —
+        WSL interop translates it for the Windows process.
+
+        Commands that are already explicitly built for git.exe (via
+        ``_select_worktree_binary_and_path``) pass through unchanged
+        so we never double-swap.
+        """
+
+        if not command or command[0] != self._binary:
+            return command
+        if not self._should_route_to_windows(cwd):
+            return command
+        return (self._windows_binary, *command[1:])
 
     def _raise_git_error(
         self,
