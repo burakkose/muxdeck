@@ -88,6 +88,9 @@ class ReplayScreen(ShellScreen):
         self.refresh_data()
         self.call_after_refresh(self.query_one(ReplayTranscriptPanel).focus_list)
 
+    def restore_default_focus(self) -> None:
+        self.query_one(ReplayTranscriptPanel).focus_list()
+
     def on_show(self) -> None:
         self._refresh_on_activate()
 

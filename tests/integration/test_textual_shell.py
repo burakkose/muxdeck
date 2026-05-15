@@ -1896,3 +1896,122 @@ async def test_worktrees_screen_refreshes_after_prune_and_delete() -> None:
             )
     finally:
         runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_mode_switch_restores_default_focus_to_list() -> None:
+    """Mode switches reset focus to the screen's primary list panel.
+
+    Regression test: previously, leaving the dashboard with the filter
+    input focused (e.g., after pressing ``/``) preserved that focus on
+    return, forcing the operator to press ``Escape`` before navigation
+    keys worked. The fix is a ``restore_default_focus`` hook called
+    from ``MuxdeckApp._activate_mode`` on every mode switch.
+    """
+    runtime = FakeRuntime()
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            dashboard_filter = app.screen.query_one("#dashboard-filter-input", Input)
+            dashboard_filter.focus()
+            await pilot.pause()
+            assert app.focused is dashboard_filter
+
+            app.action_show_sessions()
+            await pilot.pause()
+            await pilot.pause()
+
+            sessions_list = app.screen.query_one("#sessions-list")
+            assert app.focused is sessions_list
+
+            app.action_show_dashboard()
+            await pilot.pause()
+            await pilot.pause()
+
+            from muxdeck.widgets.dashboard import AgentListPanel
+
+            agent_list = app.screen.query_one(AgentListPanel)
+            assert cast(Any, app.focused) is agent_list
+
+            sessions_filter = None
+            app.action_show_sessions()
+            await pilot.pause()
+            sessions_filter = app.screen.query_one("#sessions-filter-input", Input)
+            sessions_filter.focus()
+            await pilot.pause()
+            assert app.focused is sessions_filter
+
+            app.action_show_worktrees()
+            await pilot.pause()
+            await pilot.pause()
+
+            from muxdeck.widgets.worktrees import WorktreeListPanel
+
+            worktree_list = app.screen.query_one(WorktreeListPanel)
+            assert cast(Any, app.focused) is worktree_list
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_modal_dismiss_does_not_reset_focus() -> None:
+    """Modal pop/dismiss does NOT trigger ``restore_default_focus``.
+
+    Only explicit mode switches via ``_activate_mode`` route through
+    ``_reset_screen_focus``. Modals (confirm dialogs, prompts) push and
+    pop onto the current screen stack via ``ScreenResume``, so focus
+    must be preserved when they close. This prevents the focus-reset
+    fix from regressing modal UX.
+    """
+    runtime = FakeRuntime()
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            dashboard_filter = app.screen.query_one("#dashboard-filter-input", Input)
+            dashboard_filter.focus()
+            await pilot.pause()
+            assert app.focused is dashboard_filter
+
+            await pilot.press("ctrl+p")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert app.focused is dashboard_filter
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_restore_default_focus_noop_when_widget_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_reset_screen_focus`` silently absorbs ``NoMatches``.
+
+    If the primary widget isn't mounted yet (rare timing window where
+    ``call_after_refresh`` fires before the screen finished composing),
+    the focus reset is a best-effort no-op — the screen's own
+    ``on_mount`` will focus the list shortly after.
+    """
+    from textual.css.query import NoMatches
+
+    runtime = FakeRuntime()
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            screen = cast(Any, app.screen)
+
+            def explode() -> None:
+                raise NoMatches("no list panel yet")
+
+            monkeypatch.setattr(screen, "restore_default_focus", explode)
+            # Should not raise.
+            app._reset_screen_focus()
+    finally:
+        runtime.cleanup()

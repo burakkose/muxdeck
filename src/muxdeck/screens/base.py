@@ -104,6 +104,22 @@ class ShellScreen(Screen[None]):
     def refresh_data(self) -> None:
         return
 
+    def restore_default_focus(self) -> None:
+        """Move focus to the screen's primary widget.
+
+        Called on every explicit mode switch via
+        ``MuxdeckApp._activate_mode``. Screens with a primary list
+        panel override this so navigating between modes always lands
+        the cursor on the list, even when a previous visit left the
+        filter input focused. The default is a no-op so screens
+        without a single canonical focus target (help, setup,
+        attention) preserve their existing behaviour.
+
+        Modal pop/dismiss is unaffected because the reset only runs
+        on explicit mode switches, not on every ``ScreenResume``.
+        """
+        return
+
     def _describe_focus(self, widget: Widget) -> str:
         widget_id = widget.id or ""
         explicit = {

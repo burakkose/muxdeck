@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from textual.app import App, ScreenStackError, SystemCommand
+from textual.css.query import NoMatches
 from textual.driver import Driver
 from textual.screen import Screen
 from textual.worker import Worker, WorkerState
@@ -617,6 +618,29 @@ class MuxdeckApp(App[None]):
     def _activate_mode(self, mode_name: str) -> None:
         self.switch_mode(mode_name)
         self._apply_ui_preferences(refresh_screen=False)
+        # Reset focus on every mode switch so navigating between tabs
+        # always lands on the screen's primary widget (typically the
+        # list), regardless of whether a previous visit left the filter
+        # input focused. ``call_after_refresh`` waits for the switched
+        # screen to be mounted/active.
+        self.call_after_refresh(self._reset_screen_focus)
+
+    def _reset_screen_focus(self) -> None:
+        screen = self._current_screen()
+        if screen is None:
+            return
+        restore = getattr(screen, "restore_default_focus", None)
+        if not callable(restore):
+            return
+        try:
+            restore()
+        except NoMatches:
+            # The screen's primary widget isn't mounted yet —
+            # subclasses typically resolve it via ``query_one`` which
+            # raises ``NoMatches`` during early activation. The screen's
+            # own ``on_mount`` will focus the list shortly, so dropping
+            # this attempt is correct rather than risky.
+            return
 
     def _current_screen(self) -> Screen[object] | None:
         try:

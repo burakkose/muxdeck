@@ -157,6 +157,9 @@ class DashboardScreen(ShellScreen):
         self.refresh_data()
         self.call_after_refresh(self.query_one(AgentListPanel).focus_list)
 
+    def restore_default_focus(self) -> None:
+        self.query_one(AgentListPanel).focus_list()
+
     def on_show(self) -> None:
         if self._skip_next_show_refresh:
             self._skip_next_show_refresh = False
