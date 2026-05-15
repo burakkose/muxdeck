@@ -43,6 +43,7 @@ from muxdeck.controllers.dashboard_controller import (
     DashboardSort,
 )
 from muxdeck.domain.enums import AgentStatus
+from muxdeck.exceptions import PersistenceError
 from muxdeck.screens.dashboard import DashboardScreen
 from muxdeck.screens.message_input import MessageResult
 from muxdeck.screens.window_input import MoveWindowResult, RenameWindowResult
@@ -172,6 +173,7 @@ class _RecordingDashboardCtrl:
 class _RecordingAgents:
     intent_to_return: AgentIntentView | None = None
     mark_result: AgentActionResult | None = None
+    mark_raises: BaseException | None = None
     interrupt_calls: list[str] = field(default_factory=list)
     kill_calls: list[str] = field(default_factory=list)
     open_pane_calls: list[str] = field(default_factory=list)
@@ -194,6 +196,8 @@ class _RecordingAgents:
 
     def mark_complete(self, agent_id: str) -> AgentActionResult:
         self.mark_calls.append(agent_id)
+        if self.mark_raises is not None:
+            raise self.mark_raises
         if self.mark_result is not None:
             return self.mark_result
         target = self._target(agent_id)
@@ -743,6 +747,53 @@ class DashboardScreenActionTests(unittest.TestCase):
         _, screen, _ = self._run_with_screen(runtime, body, select_agent_id="agent-1")
         assert agents.mark_calls == ["agent-1"]
         assert "mark_complete" in screen._status
+
+    def test_action_mark_complete_handles_missing_agent(self) -> None:
+        # Reproduces the close-agent crash: the operator selects an
+        # agent on the dashboard and then closes it inside the tmux
+        # pane. The reaper transitions the agent to DEAD/COMPLETED and
+        # the controller raises ``PersistenceError`` on actions that
+        # target a record the store no longer recognises. The handler
+        # must absorb that failure into a status update and trigger a
+        # refresh — bubbling out of an action handler crashes Textual.
+        agents = _RecordingAgents(
+            mark_raises=PersistenceError("unknown agent: agent-1"),
+        )
+        st = _state()
+        ctrl = _RecordingDashboardCtrl(state_to_return=st)
+        runtime = _runtime_with(
+            dashboard_ctrl=ctrl,
+            agents_ctrl=agents,
+        )
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            # Should NOT raise.
+            screen.action_mark_complete()
+
+        _, screen, _ = self._run_with_screen(runtime, body, select_agent_id="agent-1")
+        assert agents.mark_calls == ["agent-1"]
+        assert "mark_complete unavailable" in screen._status
+        assert "unknown agent" in screen._status
+
+    def test_action_mark_complete_handles_unexpected_error(self) -> None:
+        # Defensive net for any other failure surfaced by the agents
+        # controller (e.g. a downstream session_service raising). The
+        # action handler must still degrade to a status message rather
+        # than crashing the screen.
+        agents = _RecordingAgents(mark_raises=RuntimeError("boom"))
+        st = _state()
+        runtime = _runtime_with(
+            dashboard_ctrl=_RecordingDashboardCtrl(state_to_return=st),
+            agents_ctrl=agents,
+        )
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen.action_mark_complete()
+
+        _, screen, _ = self._run_with_screen(runtime, body, select_agent_id="agent-1")
+        assert agents.mark_calls == ["agent-1"]
+        assert "mark_complete failed" in screen._status
+        assert "boom" in screen._status
 
     def test_action_open_pane_executes_intent(self) -> None:
         agents = _RecordingAgents()

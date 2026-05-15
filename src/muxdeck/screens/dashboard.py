@@ -25,6 +25,7 @@ from muxdeck.controllers import (
     DashboardState,
     DashboardSubAgentTreeView,
 )
+from muxdeck.exceptions import PersistenceError
 from muxdeck.screens.base import ShellScreen
 from muxdeck.screens.compose_mirror import ComposeWithMirrorScreen
 from muxdeck.screens.confirm_dialog import ConfirmScreen
@@ -503,7 +504,23 @@ class DashboardScreen(ShellScreen):
         if self._selected_agent_id is None:
             self.set_status("no agent selected")
             return
-        result = self.runtime.agents.mark_complete(self._selected_agent_id)
+        try:
+            result = self.runtime.agents.mark_complete(self._selected_agent_id)
+        except PersistenceError as exc:
+            # Agent record is gone (e.g. the operator closed the tmux
+            # pane and the reaper followed the deletion through to the
+            # store). Surface the reason and ask the dashboard to
+            # rebuild from the current store state so the row clears.
+            self.set_status(f"✗ mark_complete unavailable: {exc}")
+            self.refresh_data()
+            return
+        except Exception as exc:  # pragma: no cover - defensive UI boundary
+            # Final safety net: any other failure in the agents
+            # controller (DB write, end_session, …) should land in the
+            # status bar instead of bubbling out of the action handler
+            # and crashing the Textual app.
+            self.set_status(f"✗ mark_complete failed: {exc}")
+            return
         self.set_status(
             f"mark_complete {result.agent.name} "
             f"session {result.session_id or '-'} ended={result.session_ended}"
