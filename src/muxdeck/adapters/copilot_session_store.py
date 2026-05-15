@@ -384,6 +384,24 @@ def _parse_session_dir(
 
     is_closed = last_event_type in _CLEANLY_CLOSED_EVENTS
 
+    # Fall back to filesystem signals when workspace.yaml is missing
+    # timestamps. Copilot CLI occasionally truncates workspace.yaml
+    # mid-write on shutdown (observed in the wild as a 0-byte file),
+    # which would otherwise leave both timestamps None and:
+    #   * sort the row to the very bottom of the SESSIONS list
+    #     (sort key collapses to ``datetime.min``),
+    #   * render the ``updated`` column as ``—`` so the operator can't
+    #     tell whether the session is recent or ancient.
+    # last_event_at and the file mtimes are already cheap to read on
+    # the cold-scan path, so use them as backstops rather than letting
+    # a corrupt yaml file silently demote the row.
+    updated_at = _parse_iso(ws.get("updated_at")) or last_event_at
+    if updated_at is None:
+        updated_at = _stat_mtime(events_path) or _stat_mtime(workspace_path)
+    created_at = _parse_iso(ws.get("created_at"))
+    if created_at is None:
+        created_at = _stat_mtime(workspace_path)
+
     return CopilotLocalSession(
         session_id=session_id,
         cwd=Path(cwd_str) if cwd_str else None,
@@ -392,8 +410,8 @@ def _parse_session_dir(
         branch=ws.get("branch"),
         name=ws.get("name"),
         summary=ws.get("summary"),
-        created_at=_parse_iso(ws.get("created_at")),
-        updated_at=_parse_iso(ws.get("updated_at")),
+        created_at=created_at,
+        updated_at=updated_at,
         last_event_type=last_event_type,
         last_event_at=last_event_at,
         checkpoint_count=_count_checkpoints(session_dir),
@@ -403,6 +421,15 @@ def _parse_session_dir(
         windows_cwd=windows_cwd,
         windows_git_root=windows_git_root,
     )
+
+
+def _stat_mtime(path: Path) -> datetime | None:
+    """Return the file mtime as a UTC ``datetime``, or None on error."""
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return datetime.fromtimestamp(st.st_mtime, tz=UTC)
 
 
 @dataclass(slots=True)

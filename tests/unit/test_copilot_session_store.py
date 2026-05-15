@@ -338,6 +338,62 @@ def test_parse_session_dir_no_events(tmp_path: Path) -> None:
     assert session.is_cleanly_closed is False
 
 
+def test_parse_session_dir_empty_workspace_falls_back_to_event_timestamp(
+    tmp_path: Path,
+) -> None:
+    """A 0-byte ``workspace.yaml`` (Copilot CLI truncated it on shutdown)
+    must not strand the session at the bottom of the SESSIONS list with
+    a blank ``updated`` column. ``_parse_session_dir`` should fall back
+    to the last event timestamp from ``events.jsonl`` so the session
+    sorts by recency and stays findable.
+    """
+    sd = tmp_path / "truncated-yaml"
+    sd.mkdir()
+    (sd / "workspace.yaml").write_text("")
+    last_event_iso = "2026-05-14T22:54:26.021Z"
+    events = [
+        {"type": "session.start", "timestamp": "2026-05-14T19:25:11.190Z"},
+        {"type": "session.shutdown", "timestamp": last_event_iso},
+    ]
+    (sd / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+    session = _parse_session_dir(sd)
+
+    assert session is not None
+    assert session.session_id == "truncated-yaml"
+    assert session.is_cleanly_closed is True
+    assert session.last_event_at is not None
+    assert session.last_event_at == datetime(2026, 5, 14, 22, 54, 26, 21000, tzinfo=UTC)
+    # ``updated_at`` falls back to the events.jsonl tail timestamp so
+    # the row sorts by recency rather than to ``datetime.min``.
+    assert session.updated_at == session.last_event_at
+    # ``created_at`` falls back to the workspace.yaml mtime — there's
+    # no cheap "first event" timestamp to read on the cold scan path.
+    assert session.created_at is not None
+
+
+def test_parse_session_dir_empty_workspace_and_no_events_uses_file_mtimes(
+    tmp_path: Path,
+) -> None:
+    """If both ``workspace.yaml`` is empty *and* ``events.jsonl`` is
+    missing or empty, fall back to the on-disk file mtime so the row
+    still has a timestamp anchor instead of collapsing to ``None``.
+    """
+    sd = tmp_path / "really-broken"
+    sd.mkdir()
+    workspace_path = sd / "workspace.yaml"
+    workspace_path.write_text("")
+
+    session = _parse_session_dir(sd)
+
+    assert session is not None
+    assert session.last_event_at is None
+    assert session.updated_at is not None
+    assert session.created_at is not None
+    # Both timestamps anchored to the workspace.yaml mtime.
+    assert session.updated_at == session.created_at
+
+
 # ── CopilotSessionStore ────────────────────────────────────────
 
 
