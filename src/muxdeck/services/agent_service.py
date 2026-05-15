@@ -440,10 +440,15 @@ class AgentService:
     ) -> tuple[LogChunk, ...]:
         if facts.capture_text is None:
             return ()
-        existing_chunks = tuple(self._log_store.list_log_chunks(session_id))
-        if existing_chunks and existing_chunks[-1].content == facts.capture_text:
+        # Only the tail matters: we need the previous content to detect
+        # a no-op append, and the previous ``sequence_no`` to compute the
+        # next one. Pulling every chunk for the session here used to cost
+        # ~2 s per refresh on long-lived sessions (26k+ chunks observed
+        # in the wild) just to inspect the last row.
+        latest = self._log_store.get_latest_log_chunk(session_id)
+        if latest is not None and latest.content == facts.capture_text:
             return ()
-        next_sequence = existing_chunks[-1].sequence_no + 1 if existing_chunks else 0
+        next_sequence = latest.sequence_no + 1 if latest is not None else 0
         chunk = LogChunk(
             id=str(LogChunkId.generate()),
             agent_id=agent_id,

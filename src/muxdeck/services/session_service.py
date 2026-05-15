@@ -35,6 +35,8 @@ class SessionStorePort(Protocol):
 
     def list_log_chunks(self, session_id: str, /) -> Sequence[LogChunk]: ...
 
+    def get_latest_log_chunk(self, session_id: str, /) -> LogChunk | None: ...
+
     def get_session_context(self, session_id: str, /) -> SessionContextRecord | None: ...
 
     def upsert_session_context(self, context: SessionContextRecord, /) -> None: ...
@@ -419,10 +421,13 @@ class SessionService:
         return tuple(normalized)
 
     def _next_sequence_no(self, session_id: str) -> int:
-        chunks = tuple(self._store.list_log_chunks(session_id))
-        if not chunks:
-            return 0
-        return max(chunk.sequence_no for chunk in chunks) + 1
+        # Sessions accumulate tens of thousands of chunks over time;
+        # ``list_log_chunks`` materialised every row just so we could
+        # ``max`` the sequence_no. ``get_latest_log_chunk`` returns the
+        # tail row in O(log n) using the (session_id, sequence_no DESC,
+        # storage_order DESC) index path.
+        latest = self._store.get_latest_log_chunk(session_id)
+        return 0 if latest is None else latest.sequence_no + 1
 
     def _resolve_worktree(self, context: SessionContextRecord) -> Worktree | None:
         if context.worktree_id is not None:

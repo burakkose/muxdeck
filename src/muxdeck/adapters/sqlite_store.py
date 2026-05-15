@@ -840,7 +840,7 @@ class SQLiteStore:
         rows = self._fetch_all(
             (
                 f"{_SELECT_LOG_CHUNK_SQL} WHERE session_id = ? "
-                "ORDER BY sequence_no ASC, captured_at ASC, storage_order ASC"
+                "ORDER BY sequence_no ASC, storage_order ASC"
             ),
             (session_id,),
             operation="list log chunks",
@@ -848,11 +848,22 @@ class SQLiteStore:
         return tuple(_row_to_log_chunk(row) for row in rows)
 
     def get_latest_log_chunk(self, session_id: str, /) -> LogChunk | None:
-        """Return the most recent log chunk for a session, or None."""
+        """Return the most recent log chunk for a session, or None.
+
+        ``captured_at`` is intentionally omitted from the ``ORDER BY`` even
+        though earlier revisions included it: ``storage_order`` is the
+        ``INTEGER PRIMARY KEY AUTOINCREMENT`` column, so
+        ``(sequence_no, storage_order)`` is already a globally unique,
+        monotonic tiebreaker. Adding ``captured_at`` blocks SQLite from
+        using the ``idx_log_chunks_session_sequence`` index because that
+        column isn't covered, which previously forced a temp B-tree sort
+        of every chunk in a session — ~180 ms per call on a 26k-chunk
+        session, called once per agent on every refresh.
+        """
         row = self._fetch_one(
             (
                 f"{_SELECT_LOG_CHUNK_SQL} WHERE session_id = ? "
-                "ORDER BY sequence_no DESC, captured_at DESC, storage_order DESC LIMIT 1"
+                "ORDER BY sequence_no DESC, storage_order DESC LIMIT 1"
             ),
             (session_id,),
             operation="get latest log chunk",
@@ -898,8 +909,8 @@ class SQLiteStore:
                 "SELECT * FROM ("
                 f"SELECT storage_order, {', '.join(_LOG_CHUNK_COLUMNS)} FROM log_chunks "
                 "WHERE session_id = ? "
-                "ORDER BY sequence_no DESC, captured_at DESC, storage_order DESC "
-                f"LIMIT ?) ORDER BY sequence_no ASC, captured_at ASC, storage_order ASC"
+                "ORDER BY sequence_no DESC, storage_order DESC "
+                f"LIMIT ?) ORDER BY sequence_no ASC, storage_order ASC"
             ),
             (session_id, limit),
             operation="list recent log chunks",
@@ -910,7 +921,7 @@ class SQLiteStore:
         rows = self._fetch_all(
             (
                 f"{_SELECT_LOG_CHUNK_SQL} WHERE agent_id = ? "
-                "ORDER BY sequence_no ASC, captured_at ASC, storage_order ASC"
+                "ORDER BY sequence_no ASC, storage_order ASC"
             ),
             (agent_id,),
             operation="list agent log chunks",

@@ -77,6 +77,14 @@ class LogChunkStore(Protocol):
     def list_log_chunks(self, session_id: str, /) -> Sequence[LogChunk]:
         """Return captured log chunks for a session."""
 
+    def get_latest_log_chunk(self, session_id: str, /) -> LogChunk | None:
+        """Return the most recently captured log chunk for a session, or None.
+
+        Implementations must do this in O(1) (or close to it) — callers
+        on the dashboard refresh hot path use it to avoid materialising
+        thousands of historical chunks just to inspect the tail.
+        """
+
     def get_log_chunk(self, log_chunk_id: str, /) -> LogChunk | None:
         """Return a log chunk by identifier."""
 

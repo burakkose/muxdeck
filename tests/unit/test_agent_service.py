@@ -88,12 +88,23 @@ class InMemoryEventStore:
 class InMemoryLogStore:
     def __init__(self) -> None:
         self.chunks: list[LogChunk] = []
+        self.list_log_chunks_calls: int = 0
 
     def append_log_chunks(self, chunks, /) -> None:
         self.chunks.extend(chunks)
 
     def list_log_chunks(self, session_id: str, /):
+        self.list_log_chunks_calls += 1
         return tuple(chunk for chunk in self.chunks if chunk.session_id == session_id)
+
+    def get_latest_log_chunk(self, session_id: str, /) -> LogChunk | None:
+        latest: LogChunk | None = None
+        for chunk in self.chunks:
+            if chunk.session_id != session_id:
+                continue
+            if latest is None or chunk.sequence_no > latest.sequence_no:
+                latest = chunk
+        return latest
 
     def get_log_chunk(self, log_chunk_id: str, /) -> LogChunk | None:
         for chunk in self.chunks:
@@ -212,6 +223,47 @@ class AgentServiceTests(unittest.TestCase):
         assert second.events[0].kind == "agent.status.changed"
         assert second.log_chunks == ()
         assert len(self.log_store.list_log_chunks(first.session.id)) == 1
+
+    def test_persist_agent_facts_does_not_full_scan_log_chunks(self) -> None:
+        """Regression: ``_append_log_chunk_if_changed`` must not call
+        ``list_log_chunks`` on the hot path. Pulling every chunk for a
+        long-lived session (26k+ rows observed in production) once per
+        agent per refresh dominated dashboard latency and made the UI
+        feel frozen for tens of seconds.
+        """
+        # Seed a session via a normal first persist so subsequent calls
+        # exercise the "existing chunks" branch.
+        first = self.service.persist_agent_facts(
+            AgentFactInput(
+                classification="unmanaged_probable_agent",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@1",
+                tmux_pane_id="%1",
+                cwd="/repo/worktrees/task-one",
+                observed_at=self.now,
+                status=AgentStatus.RUNNING,
+                capture_text="initial",
+            )
+        )
+        baseline = self.log_store.list_log_chunks_calls
+        for index in range(5):
+            self.service.persist_agent_facts(
+                AgentFactInput(
+                    classification="managed_agent",
+                    agent_id=first.agent.id,
+                    tmux_session_name="muxdeck",
+                    tmux_window_id="@1",
+                    tmux_pane_id="%1",
+                    cwd="/repo/worktrees/task-one",
+                    observed_at=self.now + timedelta(seconds=index + 1),
+                    status=AgentStatus.RUNNING,
+                    capture_text=f"capture-{index}",
+                )
+            )
+        assert self.log_store.list_log_chunks_calls == baseline, (
+            "persist_agent_facts must use get_latest_log_chunk instead of "
+            "list_log_chunks on the refresh hot path"
+        )
 
 
 if __name__ == "__main__":
