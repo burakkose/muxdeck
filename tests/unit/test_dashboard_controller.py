@@ -656,6 +656,121 @@ class DashboardControllerTests(unittest.TestCase):
         # Only the last two non-blank lines from the latest snapshot.
         self.assertEqual(contents, ["line-3", "line-4"])
 
+    def test_recent_events_only_use_latest_tmux_capture_snapshot(self) -> None:
+        # Each tmux_capture chunk is a *full pane snapshot*, so events
+        # parsed out of older snapshots are stale duplicates of content
+        # that has since scrolled past or been replayed in a newer
+        # snapshot. The detail panel only renders the last 2-4 events
+        # anyway, and the operator's expectation is that ``recent``
+        # mirrors what is on the live pane right now — not history that
+        # the agent has long since moved on from.
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+        store.agents["agent-tmux"] = Agent(
+            id="agent-tmux",
+            name="agent-tmux",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_seen_at=observed_at,
+        )
+        store.sessions["session-tmux"] = Session(
+            id="session-tmux",
+            agent_id="agent-tmux",
+            created_at=observed_at,
+        )
+        # Older snapshot has activity that is no longer on screen.
+        snapshot_old = "Read file: src/old_module.py\nWriting src/old_module.py\n"
+        # Latest snapshot shows only the freshest pane state.
+        snapshot_new = "Read file: src/new_module.py\n"
+        for sequence_no, content in enumerate((snapshot_old, snapshot_new)):
+            store.logs.append(
+                LogChunk(
+                    id=f"log-{sequence_no}",
+                    agent_id="agent-tmux",
+                    session_id="session-tmux",
+                    source="tmux_capture",
+                    sequence_no=sequence_no,
+                    captured_at=observed_at,
+                    content=content,
+                )
+            )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        state = controller.build_state(
+            selected_agent_id="agent-tmux",
+            preview_line_limit=4,
+        )
+
+        assert state.selected_agent is not None
+        events = state.selected_agent.recent_events
+        self.assertTrue(any("new_module" in event for event in events))
+        self.assertFalse(
+            any("old_module" in event for event in events),
+            f"recent_events should not surface scrolled-out activity, got: {events}",
+        )
+
+    def test_recent_events_use_full_window_for_incremental_log_sources(self) -> None:
+        # ``stdout`` / ``stderr`` / ``system`` chunks are *incremental*
+        # appends, not full snapshots, so older chunks carry events
+        # that are absent from the latest one. We must keep parsing the
+        # whole window for those sources or we'd silently drop activity
+        # for non-tmux ingestion paths.
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+        store.agents["agent-stream"] = Agent(
+            id="agent-stream",
+            name="agent-stream",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_seen_at=observed_at,
+        )
+        store.sessions["session-stream"] = Session(
+            id="session-stream",
+            agent_id="agent-stream",
+            created_at=observed_at,
+        )
+        store.logs.append(
+            LogChunk(
+                id="log-0",
+                agent_id="agent-stream",
+                session_id="session-stream",
+                source="stdout",
+                sequence_no=0,
+                captured_at=observed_at,
+                content="Read file: src/first.py\n",
+            )
+        )
+        store.logs.append(
+            LogChunk(
+                id="log-1",
+                agent_id="agent-stream",
+                session_id="session-stream",
+                source="stdout",
+                sequence_no=1,
+                captured_at=observed_at,
+                content="Writing src/second.py\n",
+            )
+        )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        state = controller.build_state(
+            selected_agent_id="agent-stream",
+            preview_line_limit=4,
+        )
+
+        assert state.selected_agent is not None
+        events = state.selected_agent.recent_events
+        self.assertTrue(any("first" in event for event in events))
+        self.assertTrue(any("second" in event for event in events))
+
     def test_waiting_for_user_from_events_activity(self) -> None:
         """When events_activity has waiting_for_user flag, attention is set."""
         store = InMemoryDashboardStore()

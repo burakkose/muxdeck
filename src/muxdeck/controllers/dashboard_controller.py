@@ -753,7 +753,7 @@ class DashboardController:
             latest_event_severity=latest_event.severity if latest_event is not None else None,
             latest_event_at=latest_event.occurred_at if latest_event is not None else None,
             log_preview=log_preview,
-            recent_events=_extract_recent_events(logs),
+            recent_events=_extract_recent_events(_logs_for_recent_events(logs)),
             sub_tasks=(
                 tuple(
                     DashboardSubTaskView(
@@ -995,6 +995,37 @@ _EVENT_EMOJI: dict[str, str] = {
 }
 
 _MAX_RECENT_EVENTS = 20
+
+
+def _logs_for_recent_events(logs: Sequence[LogChunk]) -> Sequence[LogChunk]:
+    """Choose which chunks to feed into ``_extract_recent_events``.
+
+    ``tmux_capture`` chunks are *full snapshots* of the pane's recent
+    scrollback (see the comment in ``_build_log_preview``). When the
+    latest chunk is a snapshot, every older snapshot is a strict subset
+    of older content that has since scrolled past — re-parsing them
+    surfaces stale events (the original ``copilot`` invocation, an
+    earlier file write that's no longer on screen) and, in the wild,
+    means feeding ~1 MB of repeated text through the regex parser on
+    every dashboard refresh just to dedupe it back out.
+
+    Returning only the latest snapshot keeps ``recent_events`` honest
+    with what the operator sees in the live pane and avoids the
+    cold-cache parser cost (~1.4 s on a 100-chunk window for an
+    active session).
+
+    ``stdout`` / ``stderr`` / ``system`` chunks are *incremental*
+    appends (see ``session_service.append_log_capture``); for those
+    sources the older chunks carry events that are not present in the
+    latest one, so we preserve the existing window-wide parse.
+    """
+
+    if not logs:
+        return ()
+    latest = logs[-1]
+    if latest.source == "tmux_capture":
+        return (latest,)
+    return logs
 
 
 def _extract_recent_events(
