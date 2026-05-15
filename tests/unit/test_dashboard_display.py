@@ -509,6 +509,56 @@ class TestDashboardPanels:
         assert "output    30" in rendered
         assert "cost      $0.12" in rendered
 
+    def test_focus_panel_banner_prefers_window_name_over_repo_basename(self):
+        """Resumed Copilot sessions inherit ``name`` = repo basename
+        (e.g. every agent in the same repo reads ``muxdeck``). The
+        right-side detail banner has no sibling list to dedupe against,
+        so it picks the most descriptive identity itself — window name
+        first, then worktree, then repo. Without that the banner reads
+        ``MUXDECK`` for every agent in the user's workspace.
+        """
+        from muxdeck.widgets.dashboard import AgentDetailPanel
+
+        selected = _selected_agent(
+            _agent(
+                name="muxdeck",
+                window_name="session a36f5cee",
+                worktree_name="muxdeck",
+                repo_name="muxdeck",
+            )
+        )
+        panel = AgentDetailPanel(id="focus")
+
+        panel.set_agent(selected)
+
+        rendered = _render(panel)
+        assert "SESSION A36F5CEE" in rendered
+        # The redundant repo name should not dominate the banner; the
+        # body rows still surface ``repo muxdeck`` for context.
+        assert " MUXDECK   " not in rendered
+
+    def test_focus_panel_banner_falls_back_to_repo_when_no_window(self):
+        """When no descriptive identifier is available the banner falls
+        back to ``name`` so existing agents that never gained a window
+        title don't render with an empty title.
+        """
+        from muxdeck.widgets.dashboard import AgentDetailPanel
+
+        selected = _selected_agent(
+            _agent(
+                name="muxdeck",
+                window_name=None,
+                worktree_name="muxdeck",
+                repo_name="muxdeck",
+            )
+        )
+        panel = AgentDetailPanel(id="focus")
+
+        panel.set_agent(selected)
+
+        rendered = _render(panel)
+        assert "MUXDECK" in rendered
+
     def test_log_preview_panel_promotes_output_title_and_lines(self):
         from muxdeck.widgets.dashboard import LogPreviewPanel
 

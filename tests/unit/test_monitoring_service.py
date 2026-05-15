@@ -1075,6 +1075,133 @@ class MonitoringServiceTests(unittest.TestCase):
         ids = _candidate_session_ids(None)
         assert ids == ()
 
+    def test_windows_pin_preserves_seeded_cwd_against_posix_pane(self) -> None:
+        """Windows-origin resumed sessions seed the agent record with
+        ``C:\\…`` cwd/repo_root in SessionsScreen, then run inside
+        ``pwsh.exe`` on the Windows side. The WSL tmux pane reports a
+        POSIX cwd (usually muxdeck's own working dir) that would
+        otherwise clobber the pin on every monitoring sync and the
+        dashboard would flip back to muxdeck's repo/branch.
+
+        Lock the merge so ``_build_agent_fact_input`` keeps the
+        existing Windows attribution when (a) the existing record has
+        a copilot_session_id, (b) its cwd/repo_root look Windows-style,
+        and (c) the pane reports a POSIX path.
+        """
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        recorder = FakeRecorder(recorded=[])
+        existing = Agent(
+            id="agent-resumed",
+            name="CosmosDB",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@7",
+            tmux_window_name="session abc12345",
+            tmux_pane_id="%7",
+            cwd=r"C:\src\CosmosDB",
+            repo_root=r"C:\src\CosmosDB",
+            worktree_path=r"C:\src\CosmosDB",
+            branch="users/example/perf",
+            status=AgentStatus.STARTING,
+            started_at=now,
+            last_seen_at=now,
+            copilot_session_id="resumed-windows-session",
+        )
+        copilot = CopilotAdapter(DummyRunner())
+        service = MonitoringService(recorder, clock=lambda: now)
+        discovery = PaneDiscovery(
+            snapshot=DiscoveryPaneSnapshot(
+                pane_id="%7",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@7",
+                tmux_window_name="session abc12345",
+                # WSL pane wraps pwsh.exe; muxdeck's cwd, NOT the
+                # Windows side where copilot.exe actually runs.
+                pane_current_path="/home/burakkose/muxdeck",
+                pane_current_command="pwsh.exe",
+                pane_pid=4242,
+                repo_root="/home/burakkose/muxdeck",
+                branch="main",
+            ),
+            discovered_at=now,
+            classification="managed_agent",
+            reasons=("managed:existing_agent",),
+            command_detection=copilot.detect_command("pwsh.exe"),
+            captured_output="",
+            session_evidence=None,
+            managed_agent=existing,
+        )
+
+        service.monitor_discoveries(cast("Sequence[MonitoringDiscovery]", (discovery,)))
+
+        facts = recorder.recorded[0]
+        # The Windows seed must survive: cwd/repo_root/branch and
+        # ``name`` should all come from ``existing``, not the WSL pane.
+        assert facts.cwd == r"C:\src\CosmosDB"
+        assert facts.repo_root == r"C:\src\CosmosDB"
+        assert facts.worktree_path == r"C:\src\CosmosDB"
+        assert facts.branch == "users/example/perf"
+        # ``_derive_agent_name`` would otherwise basename
+        # ``PurePosixPath("C:\\src\\CosmosDB").name`` and emit a
+        # garbage string; the pin path preserves ``existing.name``.
+        assert facts.name == "CosmosDB"
+
+    def test_windows_pin_does_not_engage_for_plain_local_agent(self) -> None:
+        """The Windows pin must NOT trigger for normal local agents.
+
+        ``existing.copilot_session_id`` being set is necessary but not
+        sufficient — without the Windows-style path marker the pin
+        would freeze ``cwd`` on every sync, breaking legitimate
+        ``cd``-in-pane updates. This test locks the narrow guard.
+        """
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        recorder = FakeRecorder(recorded=[])
+        existing = Agent(
+            id="agent-local",
+            name="muxdeck",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@5",
+            tmux_pane_id="%5",
+            cwd="/home/burakkose/muxdeck",
+            repo_root="/home/burakkose/muxdeck",
+            worktree_path="/home/burakkose/muxdeck",
+            branch="main",
+            status=AgentStatus.RUNNING,
+            started_at=now,
+            last_seen_at=now,
+            copilot_session_id="local-session-id",
+        )
+        copilot = CopilotAdapter(DummyRunner())
+        service = MonitoringService(recorder, clock=lambda: now)
+        discovery = PaneDiscovery(
+            snapshot=DiscoveryPaneSnapshot(
+                pane_id="%5",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@5",
+                pane_current_path="/home/burakkose/other-repo",
+                pane_current_command="copilot",
+                pane_pid=999,
+                repo_root="/home/burakkose/other-repo",
+                branch="feature/x",
+            ),
+            discovered_at=now,
+            classification="managed_agent",
+            reasons=("managed:existing_agent",),
+            command_detection=copilot.detect_command("copilot"),
+            captured_output="",
+            session_evidence=None,
+            managed_agent=existing,
+        )
+
+        service.monitor_discoveries(cast("Sequence[MonitoringDiscovery]", (discovery,)))
+
+        facts = recorder.recorded[0]
+        # Pane-derived values win — operator actually ``cd``'d to a
+        # new repo inside the same pane.
+        assert facts.cwd == "/home/burakkose/other-repo"
+        assert facts.repo_root == "/home/burakkose/other-repo"
+        assert facts.branch == "feature/x"
+        assert facts.name == "other-repo"
+
 
 if __name__ == "__main__":
     unittest.main()

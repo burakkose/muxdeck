@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -383,10 +384,28 @@ class MonitoringService:
         current_path = snapshot.pane_current_path
         repo_root = getattr(snapshot, "repo_root", None)
         branch = getattr(snapshot, "branch", None)
-        cwd = current_path or (existing_agent.cwd if existing_agent is not None else "/")
-        worktree_path = current_path or (
-            existing_agent.worktree_path if existing_agent is not None else None
-        )
+        # Cross-system pin: if the existing record carries Windows-style
+        # cwd/repo_root (drive-letter ``C:\…`` or UNC ``\\server\…``)
+        # and the pane snapshot reports a POSIX path, the agent was
+        # seeded by a ``windows``-origin resume in SessionsScreen and
+        # ``pane_current_path`` is just the WSL pane that wraps
+        # ``pwsh.exe``. Trusting the pane here would clobber the
+        # session-derived metadata on every sync and the dashboard
+        # would flip back to muxdeck's own repo. Narrow guard: only
+        # invert the merge when the existing values are *demonstrably*
+        # Windows paths (so a normal local pane that happens to have
+        # ``copilot_session_id`` set still picks up live ``cd`` moves).
+        if _should_preserve_windows_pin(existing_agent, current_path):
+            assert existing_agent is not None  # narrow for type checker
+            cwd = existing_agent.cwd
+            repo_root = existing_agent.repo_root
+            branch = existing_agent.branch
+            worktree_path = existing_agent.worktree_path
+        else:
+            cwd = current_path or (existing_agent.cwd if existing_agent is not None else "/")
+            worktree_path = current_path or (
+                existing_agent.worktree_path if existing_agent is not None else None
+            )
         token_input = latest_usage.input_tokens if latest_usage is not None else None
         token_output = latest_usage.output_tokens if latest_usage is not None else None
         token_total = latest_usage.total_tokens if latest_usage is not None else None
@@ -411,6 +430,23 @@ class MonitoringService:
             existing_agent.task_title if existing_agent is not None else None
         ) or latest_activity
         classification = cast(PaneClassification, discovery.classification)
+        merged_repo_root = repo_root or (
+            existing_agent.repo_root if existing_agent is not None else None
+        )
+        # When the Windows pin is active we already pulled ``name`` /
+        # ``cwd`` / ``repo_root`` from ``existing_agent``; prefer that
+        # name verbatim so ``_derive_agent_name`` doesn't re-derive a
+        # POSIX basename from the Windows path (``PurePosixPath
+        # ("C:\\foo")`` returns the whole string).
+        if _should_preserve_windows_pin(existing_agent, current_path):
+            assert existing_agent is not None  # narrow for type checker
+            derived_name: str | None = existing_agent.name
+        else:
+            derived_name = _derive_agent_name(
+                repo_root=merged_repo_root,
+                cwd=cwd,
+                existing_name=existing_agent.name if existing_agent is not None else None,
+            )
         return AgentFactInput(
             classification=classification,
             agent_id=existing_agent.id if existing_agent is not None else None,
@@ -420,16 +456,10 @@ class MonitoringService:
             tmux_pane_id=snapshot.pane_id,
             pane_tty=snapshot.pane_tty,
             cwd=cwd,
-            repo_root=repo_root
-            or (existing_agent.repo_root if existing_agent is not None else None),
+            repo_root=merged_repo_root,
             worktree_path=worktree_path,
             branch=branch or (existing_agent.branch if existing_agent is not None else None),
-            name=_derive_agent_name(
-                repo_root=repo_root
-                or (existing_agent.repo_root if existing_agent is not None else None),
-                cwd=cwd,
-                existing_name=existing_agent.name if existing_agent is not None else None,
-            ),
+            name=derived_name,
             task_title=task_title,
             task_summary=existing_agent.task_summary if existing_agent is not None else None,
             copilot_session_id=copilot_session_id,
@@ -753,3 +783,48 @@ def _derive_agent_name(
         if name:
             return name
     return existing_name
+
+
+# Drive-letter (``C:\``, ``D:/``) or UNC (``\\server\share``) prefix.
+# UNC and drive-letter paths are the only Windows-style cwd/repo_root
+# values muxdeck ever writes — they only appear after
+# ``SessionsScreen._seed_resumed_agent`` pins a Windows-origin
+# resumed session, so this regex doubles as a "this row was seeded
+# from a cross-system resume" marker.
+_WINDOWS_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
+
+
+def _is_windows_path(value: str | None) -> bool:
+    if not value:
+        return False
+    return _WINDOWS_PATH_RE.match(value) is not None
+
+
+def _should_preserve_windows_pin(
+    existing_agent: Agent | None,
+    pane_current_path: str | None,
+) -> bool:
+    """Return True when the existing record's Windows attribution wins.
+
+    ``SessionsScreen._seed_resumed_agent`` pins Windows-origin
+    resumed sessions with ``C:\\…`` cwd/repo_root and the original
+    ``copilot_session_id``. The WSL pane that wraps the resumed
+    ``pwsh.exe`` always reports a POSIX ``pane_current_path``
+    (typically muxdeck's own cwd), which would otherwise clobber the
+    pin on every monitoring sync. Inverting the merge only when *all*
+    three conditions hold keeps the pane-derived path authoritative
+    for ordinary local agents (no seeded Windows metadata, no
+    cross-system mismatch).
+    """
+    if existing_agent is None:
+        return False
+    if existing_agent.copilot_session_id is None:
+        return False
+    if not _is_windows_path(existing_agent.cwd) and not _is_windows_path(existing_agent.repo_root):
+        return False
+    if pane_current_path is None:
+        # No pane snapshot to fight with — pin is still safer than
+        # leaving the fields untouched and risking partial overrides
+        # downstream.
+        return True
+    return not _is_windows_path(pane_current_path)

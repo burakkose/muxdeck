@@ -109,6 +109,11 @@ class ActionResult:
     success: bool
     message: str
     pane_id: str = ""
+    # Full tmux metadata for actions that spawn a new pane. Callers
+    # that need to seed downstream state (e.g. SessionsScreen pinning
+    # attribution for a resumed Copilot session) read window/session
+    # identifiers from here without re-querying tmux.
+    pane_meta: TmuxPaneMetadata | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -502,6 +507,7 @@ class TmuxActionService:
                 success=True,
                 message=f"resumed session {session_id[:8]}… in {meta.pane_id}",
                 pane_id=meta.pane_id,
+                pane_meta=meta,
             )
         except (CommandError, RuntimeError, ValueError) as exc:
             return ActionResult(

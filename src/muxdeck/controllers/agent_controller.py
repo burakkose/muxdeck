@@ -37,6 +37,10 @@ class AgentQueryPort(Protocol):
 
     def get_worktree(self, worktree_id: str, /) -> Worktree | None: ...
 
+    def get_agent_by_pane_id(self, pane_id: str, /) -> Agent | None: ...
+
+    def get_agent_by_copilot_session_id(self, copilot_session_id: str, /) -> Agent | None: ...
+
 
 class AgentSessionPort(Protocol):
     def create_session(
@@ -214,6 +218,92 @@ class AgentController:
             session_id=ended.session.id,
             session_ended=True,
         )
+
+    def seed_resumed_session(
+        self,
+        *,
+        copilot_session_id: str,
+        tmux_pane_id: str,
+        tmux_session_name: str,
+        tmux_window_id: str,
+        tmux_window_name: str | None,
+        pane_tty: str | None,
+        pane_pid: int | None,
+        cwd: str,
+        repo_root: str | None,
+        worktree_path: str | None,
+        branch: str | None,
+        name: str,
+        task_title: str | None = None,
+    ) -> Agent:
+        """Seed an agent record for a Copilot session just resumed in tmux.
+
+        Background. ``action_resume_session`` (sessions screen) spawns a
+        new tmux window that runs ``copilot --resume=<id>`` either
+        directly (local origin) or wrapped in ``pwsh.exe`` (windows
+        origin). In the local case the next monitoring sync would
+        discover the pane and assemble the agent record normally — but
+        it would still lag a refresh tick, and for ``windows`` origin
+        the WSL pane stays in muxdeck's own cwd while copilot.exe runs
+        inside pwsh on the Windows side, so the resolver can't link
+        pane to ``copilot_session_id`` (pwsh.exe is invisible to
+        ``ps``) and pane-derived ``cwd``/``repo_root``/``branch`` are
+        all wrong.
+
+        Seeding upfront breaks both: the agent row carries the right
+        identity (cwd/repo_root/branch from session metadata) plus the
+        explicit ``copilot_session_id`` linkage, so the dashboard
+        shows the original repo and the SESSIONS row flips to "active"
+        on the very next refresh tick.
+
+        Re-seeding into an existing pane id (rare — operator manually
+        resumed twice through muxdeck) preserves the original
+        ``started_at`` so the session age remains coherent.
+        """
+        now = self._clock()
+        existing = self._store.get_agent_by_pane_id(tmux_pane_id)
+        started_at = existing.started_at if existing is not None else now
+        if existing is not None:
+            agent = Agent(
+                id=existing.id,
+                name=name,
+                tmux_session_name=tmux_session_name,
+                tmux_window_id=tmux_window_id,
+                tmux_window_name=tmux_window_name,
+                tmux_pane_id=tmux_pane_id,
+                pane_tty=pane_tty,
+                cwd=cwd,
+                repo_root=repo_root,
+                worktree_path=worktree_path,
+                branch=branch,
+                task_title=task_title,
+                copilot_session_id=copilot_session_id,
+                pid=pane_pid,
+                status=AgentStatus.STARTING,
+                started_at=started_at,
+                last_seen_at=now,
+            )
+        else:
+            agent = Agent(
+                name=name,
+                tmux_session_name=tmux_session_name,
+                tmux_window_id=tmux_window_id,
+                tmux_window_name=tmux_window_name,
+                tmux_pane_id=tmux_pane_id,
+                pane_tty=pane_tty,
+                cwd=cwd,
+                repo_root=repo_root,
+                worktree_path=worktree_path,
+                branch=branch,
+                task_title=task_title,
+                copilot_session_id=copilot_session_id,
+                pid=pane_pid,
+                status=AgentStatus.STARTING,
+                started_at=started_at,
+                last_seen_at=now,
+            )
+        self._store.upsert_agent(agent)
+        return agent
 
     def open_pane_intent(self, agent_id: str) -> AgentIntentView:
         agent = self._require_agent(agent_id)

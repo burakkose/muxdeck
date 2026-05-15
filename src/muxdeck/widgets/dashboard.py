@@ -336,6 +336,32 @@ def _detail_subtitle(
     return ""
 
 
+def _identity_label(item: DashboardAgentListItemView) -> str:
+    """Pick a stable identity string for an agent in a single-agent context.
+
+    The dashboard's *list* column runs ``_display_name`` (which dedupes
+    against sibling rows). The right-side detail banner does not have a
+    sibling list to compare against, so it cannot share that logic — but
+    it has the same readability problem: ``item.name`` is the repo
+    basename ("muxdeck") for every agent that lives inside the same
+    repository, which leaves the banner reading "MUXDECK" with no clue
+    about *which* of those agents is selected.
+
+    Prefer identity fields the operator actually associates with the
+    agent (the tmux window they named, the worktree they checked out,
+    the repo) and fall back to ``name`` only when nothing more useful
+    exists. ``task_title`` is deliberately excluded — it shows the
+    Copilot CLI session title and already lives in the "Task:" body
+    row, so reusing it here would duplicate text and push identity
+    into a secondary slot.
+    """
+    for candidate in (item.window_name, item.worktree_name, item.repo_name):
+        text = (candidate or "").strip()
+        if text and text != item.name:
+            return text
+    return item.name
+
+
 def _display_name(
     agent: DashboardAgentListItemView,
     all_agents: tuple[DashboardAgentListItemView, ...],
@@ -1217,7 +1243,7 @@ class AgentDetailPanel(Static):
         bar_glyph = "│" if preferences.glyphs is UiGlyphs.RICH else "|"
         result.append(f" {bar_glyph} ", style=f"bold {plain_status_style}")
         result.append(f"{glyph_char} ", style=f"bold {glyph_color}")
-        result.append(item.name.upper(), style=f"bold {FG}")
+        result.append(_truncate(_identity_label(item), 52).upper(), style=f"bold {FG}")
         result.append("   ")
         result.append(operator_status.display_label, style=bold_status_style)
         result.append("\n")

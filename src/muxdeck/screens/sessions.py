@@ -78,6 +78,42 @@ def _build_window_name(summary: str | None, session_id: str) -> str:
     return cleaned or fallback
 
 
+def _derive_seed_name(
+    *,
+    repo_root: str | None,
+    cwd: str,
+    origin: str,
+) -> str:
+    """Pick the agent ``name`` for a freshly seeded resumed-session row.
+
+    Mirrors ``monitoring_service._derive_agent_name`` (repo basename
+    over cwd basename) but also handles Windows-style paths because
+    the seed flows carry ``C:\\Users\\...`` strings verbatim for
+    ``windows`` origin sessions. ``PurePosixPath("C:\\foo\\bar").name``
+    returns ``"C:\\foo\\bar"`` (no slashes), which would leak the
+    whole path into the dashboard, so split on the appropriate
+    separator. Falls back to ``"copilot"`` only when nothing else
+    resolves — that should not happen in practice because the caller
+    already validates ``cwd`` is non-empty.
+    """
+    candidates = (repo_root, cwd)
+    use_backslash = origin == "windows"
+    for candidate in candidates:
+        if not candidate:
+            continue
+        # Strip any trailing separator so basename works for
+        # ``C:\foo\`` and ``/foo/`` alike.
+        if use_backslash:
+            stripped = candidate.rstrip("\\/")
+            tail = stripped.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        else:
+            stripped = candidate.rstrip("/")
+            tail = stripped.rsplit("/", 1)[-1]
+        if tail and tail not in {".", ".."}:
+            return tail
+    return "copilot"
+
+
 @dataclass(frozen=True, slots=True)
 class _LiveSessionTarget:
     pane_id: str
@@ -543,6 +579,17 @@ class SessionsScreen(ShellScreen):
             session_store = getattr(self.runtime, "copilot_session_store", None)
             if session_store is not None:
                 session_store.invalidate()
+            # Seed the agent record with attribution derived from the
+            # session metadata, not the pane's WSL cwd. For ``windows``
+            # origin sessions copilot.exe runs inside pwsh.exe on the
+            # Windows side, so monitoring would derive ``cwd=muxdeck``
+            # / ``repo_root=muxdeck`` from the WSL pane. Pinning here
+            # makes the dashboard show the real Windows repo/branch on
+            # the very next refresh; for local sessions the pin still
+            # surfaces ``copilot_session_id`` immediately so the
+            # SESSIONS row flips to "active" without waiting for the
+            # resolver to catch the new ``inuse.<pid>.lock``.
+            self._seed_resumed_agent(detail, result)
             self.set_status(f"✓ {result.message} · waiting for sync…")
             # Manual refresh threads through ``MuxdeckApp._refresh_current_screen``
             # which kicks the synchronizer worker and on completion
@@ -566,6 +613,81 @@ class SessionsScreen(ShellScreen):
                 self.refresh_data()
         else:
             self.set_status(f"✗ {result.message}")
+
+    def _seed_resumed_agent(
+        self,
+        detail: SessionDetailView,
+        result: object,
+    ) -> None:
+        """Pre-populate an agent record so the dashboard shows the right repo.
+
+        Called immediately after ``actions.resume_session`` succeeds.
+        Skips silently if the runtime cannot persist (no ``agents``
+        controller wired, missing tmux metadata in the result, etc.):
+        worst case the next monitoring sync writes a less precise row
+        — same behavior as before the seed existed.
+        """
+        agents = getattr(self.runtime, "agents", None)
+        seed = getattr(agents, "seed_resumed_session", None)
+        if not callable(seed):
+            return
+        pane_meta = getattr(result, "pane_meta", None)
+        if pane_meta is None:
+            return
+        cwd = self._seed_cwd_for(detail)
+        if cwd is None:
+            return
+        repo_root = self._seed_repo_root_for(detail)
+        branch = detail.branch if detail.branch and detail.branch != "—" else None
+        worktree_path = repo_root or cwd
+        name = _derive_seed_name(repo_root=repo_root, cwd=cwd, origin=detail.origin)
+        task_title = detail.summary if detail.summary else None
+        try:
+            seed(
+                copilot_session_id=detail.session_id,
+                tmux_pane_id=pane_meta.pane_id,
+                tmux_session_name=pane_meta.session_name or "",
+                tmux_window_id=pane_meta.window_id or "",
+                tmux_window_name=pane_meta.window_name,
+                pane_tty=pane_meta.pane_tty,
+                pane_pid=pane_meta.pane_pid,
+                cwd=cwd,
+                repo_root=repo_root,
+                worktree_path=worktree_path,
+                branch=branch,
+                name=name,
+                task_title=task_title,
+            )
+        except Exception:
+            # If persistence fails for any reason, the user still gets
+            # the resumed session — just without the pinned metadata.
+            # The next monitoring sync will create the row from pane
+            # snapshots (which may be wrong for Windows origin, but
+            # that matches pre-seed behavior).
+            return
+
+    @staticmethod
+    def _seed_cwd_for(detail: SessionDetailView) -> str | None:
+        """Pick the cwd to pin on the seeded agent record.
+
+        For ``windows`` origin, ``detail.windows_cwd`` is the verbatim
+        ``C:\\...`` path the Copilot CLI actually ran in. For ``local``
+        origin, ``detail.cwd`` already collapses ``windows_cwd or
+        str(raw.cwd)`` so it is the right WSL path. Returns ``None``
+        when neither source resolves to a usable string — without a
+        cwd the Agent dataclass would refuse to validate.
+        """
+        if detail.origin == "windows" and detail.windows_cwd:
+            return detail.windows_cwd
+        if detail.cwd and detail.cwd != "—":
+            return detail.cwd
+        return None
+
+    @staticmethod
+    def _seed_repo_root_for(detail: SessionDetailView) -> str | None:
+        if detail.git_root and detail.git_root != "—":
+            return detail.git_root
+        return None
 
     def action_copy_details(self) -> None:
         selected_session_id = self.query_one(SessionListPanel).get_selected_id()
