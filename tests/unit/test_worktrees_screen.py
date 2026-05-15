@@ -1871,6 +1871,82 @@ class WorktreesSelectionTests(unittest.TestCase):
 
         assert asyncio.run(scenario()) == "wt-2"
 
+    def test_selection_renders_pending_immediately_with_new_summary(self) -> None:
+        """Regression for: navigating between worktrees on WSL Windows-
+        stamped paths left the previous worktree's detail on screen for
+        several seconds while the per-selection worker ran git.exe
+        multiple times. The right pane must reflect the NEW selection's
+        identity (branch + path) IMMEDIATELY in the message handler,
+        before the 0.05s debounce timer fires and before the worker
+        even starts. Otherwise it looks like nav is broken.
+        """
+
+        async def scenario() -> tuple[str, str]:
+            summaries = (
+                _summary(worktree_id="wt-1", branch="wt1-branch", path="/repo/wt-1"),
+                _summary(worktree_id="wt-2", branch="wt2-branch", path="/repo/wt-2"),
+            )
+            wts = _RecordingWorktreeService(
+                summaries=summaries,
+                detail=_detail(summary=summaries[0]),
+            )
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                # Seed both the screen's worktree cache and a stale
+                # current selection so the handler sees a real
+                # transition wt-1 -> wt-2.
+                screen._worktrees = summaries
+                screen._selected_worktree_id = "wt-1"
+                message = WorktreeListPanel.WorktreeSelected("wt-2")
+                screen.on_worktree_list_panel_worktree_selected(message)
+                # NO pilot.pause — the pending render must happen
+                # synchronously in the handler, not after the timer.
+                detail_panel = screen.query_one(WorktreeDetailPanel)
+                intent_panel = screen.query_one(StartIntentPanel)
+                detail_render = str(detail_panel.render())
+                intent_render = str(intent_panel.render())
+                return detail_render, intent_render
+
+        detail_render, intent_render = asyncio.run(scenario())
+        # The NEW selection's branch must be visible immediately.
+        assert "WT2-BRANCH" in detail_render
+        assert "/repo/wt-2" in detail_render
+        # And both panels surface the in-flight state so the operator
+        # knows the previous selection's stale data is being replaced.
+        assert "loading" in detail_render.lower() or "LOADING" in detail_render
+        assert "preparing" in intent_render.lower()
+
+    def test_selection_pending_render_safe_when_summary_missing(self) -> None:
+        """The pending render falls back gracefully if the message's
+        worktree_id is unknown to the screen (e.g. cached list out of
+        sync with the panel). The handler MUST still update the
+        selection and schedule the worker so we don't deadlock the UI.
+        """
+
+        async def scenario() -> tuple[str | None, bool]:
+            wts = _RecordingWorktreeService()
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._worktrees = ()
+                screen._selected_worktree_id = "wt-old"
+                message = WorktreeListPanel.WorktreeSelected("wt-unknown")
+                screen.on_worktree_list_panel_worktree_selected(message)
+                await pilot.pause()
+                timer_scheduled = screen._detail_timer is not None
+                return screen._selected_worktree_id, timer_scheduled
+
+        selected, timer_scheduled = asyncio.run(scenario())
+        assert selected == "wt-unknown"
+        assert timer_scheduled, "worker must still be scheduled even if summary missing"
+
     def test_on_worktree_list_panel_same_id_is_noop(self) -> None:
         async def scenario() -> tuple[str | None, str | None]:
             wts = _RecordingWorktreeService()

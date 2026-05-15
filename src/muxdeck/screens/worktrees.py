@@ -274,11 +274,45 @@ class WorktreesScreen(ShellScreen):
         if message.worktree_id == self._selected_worktree_id:
             return
         self._selected_worktree_id = message.worktree_id
+        # Immediate visual feedback for the operator: render a partial
+        # detail view from the cached summary (branch + path) plus
+        # ``loading…`` placeholders for the expensive fields. Without
+        # this, navigating with j/k on WSL Windows-stamped worktrees
+        # leaves the previous worktree's full detail on screen for
+        # several seconds while the per-selection worker shells out to
+        # git.exe — looks like the right pane is broken.
+        self._render_pending_detail(message.worktree_id)
         # Debounce: cancel pending detail load so rapid j/k doesn't
         # stack blocking calls while the user holds arrow keys.
         if self._detail_timer is not None:
             self._detail_timer.stop()
         self._detail_timer = self.set_timer(0.05, self._update_selected_detail)
+
+    def _render_pending_detail(self, worktree_id: str) -> None:
+        """Update the right-side panels to a ``loading…`` placeholder.
+
+        Looks up the ``WorktreeSummaryView`` for *worktree_id* in the
+        already-loaded list so we can show the branch and path
+        immediately, then hands off to the per-panel ``set_pending``
+        helpers for the conflict and intent panels.
+        """
+        summary = next(
+            (wt for wt in self._worktrees if wt.worktree_id == worktree_id),
+            None,
+        )
+        try:
+            detail_panel = self.query_one(WorktreeDetailPanel)
+            conflict_panel = self.query_one(ConflictPanel)
+            intent_panel = self.query_one(StartIntentPanel)
+        except NoMatches:
+            # Panels not mounted yet — initial render will populate
+            # them via ``_apply_loaded_state`` so dropping this attempt
+            # is correct rather than racy.
+            return
+        if summary is not None:
+            detail_panel.set_pending(summary)
+        conflict_panel.set_pending()
+        intent_panel.set_pending()
 
     def _update_selected_detail(self) -> None:
         """Refresh the detail/conflict/intent panels for the current selection.

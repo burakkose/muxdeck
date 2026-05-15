@@ -304,6 +304,42 @@ def test_detail_panel_minimal_render_skips_optional_sections() -> None:
     assert "press" in rendered
 
 
+def test_detail_panel_set_pending_renders_summary_and_loading_marker() -> None:
+    """Pending render shows the new selection's identity immediately.
+
+    Pinned to keep this UX guarantee from regressing: when an operator
+    presses j/k, the right pane must reflect the NEW selection (branch
+    + path) instantly, even if the full detail load takes seconds.
+    Otherwise the screen looks broken on WSL Windows-stamped worktrees
+    where ``get_worktree_detail`` shells out multiple times.
+    """
+    panel = WorktreeDetailPanel()
+    summary = _summary(branch="feature/new", path="/repo/wt-new")
+    panel.set_pending(summary)
+    rendered = _render(panel)
+    # Branch is uppercased like the full detail banner so the layout
+    # doesn't flicker when the worker replaces pending with real data.
+    assert "FEATURE/NEW" in rendered
+    assert "/repo/wt-new" in rendered
+    # Explicit loading marker so the operator knows enrichment is in
+    # flight rather than mistaking the partial render for the full one.
+    assert "LOADING…" in rendered or "loading detail" in rendered.lower()
+
+
+def test_conflict_panel_set_pending_renders_checking_marker() -> None:
+    panel = ConflictPanel()
+    panel.set_pending()
+    rendered = _render(panel)
+    assert "checking" in rendered.lower()
+
+
+def test_start_intent_panel_set_pending_renders_preparing_marker() -> None:
+    panel = StartIntentPanel()
+    panel.set_pending()
+    rendered = _render(panel)
+    assert "preparing" in rendered.lower()
+
+
 # ── ConflictPanel ───────────────────────────────────────────────────
 
 

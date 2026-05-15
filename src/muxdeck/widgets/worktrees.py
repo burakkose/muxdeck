@@ -266,6 +266,39 @@ class WorktreeListPanel(Static, can_focus=True):
 class WorktreeDetailPanel(Static):
     """Worktree detail with section headers and grouped fields."""
 
+    def set_pending(self, summary: WorktreeSummaryView) -> None:
+        """Render a partial view from the summary while detail loads.
+
+        Selection changes on WSL Windows-stamped worktrees can take
+        several seconds to enrich because ``get_worktree_detail`` shells
+        out to git multiple times. Showing the new selection's branch
+        and path immediately — rather than leaving the previous
+        worktree's full detail on screen — confirms to the operator
+        that their navigation registered. The expensive fields
+        (status, ahead/behind, recent commits, change list) appear as
+        ``loading…`` placeholders so the layout stays stable.
+        """
+        result = Text()
+        _section_header(result, "worktree detail")
+
+        glyph = "★ " if summary.is_main_worktree else "  "
+        result.append("  ")
+        result.append("│ ", style=f"bold {FG4}")
+        result.append(glyph, style=f"bold {FG}" if summary.is_main_worktree else FG4)
+        result.append(summary.branch.upper(), style=f"bold {FG}")
+        result.append("   ")
+        result.append("LOADING…", style=f"bold {FG4}")
+        result.append("\n  ")
+        result.append("│ ", style=f"bold {FG4}")
+        result.append(summary.path, style=FG2)
+        result.append("\n\n")
+
+        _field_row(result, "repo", str(summary.repo_root), FG2)
+        _field_row(result, "branch", summary.branch, FG2)
+        result.append("\n")
+        result.append("  loading detail…\n", style=FG4)
+        self.update(result)
+
     def set_detail(self, detail: WorktreeDetailView | None) -> None:
         result = Text()
         _section_header(result, "worktree detail")
@@ -424,6 +457,20 @@ class WorktreeDetailPanel(Static):
 class ConflictPanel(Static):
     """Worktree conflicts — shows warnings when present."""
 
+    def set_pending(self) -> None:
+        """Render a transient placeholder while detail loads.
+
+        Selection changes on WSL Windows-stamped worktrees trigger
+        several git.exe calls that can take seconds. Without this
+        placeholder the previous worktree's conflicts stay on screen
+        and the operator can't tell whether their navigation
+        registered.
+        """
+        result = Text()
+        _section_header(result, "conflicts")
+        result.append("  checking…\n", style=FG4)
+        self.update(result)
+
     def set_conflicts(self, conflicts: Sequence[WorktreeConflictView]) -> None:
         result = Text()
         _section_header(result, "conflicts")
@@ -441,6 +488,18 @@ class ConflictPanel(Static):
 
 class StartIntentPanel(Static):
     """Launch defaults for the selected worktree."""
+
+    def set_pending(self) -> None:
+        """Render a transient placeholder while launch defaults load.
+
+        Same rationale as ``ConflictPanel.set_pending``: keeps the
+        operator from staring at the previous worktree's defaults
+        while the per-selection worker is in flight.
+        """
+        result = Text()
+        _section_header(result, "launch agent")
+        result.append("  preparing launch defaults…\n", style=FG4)
+        self.update(result)
 
     def set_intent(self, intent: WorktreeStartAgentIntent | None) -> None:
         result = Text()
