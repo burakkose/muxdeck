@@ -12,6 +12,7 @@ from muxdeck.adapters.git_adapter import (
     GitAdapter,
     GitWorktreeCreateRequest,
     _is_windows_stamped_worktree,
+    _resolve_windows_git_binary,
     _translate_windows_drive_path,
     _wsl_path_to_windows,
 )
@@ -1085,15 +1086,36 @@ class RemoveWorktreeWslRoutingFlowTests(unittest.TestCase):
         runner = FakeRunner(
             (
                 _result(
-                    ("git", "rev-parse", "--path-format=absolute", "--show-toplevel"),
+                    (
+                        "git.exe",
+                        "-C",
+                        "C:\\src\\CosmosDB-feature",
+                        "rev-parse",
+                        "--path-format=absolute",
+                        "--show-toplevel",
+                    ),
                     stdout="/mnt/c/src/CosmosDB\n",
                 ),
                 _result(
-                    ("git", "rev-parse", "--path-format=absolute", "--git-common-dir"),
+                    (
+                        "git.exe",
+                        "-C",
+                        "C:\\src\\CosmosDB-feature",
+                        "rev-parse",
+                        "--path-format=absolute",
+                        "--git-common-dir",
+                    ),
                     stdout="/mnt/c/src/CosmosDB/.git\n",
                 ),
                 _result(
-                    ("git", "worktree", "list", "--porcelain"),
+                    (
+                        "git.exe",
+                        "-C",
+                        "C:\\src\\CosmosDB",
+                        "worktree",
+                        "list",
+                        "--porcelain",
+                    ),
                     stdout="\n".join(
                         (
                             "worktree /mnt/c/src/CosmosDB",
@@ -1109,10 +1131,12 @@ class RemoveWorktreeWslRoutingFlowTests(unittest.TestCase):
                 ),
                 # force=True skips the status pre-check, so the next
                 # command must be the actual remove — routed through
-                # git.exe with a backslash Windows path.
+                # git.exe with explicit -C and a backslash Windows path.
                 _result(
                     (
                         "git.exe",
+                        "-C",
+                        "C:\\src\\CosmosDB",
                         "worktree",
                         "remove",
                         "--force",
@@ -1122,17 +1146,30 @@ class RemoveWorktreeWslRoutingFlowTests(unittest.TestCase):
                 ),
             )
         )
-        adapter = GitAdapter(runner, is_wsl_runtime=True)
+        adapter = GitAdapter(
+            runner,
+            is_wsl_runtime=True,
+            windows_binary_resolver=lambda binary: binary,
+        )
+        # Force routing on /mnt/<letter> paths without seeding the
+        # _is_windows_stamped_worktree check (no real .git stamps in
+        # the test FS).
+        adapter._should_route_to_windows = (  # type: ignore[assignment,method-assign]
+            lambda cwd: str(cwd).startswith("/mnt/c/")
+        )
 
         outcome = adapter.remove_worktree("/mnt/c/src/CosmosDB-feature", force=True)
 
         assert outcome.path == Path("/mnt/c/src/CosmosDB-feature")
         # The final invocation must be the Windows-routed remove —
-        # pre-validation uses WSL git, but the destructive call MUST
-        # be git.exe so the worktree record on disk matches.
+        # the destructive call MUST be git.exe with explicit -C so
+        # the worktree record on disk matches and we never rely on
+        # WSL interop's implicit cwd translation.
         final_command, _final_cwd, _timeout = runner.calls[-1]
         assert final_command == (
             "git.exe",
+            "-C",
+            "C:\\src\\CosmosDB",
             "worktree",
             "remove",
             "--force",
@@ -1212,7 +1249,13 @@ class RouteCommandForCwdTests(unittest.TestCase):
     """Pin the routing decision: WSL git → git.exe only when Windows-stamped."""
 
     def _adapter(self) -> GitAdapter:
-        return GitAdapter(FakeRunner(()), is_wsl_runtime=True)
+        # Inject an identity resolver so tests never depend on whether
+        # ``git.exe`` is actually installed on the host filesystem.
+        return GitAdapter(
+            FakeRunner(()),
+            is_wsl_runtime=True,
+            windows_binary_resolver=lambda binary: binary,
+        )
 
     def test_routes_wsl_git_to_windows_for_stamped_worktree(self) -> None:
         cwd = Path("/mnt/c/worktree")
@@ -1223,8 +1266,15 @@ class RouteCommandForCwdTests(unittest.TestCase):
             ("git", "rev-parse", "--show-toplevel"),
             cwd,
         )
-        assert routed[0] == "git.exe"
-        assert routed[1:] == ("rev-parse", "--show-toplevel")
+        # git.exe sees a Windows-native cwd via explicit ``-C`` rather
+        # than relying on WSL interop's implicit POSIX cwd translation.
+        assert routed == (
+            "git.exe",
+            "-C",
+            "C:\\worktree",
+            "rev-parse",
+            "--show-toplevel",
+        )
 
     def test_passes_through_when_not_routed(self) -> None:
         cwd = Path("/home/me/repo")
@@ -1237,19 +1287,54 @@ class RouteCommandForCwdTests(unittest.TestCase):
         )
         assert routed == ("git", "rev-parse", "--show-toplevel")
 
-    def test_passes_through_when_already_windows_binary(self) -> None:
-        cwd = Path("/mnt/c/worktree")
+    def test_normalizes_already_windows_binary_and_injects_dash_c(self) -> None:
+        cwd = Path("/mnt/c/src/repo")
+        adapter = self._adapter()
+        adapter._should_route_to_windows = lambda _cwd: False  # type: ignore[assignment,method-assign]
+        # build_remove_worktree_command pre-built a ``git.exe`` tuple
+        # because the target path needed translation. _route must
+        # still resolve the binary and inject ``-C`` with the cwd in
+        # Windows form so git.exe never inherits a POSIX-shaped cwd
+        # via WSL interop's implicit translation.
+        command = ("git.exe", "worktree", "remove", "C:\\src\\foo")
+        routed = adapter._route_command_for_cwd(command, cwd)
+        assert routed == (
+            "git.exe",
+            "-C",
+            "C:\\src\\repo",
+            "worktree",
+            "remove",
+            "C:\\src\\foo",
+        )
+
+    def test_does_not_double_inject_dash_c(self) -> None:
+        cwd = Path("/mnt/c/src/repo")
         adapter = self._adapter()
         adapter._should_route_to_windows = lambda _cwd: True  # type: ignore[assignment,method-assign]
-        # build_remove_worktree_command already produced a git.exe
-        # tuple; _run_command must never double-rewrite it.
-        command = ("git.exe", "worktree", "remove", "C:\\src\\foo")
+        command = ("git", "-C", "D:\\already\\set", "rev-parse", "--show-toplevel")
+        routed = adapter._route_command_for_cwd(command, cwd)
+        # When the caller already passed an explicit ``-C``, respect
+        # it verbatim and only normalize the binary.
+        assert routed == ("git.exe", "-C", "D:\\already\\set", "rev-parse", "--show-toplevel")
 
-        assert adapter._route_command_for_cwd(command, cwd) == command
+    def test_skips_dash_c_for_non_mount_cwd(self) -> None:
+        cwd = Path("/home/me/src/repo")
+        adapter = self._adapter()
+        adapter._should_route_to_windows = lambda _cwd: False  # type: ignore[assignment,method-assign]
+        # An explicit absolute git.exe with a non-/mnt cwd: we can't
+        # produce a Windows path so ``-C`` is omitted. The binary is
+        # still normalized.
+        command = ("git.exe", "status", "--short")
+        routed = adapter._route_command_for_cwd(command, cwd)
+        assert routed == ("git.exe", "status", "--short")
 
     def test_passes_through_outside_wsl(self) -> None:
         cwd = Path("/mnt/c/worktree")
-        adapter = GitAdapter(FakeRunner(()), is_wsl_runtime=False)
+        adapter = GitAdapter(
+            FakeRunner(()),
+            is_wsl_runtime=False,
+            windows_binary_resolver=lambda binary: binary,
+        )
         # Even with a (hypothetical) stamp, non-WSL runtime never routes.
         assert adapter._should_route_to_windows(cwd) is False
         routed = adapter._route_command_for_cwd(
@@ -1295,11 +1380,15 @@ class RemoveWorktreeWindowsStampedFlowTests(unittest.TestCase):
         # repo without touching the host filesystem.
         worktree_path = Path("/mnt/c/src/CosmosDB.worktrees/feature")
         repo_root_path = Path("/mnt/c/src/CosmosDB")
+        worktree_windows = "C:\\src\\CosmosDB.worktrees\\feature"
+        repo_root_windows = "C:\\src\\CosmosDB"
         runner = FakeRunner(
             (
                 _result(
                     (
                         "git.exe",
+                        "-C",
+                        worktree_windows,
                         "rev-parse",
                         "--path-format=absolute",
                         "--show-toplevel",
@@ -1309,6 +1398,8 @@ class RemoveWorktreeWindowsStampedFlowTests(unittest.TestCase):
                 _result(
                     (
                         "git.exe",
+                        "-C",
+                        worktree_windows,
                         "rev-parse",
                         "--path-format=absolute",
                         "--git-common-dir",
@@ -1333,6 +1424,8 @@ class RemoveWorktreeWindowsStampedFlowTests(unittest.TestCase):
                 _result(
                     (
                         "git.exe",
+                        "-C",
+                        worktree_windows,
                         "status",
                         "--short",
                         "--branch",
@@ -1343,15 +1436,21 @@ class RemoveWorktreeWindowsStampedFlowTests(unittest.TestCase):
                 _result(
                     (
                         "git.exe",
+                        "-C",
+                        repo_root_windows,
                         "worktree",
                         "remove",
-                        "C:\\src\\CosmosDB.worktrees\\feature",
+                        worktree_windows,
                     ),
                     stdout="",
                 ),
             )
         )
-        adapter = GitAdapter(runner, is_wsl_runtime=True)
+        adapter = GitAdapter(
+            runner,
+            is_wsl_runtime=True,
+            windows_binary_resolver=lambda binary: binary,
+        )
         # The Windows-stamped worktree routes; the POSIX-stamped main
         # repo does not. Patch the predicate rather than seeding the
         # cache so the mount short-circuit cannot mask this decision.
@@ -1376,3 +1475,126 @@ class RemoveWorktreeWindowsStampedFlowTests(unittest.TestCase):
             "git.exe",
             "git.exe",
         ]
+        # Every git.exe invocation carries an explicit ``-C
+        # <windows_cwd>`` so it never depends on WSL interop to
+        # translate a POSIX cwd at exec time.
+        for call_command, _call_cwd, _call_timeout in runner.calls:
+            if call_command[0] == "git.exe":
+                assert call_command[1] == "-C", call_command
+                assert call_command[2].startswith("C:\\"), call_command
+
+
+class ResolveWindowsGitBinaryTests(unittest.TestCase):
+    """Pin ``git.exe`` discovery so muxdeck works on WSL setups where
+    Git for Windows is installed but absent from PATH.
+
+    The user-visible bug was a ``FileNotFoundError: 'git.exe'`` when
+    ``which git.exe`` returned nothing even though Git was at
+    ``/mnt/c/Program Files/Git/cmd/git.exe``. Discovery must fall
+    back to standard install paths.
+    """
+
+    def test_absolute_path_is_returned_verbatim(self) -> None:
+        # Operator-provided absolute paths win even if shutil.which
+        # would otherwise resolve them differently — they may be a
+        # deliberately pinned shim.
+        absolute = "/some/explicit/path/git.exe"
+        resolved = _resolve_windows_git_binary(
+            absolute,
+            path_searcher=lambda _name: "/should/not/be/used.exe",
+            path_is_file=lambda _candidate: False,
+        )
+        assert resolved == absolute
+
+    def test_prefers_path_search_when_available(self) -> None:
+        resolved = _resolve_windows_git_binary(
+            "git.exe",
+            fallback_paths=("/never/touched.exe",),
+            path_searcher=lambda name: f"/usr/bin/{name}" if name == "git.exe" else None,
+            path_is_file=lambda _candidate: True,
+        )
+        assert resolved == "/usr/bin/git.exe"
+
+    def test_falls_back_to_first_existing_install_path(self) -> None:
+        existing = "/mnt/c/Program Files/Git/cmd/git.exe"
+        resolved = _resolve_windows_git_binary(
+            "git.exe",
+            fallback_paths=(
+                "/mnt/c/missing/git.exe",
+                existing,
+                "/mnt/c/also/missing/git.exe",
+            ),
+            path_searcher=lambda _name: None,
+            path_is_file=lambda candidate: candidate == existing,
+        )
+        assert resolved == existing
+
+    def test_returns_none_when_nothing_resolves(self) -> None:
+        resolved = _resolve_windows_git_binary(
+            "git.exe",
+            fallback_paths=("/mnt/c/missing/git.exe",),
+            path_searcher=lambda _name: None,
+            path_is_file=lambda _candidate: False,
+        )
+        assert resolved is None
+
+
+class WindowsGitLazyResolverTests(unittest.TestCase):
+    """``GitAdapter._windows_git`` lazily resolves git.exe and surfaces
+    a single actionable error when Git for Windows is missing."""
+
+    def test_resolves_lazily_and_caches(self) -> None:
+        calls: list[str] = []
+
+        def resolver(binary: str) -> str | None:
+            calls.append(binary)
+            return "/mnt/c/Program Files/Git/cmd/git.exe"
+
+        adapter = GitAdapter(
+            FakeRunner(()),
+            is_wsl_runtime=True,
+            windows_binary_resolver=resolver,
+        )
+        # Constructor must not eagerly probe — discovery is deferred
+        # until the first Windows-routed command.
+        assert calls == []
+        first = adapter._windows_git()
+        second = adapter._windows_git()
+        assert first == "/mnt/c/Program Files/Git/cmd/git.exe"
+        assert second == first
+        # Caching guarantees we only probe the filesystem once per
+        # adapter lifetime.
+        assert calls == ["git.exe"]
+
+    def test_raises_actionable_error_when_not_found(self) -> None:
+        adapter = GitAdapter(
+            FakeRunner(()),
+            is_wsl_runtime=True,
+            windows_binary_resolver=lambda _binary: None,
+        )
+        with self.assertRaises(GitCommandError) as ctx:
+            adapter._windows_git()
+        # The message must name Git for Windows AND a remediation
+        # path so the operator can act without spelunking logs.
+        message = str(ctx.exception).lower()
+        assert "git for windows" in message
+        assert "install" in message or "path" in message
+
+
+class RouteCommandRaisesWhenGitExeMissingTests(unittest.TestCase):
+    """End-to-end: when the resolver fails, ``remove_worktree`` raises
+    the actionable Git-for-Windows error rather than an opaque
+    ``FileNotFoundError`` from ``subprocess``.
+    """
+
+    def test_remove_worktree_raises_actionable_error_when_git_exe_missing(self) -> None:
+        adapter = GitAdapter(
+            FakeRunner(()),
+            is_wsl_runtime=True,
+            windows_binary_resolver=lambda _binary: None,
+        )
+        adapter._should_route_to_windows = lambda _cwd: True  # type: ignore[assignment,method-assign]
+        with self.assertRaises(GitCommandError) as ctx:
+            adapter.remove_worktree("/mnt/c/src/CosmosDB.worktrees/feature", force=True)
+        message = str(ctx.exception).lower()
+        assert "git for windows" in message

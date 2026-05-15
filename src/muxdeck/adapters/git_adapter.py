@@ -3,6 +3,8 @@ from __future__ import annotations
 import functools
 import re
 import shlex
+import shutil
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NoReturn
@@ -107,6 +109,56 @@ def _wsl_path_to_windows(path: PathLike) -> str | None:
         return f"{drive}:" + chr(92)
     windows_remainder = remainder.replace("/", chr(92))
     return f"{drive}:" + chr(92) + windows_remainder
+
+
+_WINDOWS_GIT_FALLBACK_PATHS: tuple[str, ...] = (
+    "/mnt/c/Program Files/Git/cmd/git.exe",
+    "/mnt/c/Program Files/Git/bin/git.exe",
+    "/mnt/c/Program Files (x86)/Git/cmd/git.exe",
+    "/mnt/c/Program Files (x86)/Git/bin/git.exe",
+)
+
+
+def _resolve_windows_git_binary(
+    binary: str,
+    *,
+    fallback_paths: tuple[str, ...] = _WINDOWS_GIT_FALLBACK_PATHS,
+    path_searcher: Callable[[str], str | None] = shutil.which,
+    path_is_file: Callable[[str], bool] = lambda candidate: Path(candidate).is_file(),
+) -> str | None:
+    """Resolve ``binary`` (typically ``"git.exe"``) to an absolute path.
+
+    Git for Windows is frequently installed but absent from the WSL
+    ``PATH`` because the Windows ``PATH`` is not auto-propagated under
+    every distro/interop configuration. Without resolution, calling
+    ``subprocess.Popen(["git.exe", ...])`` from a WSL Python process
+    fails with ``FileNotFoundError`` even though Git is present.
+
+    Resolution order:
+
+    1. If *binary* is already an absolute path, honour it verbatim —
+       the operator passed it explicitly via the constructor so we
+       must not silently swap it for a different install. Failures
+       still surface naturally if the path is wrong.
+    2. ``shutil.which(binary)`` — succeeds when the user has the
+       Windows ``PATH`` propagated to WSL.
+    3. A short list of standard Git for Windows install paths. The
+       first existing file wins.
+
+    Returns ``None`` when Git for Windows cannot be located, so
+    callers can surface a single actionable error message instead of
+    a generic ``FileNotFoundError``.
+    """
+
+    if Path(binary).is_absolute():
+        return binary
+    discovered = path_searcher(binary)
+    if discovered is not None:
+        return discovered
+    for fallback in fallback_paths:
+        if path_is_file(fallback):
+            return fallback
+    return None
 
 
 def _is_windows_stamped_worktree(cwd: Path) -> bool:
@@ -283,6 +335,7 @@ class GitAdapter:
         *,
         binary: str = "git",
         windows_binary: str = "git.exe",
+        windows_binary_resolver: Callable[[str], str | None] | None = None,
         is_wsl_runtime: bool | None = None,
         timeout_sec: float = 10.0,
     ) -> None:
@@ -292,9 +345,40 @@ class GitAdapter:
         self._command_runner = command_runner
         self._binary = binary
         self._windows_binary = windows_binary
+        self._windows_binary_resolver: Callable[[str], str | None] = (
+            windows_binary_resolver
+            if windows_binary_resolver is not None
+            else _resolve_windows_git_binary
+        )
+        self._resolved_windows_binary: str | None = None
         self._is_wsl_runtime = _detect_wsl_runtime() if is_wsl_runtime is None else is_wsl_runtime
         self._timeout_sec = timeout_sec
         self._windows_routing_cache: dict[Path, bool] = {}
+
+    def _windows_git(self) -> str:
+        """Return an absolute path to ``git.exe``, lazily resolving once.
+
+        Raises :class:`GitCommandError` with an actionable message when
+        Git for Windows cannot be found on PATH or at common install
+        locations. This is the single seam where every
+        Windows-routed call passes through, so the operator sees one
+        clear error instead of an opaque ``FileNotFoundError`` from
+        ``subprocess``.
+        """
+
+        if self._resolved_windows_binary is not None:
+            return self._resolved_windows_binary
+        resolved = self._windows_binary_resolver(self._windows_binary)
+        if resolved is None:
+            msg = (
+                f"git for Windows ({self._windows_binary}) was not found on PATH "
+                "or at standard install locations (e.g. C:\\Program Files\\Git). "
+                "install Git for Windows or add git.exe to the WSL PATH so "
+                "muxdeck can manage Windows-side worktrees."
+            )
+            raise GitCommandError(self._windows_binary, stderr=msg)
+        self._resolved_windows_binary = resolved
+        return resolved
 
     def _should_route_to_windows(self, cwd: Path) -> bool:
         """Decide whether ``_run_command`` must swap to ``git.exe`` for *cwd*.
@@ -329,10 +413,12 @@ class GitAdapter:
 
         Outside WSL or for any non-mount path, return the configured
         POSIX binary and the path unchanged so existing behaviour is
-        preserved. The cwd-based ``_run_command`` routing only swaps
-        the *binary*; this helper is still needed for commands that
-        also take a worktree path as an argv element (e.g. ``worktree
-        remove <path>``).
+        preserved. The cwd-based ``_run_command`` routing handles
+        binary swapping + ``-C`` injection for commands without a
+        path argv element; this helper is still needed for commands
+        that DO take a worktree path as an argv element (e.g.
+        ``worktree remove <path>``) so the path can be translated to
+        the canonical Windows form ``git.exe`` records on disk.
         """
         if not self._is_wsl_runtime:
             return (self._binary, str(normalized_path))
@@ -821,25 +907,57 @@ class GitAdapter:
         command: tuple[str, ...],
         cwd: Path,
     ) -> tuple[str, ...]:
-        """Swap the WSL git binary for ``git.exe`` when *cwd* is Windows-stamped.
+        """Route git invocations through ``git.exe`` with explicit Windows cwd.
 
-        Pre-validation calls inside ``remove_worktree`` (``rev-parse
-        --show-toplevel``, ``rev-parse --git-common-dir``, ``status``)
-        fail under WSL git when the worktree's ``.git`` file references
-        a native ``C:\\…`` path. Routing through ``git.exe`` lets those
-        commands resolve the gitdir correctly. The cwd stays POSIX —
-        WSL interop translates it for the Windows process.
+        Two distinct cases land here:
 
-        Commands that are already explicitly built for git.exe (via
-        ``_select_worktree_binary_and_path``) pass through unchanged
-        so we never double-swap.
+        1. ``command[0] == self._binary`` (POSIX git) and *cwd* is a
+           Windows-stamped worktree — swap the binary to the resolved
+           ``git.exe`` absolute path.
+        2. ``command[0]`` is already ``git.exe`` (built by
+           :meth:`_select_worktree_binary_and_path` for commands that
+           carry a worktree path as argv) — keep it but normalize to
+           the resolved absolute path.
+
+        In both cases we ALSO inject ``-C <windows_cwd>`` so ``git.exe``
+        sees a Windows-native working directory instead of relying on
+        WSL interop's implicit translation of the POSIX cwd passed to
+        ``subprocess``. This makes path handling deterministic — every
+        path ``git.exe`` looks at, including its own working directory,
+        is unambiguously Windows-shaped.
+
+        ``-C`` is skipped when *cwd* doesn't translate to a Windows
+        path (non-``/mnt`` cwds for absolute git.exe configs the user
+        forced explicitly) or when the command already starts with an
+        explicit ``-C`` so we never double-inject.
+
+        The subprocess ``cwd`` is left as the POSIX path by the
+        caller: that keeps a valid working dir for the WSL process
+        itself (useful for error messages and any tooling that reads
+        ``/proc/<pid>/cwd``) while ``git -C`` overrides where ``git``
+        operates.
         """
 
-        if not command or command[0] != self._binary:
+        if not command:
             return command
-        if not self._should_route_to_windows(cwd):
+
+        binary = command[0]
+        is_windows_binary = binary == self._windows_binary or (
+            binary != self._binary and Path(binary).name.lower() == "git.exe"
+        )
+        needs_swap = binary == self._binary and self._should_route_to_windows(cwd)
+        if not is_windows_binary and not needs_swap:
             return command
-        return (self._windows_binary, *command[1:])
+
+        resolved_binary = self._windows_git()
+        rest = command[1:]
+        has_dash_c = len(rest) >= 2 and rest[0] == "-C"
+        if has_dash_c:
+            return (resolved_binary, *rest)
+        windows_cwd = _wsl_path_to_windows(cwd)
+        if windows_cwd is None:
+            return (resolved_binary, *rest)
+        return (resolved_binary, "-C", windows_cwd, *rest)
 
     def _raise_git_error(
         self,
