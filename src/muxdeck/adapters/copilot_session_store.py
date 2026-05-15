@@ -576,6 +576,43 @@ class CopilotSessionStore:
         """Count cached (or freshly-scanned) sessions for a given origin."""
         return sum(1 for s in self.discover() if s.origin == origin)
 
+    def scan_local_only(self) -> list[CopilotLocalSession]:
+        """Scan only the primary local root, sorted newest-first.
+
+        This is the fast-pass entry point used by the SESSIONS screen
+        for incremental loading: while the full :meth:`discover` walks
+        every root (including the slow 9P-mounted Windows root, which
+        can take seconds), this method scans just the local root and
+        returns within tens of milliseconds. Callers paint with the
+        result first, then update the screen when ``discover`` lands
+        with the full picture.
+
+        The per-entry mtime cache (``_entry_cache``) IS consulted and
+        IS updated -- so a follow-up :meth:`discover` immediately
+        reuses the warm entries for the local root and only pays the
+        slow stats on Windows. The TTL cache (``_cache``,
+        ``_cache_time``, ``_by_id``) is left untouched: this is a
+        partial read, not a full snapshot, so it must not be observed
+        by callers asking for "all sessions". The live-paths cleanup
+        is also skipped because we only saw one root and would
+        otherwise evict cached entries belonging to roots we did not
+        scan.
+        """
+        cutoff: datetime | None = None
+        if self.max_age_days > 0:
+            from datetime import timedelta
+
+            cutoff = datetime.now(UTC) - timedelta(days=self.max_age_days)
+
+        local_root = SessionStoreRoot(self.session_state_dir, "local")
+        with self._lock:
+            sessions, _ = self._scan_root(local_root, cutoff=cutoff)
+        sessions.sort(
+            key=lambda s: s.updated_at or s.created_at or datetime.min.replace(tzinfo=UTC),
+            reverse=True,
+        )
+        return sessions
+
     def _iter_roots(self) -> list[SessionStoreRoot]:
         roots: list[SessionStoreRoot] = [SessionStoreRoot(self.session_state_dir, "local")]
         seen: set[Path] = set()

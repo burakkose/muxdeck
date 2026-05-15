@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
@@ -216,8 +217,14 @@ class SessionsController:
         selected_session_id: str | None = None,
         filter_text: str = "",
         show_completed: bool = True,
+        sessions: Sequence[CopilotLocalSession] | None = None,
     ) -> SessionsState:
-        raw_sessions = self._store.discover()
+        # ``sessions`` lets the SESSIONS screen pre-fetch a partial
+        # session list (e.g. local-root only via
+        # ``CopilotSessionStore.scan_local_only``) and reuse the same
+        # view-model assembly. When None, fall back to the canonical
+        # full discover() so existing call sites keep working.
+        raw_sessions = list(sessions) if sessions is not None else self._store.discover()
 
         items: list[SessionListItemView] = []
         active_count = 0

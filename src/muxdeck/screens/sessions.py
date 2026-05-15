@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.timer import Timer
 from textual.widgets import Input
 from textual.worker import Worker, WorkerState
@@ -206,6 +207,17 @@ class SessionsScreen(ShellScreen):
         # touch the runtime later (and so the explicit None-check is
         # next to the call site below).
         session_resolver = self.runtime.session_resolver
+        # Capture the session store too: the incremental-load fast
+        # pass below scans only the local root so the screen paints
+        # Linux sessions in <100 ms even on a cold start, while the
+        # full discover() (which walks the slow Windows-mounted root
+        # too) continues in this same worker and lands a second paint
+        # with everything folded in. We only do this on first load --
+        # subsequent refreshes already have a populated screen, so
+        # the visible flicker of two repaints isn't worth it.
+        session_store = getattr(self.runtime, "copilot_session_store", None)
+        do_partial_paint = first_load and session_store is not None
+        screen = self
 
         def _load() -> _LoadedSessionsState | None:
             # Live agent ids correlate running tmux panes with session
@@ -251,15 +263,33 @@ class SessionsScreen(ShellScreen):
             # check.
             if session_resolver is not None:
                 live_ids.update(session_resolver.live_session_ids())
+            frozen_live_ids = frozenset(live_ids)
+
+            if do_partial_paint and session_store is not None:
+                local_only = session_store.scan_local_only()
+                partial_state = sessions_ctrl.build_state(
+                    live_session_ids=frozen_live_ids,
+                    selected_session_id=selected_id,
+                    filter_text=filter_text,
+                    show_completed=show_completed,
+                    sessions=local_only,
+                )
+                partial_loaded = _LoadedSessionsState(
+                    state=partial_state,
+                    live_session_ids=frozen_live_ids,
+                    live_targets=live_targets,
+                )
+                screen.app.call_from_thread(screen._apply_partial_load, partial_loaded)
+
             state = sessions_ctrl.build_state(
-                live_session_ids=frozenset(live_ids),
+                live_session_ids=frozen_live_ids,
                 selected_session_id=selected_id,
                 filter_text=filter_text,
                 show_completed=show_completed,
             )
             return _LoadedSessionsState(
                 state=state,
-                live_session_ids=frozenset(live_ids),
+                live_session_ids=frozen_live_ids,
                 live_targets=live_targets,
             )
 
@@ -309,6 +339,32 @@ class SessionsScreen(ShellScreen):
         self._refresh_pending = False
         if self.is_mounted:
             self.call_after_refresh(self.refresh_data)
+
+    def _apply_partial_load(self, loaded: _LoadedSessionsState) -> None:
+        """Paint a partial first-load result without finishing the load.
+
+        The ``_load`` worker calls this via ``call_from_thread`` after
+        scanning only the local root so the screen renders Linux
+        sessions in the first ~50 ms even when the full discover()
+        has to walk the slow Windows-mounted root afterwards.
+
+        Called on the UI thread. ``self._loading`` stays ``True``
+        because the worker is still running -- the SUCCESS handler
+        will finalize and end_loading once the full state lands. We
+        end the loading mask here so the partial paint is visible;
+        the SUCCESS handler's ``end_loading`` call is idempotent.
+        """
+        if not self.is_mounted:
+            return
+        try:
+            list_panel = self.query_one(SessionListPanel)
+            detail_panel = self.query_one(SessionDetailPanel)
+        except NoMatches:
+            return
+        self.end_loading(list_panel, detail_panel)
+        self._live_session_ids = loaded.live_session_ids
+        self._live_targets = loaded.live_targets
+        self._apply_state(loaded.state)
 
     def _apply_state(self, state: SessionsState) -> None:
         self._state = state

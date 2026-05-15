@@ -925,6 +925,81 @@ def test_default_cache_ttl_is_short_enough_for_renames() -> None:
     assert store.cache_ttl_sec <= 10.0
 
 
+def test_scan_local_only_returns_local_sessions_without_touching_extras(
+    tmp_path: Path,
+) -> None:
+    """The fast-pass path skips secondary roots entirely.
+
+    The SESSIONS screen calls this to paint Linux sessions in the
+    first ~50 ms even when the slow Windows-mounted root would take
+    seconds to walk -- so the fast-pass must NOT scan the extras at
+    all. Pin both halves of that contract: only the primary root's
+    sessions come back, AND the entry cache for windows entries is
+    untouched (no opportunistic warming, no eviction).
+    """
+    from muxdeck.adapters.copilot_session_store import SessionStoreRoot
+
+    local_root = tmp_path / "local"
+    windows_root = tmp_path / "windows"
+    local_root.mkdir()
+    windows_root.mkdir()
+    _make_session(local_root, "linux-1", summary="from linux")
+    _make_session(windows_root, "windows-1", summary="from windows")
+
+    store = CopilotSessionStore(
+        session_state_dir=local_root,
+        cache_ttl_sec=60,
+        extra_roots=(SessionStoreRoot(windows_root, "windows"),),
+    )
+
+    fast = store.scan_local_only()
+    assert [s.session_id for s in fast] == ["linux-1"]
+    assert all(s.origin == "local" for s in fast)
+    # The TTL cache must NOT be primed from the partial pass -- a
+    # subsequent discover() needs to see the windows root too. If
+    # scan_local_only updated _by_id, the next discover() inside the
+    # TTL window would mistakenly return only the partial set.
+    assert store._cache == []
+    assert store._by_id == {}
+
+
+def test_scan_local_only_sorts_newest_first(tmp_path: Path) -> None:
+    """Fast-pass must keep the same newest-first ordering as discover().
+
+    The SESSIONS list relies on stable ordering between the partial
+    and the full paint -- the rows shouldn't reshuffle when the
+    Windows sessions land. Pin newest-first by ``updated_at``.
+    """
+    from datetime import timedelta
+
+    older = datetime.now(UTC) - timedelta(hours=2)
+    newer = datetime.now(UTC) - timedelta(minutes=5)
+
+    sd_older = tmp_path / "older"
+    sd_older.mkdir()
+    (sd_older / "workspace.yaml").write_text(
+        f"id: older\nsummary: o\ncreated_at: {older.isoformat()}\nupdated_at: {older.isoformat()}\n"
+    )
+    sd_newer = tmp_path / "newer"
+    sd_newer.mkdir()
+    (sd_newer / "workspace.yaml").write_text(
+        f"id: newer\nsummary: n\ncreated_at: {newer.isoformat()}\nupdated_at: {newer.isoformat()}\n"
+    )
+
+    store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=0)
+    result = store.scan_local_only()
+    assert [s.session_id for s in result] == ["newer", "older"]
+
+
+def test_scan_local_only_handles_missing_root() -> None:
+    """An absent local root yields an empty list, not an exception."""
+    store = CopilotSessionStore(
+        session_state_dir=Path("/nonexistent/muxdeck/scan-local-only"),
+        cache_ttl_sec=0,
+    )
+    assert store.scan_local_only() == []
+
+
 def test_count_by_origin_categorises_sessions(tmp_path: Path) -> None:
     _make_session(tmp_path, "local-1", summary="L")
     store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=0)

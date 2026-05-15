@@ -125,8 +125,9 @@ class _RecordingSessionsCtrl:
         selected_session_id: str | None,
         filter_text: str,
         show_completed: bool,
+        sessions: object | None = None,
     ) -> SessionsState:
-        del live_session_ids, selected_session_id, filter_text, show_completed
+        del live_session_ids, selected_session_id, filter_text, show_completed, sessions
         self.build_calls += 1
         return self.state
 
@@ -474,6 +475,9 @@ class SessionsActionTests(unittest.TestCase):
             def invalidate(self) -> None:
                 self.invalidations += 1
 
+            def scan_local_only(self) -> tuple[Any, ...]:
+                return ()
+
         async def scenario() -> tuple[int, int, int]:
             ctrl = _RecordingSessionsCtrl(state=_state())
             actions = _RecordingActions()
@@ -536,6 +540,9 @@ class SessionsActionTests(unittest.TestCase):
 
             def invalidate(self) -> None:
                 self.invalidations += 1
+
+            def scan_local_only(self) -> tuple[Any, ...]:
+                return ()
 
         async def scenario() -> tuple[int, int]:
             ctrl = _RecordingSessionsCtrl(state=_state())
@@ -1289,6 +1296,98 @@ class SessionsLoaderTests(unittest.TestCase):
         # Agent-derived live id PLUS the resolver's lock-file-derived
         # ones must all appear together.
         assert live_ids == frozenset({"sess-wsl", "sess-windows-1", "sess-windows-2"})
+
+    def test_first_load_paints_local_sessions_via_partial_pass(self) -> None:
+        """The first load dispatches a fast local-only paint.
+
+        ``CopilotSessionStore.scan_local_only`` returns Linux-side
+        sessions in tens of milliseconds; the SESSIONS screen wires it
+        through the worker so the screen renders something visible
+        before the slow Windows-mounted root finishes scanning. We pin
+        that the screen invokes ``scan_local_only`` exactly once on
+        first load, that it builds a partial state from those
+        sessions, and that the full ``build_state`` still runs
+        afterwards so the row count and live ids reflect the merged
+        result.
+        """
+
+        class _RecordingPartialStore:
+            """Counts ``scan_local_only`` calls for the assertion below."""
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def scan_local_only(self) -> tuple[Any, ...]:
+                self.calls += 1
+                return ()
+
+            def invalidate(self) -> None:
+                pass
+
+        async def scenario() -> tuple[int, int]:
+            ctrl = _RecordingSessionsCtrl(state=_state())
+            session_store = _RecordingPartialStore()
+            runtime = _runtime_with(
+                sessions_ctrl=ctrl,
+                copilot_session_store=session_store,
+            )
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+                return session_store.calls, ctrl.build_calls
+
+        partial_calls, build_calls = asyncio.run(scenario())
+        # Partial pass runs once; full ``build_state`` runs both for
+        # the partial paint AND for the full paint (the worker calls
+        # ``build_state`` twice -- once with ``sessions=`` for the
+        # partial, once without for the full).
+        assert partial_calls == 1
+        assert build_calls == 2
+
+    def test_subsequent_refresh_skips_partial_pass(self) -> None:
+        """Only the very first refresh uses the fast partial paint.
+
+        Once the screen has a populated ``_state`` an additional
+        partial paint would cause a visible flicker (rows briefly
+        drop down to the local set, then expand back to the full
+        set). Subsequent refreshes go straight to the full
+        ``build_state``.
+        """
+
+        class _RecordingPartialStore:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def scan_local_only(self) -> tuple[Any, ...]:
+                self.calls += 1
+                return ()
+
+            def invalidate(self) -> None:
+                pass
+
+        async def scenario() -> int:
+            ctrl = _RecordingSessionsCtrl(state=_state())
+            session_store = _RecordingPartialStore()
+            runtime = _runtime_with(
+                sessions_ctrl=ctrl,
+                copilot_session_store=session_store,
+            )
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = SessionsScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+                # Trigger a manual refresh after first load is done.
+                screen.refresh_data()
+                await pilot.pause()
+                await pilot.pause()
+                return session_store.calls
+
+        assert asyncio.run(scenario()) == 1
 
 
 class SessionsWorkerCallbackTests(unittest.TestCase):
