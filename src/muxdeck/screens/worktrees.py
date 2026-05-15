@@ -47,6 +47,26 @@ _WORKER_NAME = "worktrees_load"
 _DETAIL_WORKER_NAME = "worktrees_detail"
 
 
+def _build_delete_worktree_message(
+    summary: WorktreeSummaryView,
+    selected_worktree_id: str | None,
+) -> str:
+    """Compose the delete-confirm dialog message.
+
+    Long worktree paths used to wrap mid-segment in the narrow dialog,
+    making the visible truncation look like the real path. Lead with the
+    recognizable basename and branch so the user can identify the target
+    at a glance, then surface the full path on a labeled second line.
+    """
+
+    raw_path = summary.path or ""
+    basename = Path(raw_path).name if raw_path else ""
+    label = basename or raw_path or selected_worktree_id or "unknown"
+    branch_label = summary.branch or "unknown"
+    full_path = raw_path or selected_worktree_id or label
+    return f"Delete worktree '{label}' (branch: {branch_label})?\nFull path: {full_path}"
+
+
 @dataclass(frozen=True, slots=True)
 class _LoadedWorktreesState:
     worktrees: tuple[WorktreeSummaryView, ...]
@@ -509,13 +529,16 @@ class WorktreesScreen(ShellScreen):
         if self._detail is None:
             self.set_status("no worktree detail loaded")
             return
-        name = self._detail.summary.path or self._selected_worktree_id
         if self._detail.summary.is_main_worktree:
             self.set_status("✗ cannot delete the main worktree")
             return
+        message = _build_delete_worktree_message(
+            self._detail.summary,
+            self._selected_worktree_id,
+        )
         self.app.push_screen(
             ConfirmScreen(
-                message=f"Delete worktree {name}?",
+                message=message,
                 title="Delete Worktree",
             ),
             callback=self._on_delete_confirmed,

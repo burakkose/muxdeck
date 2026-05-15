@@ -32,6 +32,7 @@ from muxdeck.screens.worktrees import (
     _DETAIL_WORKER_NAME,
     _WORKER_NAME,
     WorktreesScreen,
+    _build_delete_worktree_message,
     _LoadedWorktreesState,
 )
 from muxdeck.services.action_service import ActionModelHint, ActionResult
@@ -2131,6 +2132,56 @@ class WorktreesRefreshAfterActionTests(unittest.TestCase):
 
         # When the action_view carries no worktree, the prior selection survives.
         assert asyncio.run(scenario()) == "wt-2"
+
+
+class BuildDeleteWorktreeMessageTests(unittest.TestCase):
+    """Pure formatter for the delete-confirm dialog message.
+
+    Regression: the dialog used to render the full path and wrap mid-segment
+    (e.g. ``/mnt/q/src/CosmosDB.worktrees/agents-…`` clipped to
+    ``…CosmosDB.worktree`` on the first line), making users think the path
+    was wrong. The formatter now leads with the recognizable basename + branch
+    and labels the full path on a second line.
+    """
+
+    def test_uses_basename_branch_and_labels_full_path(self) -> None:
+        summary = _summary(
+            worktree_id="wt-9",
+            path=(
+                "/mnt/q/src/CosmosDB.worktrees/"
+                "agents-i-lost-the-agent-session-id-that-worked-9218e730"
+            ),
+            branch="agents/i-lost-the-agent-session-id-that-worked",
+        )
+
+        message = _build_delete_worktree_message(summary, "wt-9")
+
+        first_line, _, rest = message.partition("\n")
+        # The primary identifier is the basename, not the full path.
+        assert first_line == (
+            "Delete worktree "
+            "'agents-i-lost-the-agent-session-id-that-worked-9218e730' "
+            "(branch: agents/i-lost-the-agent-session-id-that-worked)?"
+        )
+        # Full path is explicitly labeled so wrapping is unambiguous.
+        assert rest == (
+            "Full path: /mnt/q/src/CosmosDB.worktrees/"
+            "agents-i-lost-the-agent-session-id-that-worked-9218e730"
+        )
+
+    def test_falls_back_to_selected_id_when_path_missing(self) -> None:
+        summary = _summary(worktree_id="wt-2", path="", branch="")
+
+        message = _build_delete_worktree_message(summary, "wt-2")
+
+        assert message == ("Delete worktree 'wt-2' (branch: unknown)?\nFull path: wt-2")
+
+    def test_falls_back_to_unknown_when_everything_missing(self) -> None:
+        summary = _summary(worktree_id="", path="", branch="")
+
+        message = _build_delete_worktree_message(summary, None)
+
+        assert message == ("Delete worktree 'unknown' (branch: unknown)?\nFull path: unknown")
 
 
 # Touch unused refs so they don't trip ruff.

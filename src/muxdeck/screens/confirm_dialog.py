@@ -22,9 +22,9 @@ class ConfirmScreen(ModalScreen[bool]):
         align: center middle;
     }}
     #confirm-dialog {{
-        width: 50;
+        width: 80;
         height: auto;
-        max-height: 10;
+        max-height: 14;
         background: {theme.BG1};
         border: thick {theme.RED};
         border-title-color: {theme.RED};
