@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import functools
+import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,6 +76,55 @@ def _translate_windows_drive_path(path: str) -> str | None:
         return None
     remainder = path[3:].replace("\\", "/").lstrip("/")
     return f"/mnt/{drive.lower()}/{remainder}" if remainder else f"/mnt/{drive.lower()}"
+
+
+_WSL_MOUNT_RE = re.compile(r"^/mnt/([A-Za-z])(?:/(.*))?$")
+
+
+def _wsl_path_to_windows(path: PathLike) -> str | None:
+    """Translate ``/mnt/c/foo`` to ``C:\\foo`` (Windows-native).
+
+    Worktrees registered from Windows (``git.exe``) stamp their
+    ``.git/worktrees/<name>/gitdir`` records with backslash
+    ``C:\\src\\Foo`` paths. WSL ``git worktree remove /mnt/c/src/Foo``
+    cannot reconcile its POSIX argument against those records and
+    refuses to operate. Routing the command through ``git.exe`` with
+    a translated Windows path lets the record match exactly.
+
+    Returns the Windows-native (single-backslash) representation when
+    *path* is on a ``/mnt/<letter>/`` mount, or ``None`` otherwise so
+    callers can fall back to the POSIX binary unchanged.
+    """
+    raw = str(path).replace("\\", "/")
+    if raw != "/":
+        raw = raw.rstrip("/")
+    match = _WSL_MOUNT_RE.match(raw)
+    if match is None:
+        return None
+    drive = match.group(1).upper()
+    remainder = match.group(2) or ""
+    if not remainder:
+        return f"{drive}:" + chr(92)
+    windows_remainder = remainder.replace("/", chr(92))
+    return f"{drive}:" + chr(92) + windows_remainder
+
+
+@functools.cache
+def _detect_wsl_runtime() -> bool:
+    """Best-effort WSL detection used when the runtime flag is unset.
+
+    Mirrors the lightweight check already used in
+    ``muxdeck.adapters.os_notifier``: inspect ``/proc/version`` for
+    the ``microsoft``/``wsl`` markers. ``functools.cache`` keeps the
+    file read off the per-call hot path; the boolean does not change
+    over a process lifetime.
+    """
+    try:
+        contents = Path("/proc/version").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    lowered = contents.lower()
+    return "microsoft" in lowered or "wsl" in lowered
 
 
 def _normalize_path(path: PathLike) -> Path:
@@ -191,6 +242,8 @@ class GitAdapter:
         command_runner: CommandRunner,
         *,
         binary: str = "git",
+        windows_binary: str = "git.exe",
+        is_wsl_runtime: bool | None = None,
         timeout_sec: float = 10.0,
     ) -> None:
         if timeout_sec <= 0:
@@ -198,7 +251,30 @@ class GitAdapter:
             raise ValueError(msg)
         self._command_runner = command_runner
         self._binary = binary
+        self._windows_binary = windows_binary
+        self._is_wsl_runtime = _detect_wsl_runtime() if is_wsl_runtime is None else is_wsl_runtime
         self._timeout_sec = timeout_sec
+
+    def _select_worktree_binary_and_path(self, normalized_path: Path) -> tuple[str, str]:
+        """Pick the git binary + path representation for *normalized_path*.
+
+        Worktrees on a Windows drive (``/mnt/<letter>/...``) under WSL
+        cannot be removed via WSL ``git``: the worktree records on
+        disk were stamped by ``git.exe`` and contain native
+        ``C:\\src\\Foo`` paths, so WSL git refuses to match the POSIX
+        argument against them. Route those calls through ``git.exe``
+        with a translated Windows path so the records line up.
+
+        Outside WSL or for any non-mount path, return the configured
+        POSIX binary and the path unchanged so existing behaviour is
+        preserved.
+        """
+        if not self._is_wsl_runtime:
+            return (self._binary, str(normalized_path))
+        windows_path = _wsl_path_to_windows(normalized_path)
+        if windows_path is None:
+            return (self._binary, str(normalized_path))
+        return (self._windows_binary, windows_path)
 
     def discover_repo_root(self, cwd: PathLike, /) -> Path:
         normalized_cwd = _normalize_path(cwd)
@@ -388,10 +464,11 @@ class GitAdapter:
         *,
         force: bool = False,
     ) -> tuple[str, ...]:
-        args = [self._binary, "worktree", "remove"]
+        binary, target = self._select_worktree_binary_and_path(_normalize_path(path))
+        args = [binary, "worktree", "remove"]
         if force:
             args.append("--force")
-        args.append(str(_normalize_path(path)))
+        args.append(target)
         return tuple(args)
 
     def remove_worktree(

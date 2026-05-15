@@ -11,6 +11,7 @@ from muxdeck.adapters.git_adapter import (
     GitAdapter,
     GitWorktreeCreateRequest,
     _translate_windows_drive_path,
+    _wsl_path_to_windows,
 )
 from muxdeck.domain.value_objects import CommandResult
 from muxdeck.exceptions import CommandError, GitCommandError
@@ -948,3 +949,190 @@ class NormalizePathTests(unittest.TestCase):
         # rest of the adapter assumes.
         assert _normalize_path("Q:/pm2") == Path("/mnt/q/pm2")
         assert _normalize_path("C:\\Users\\me") == Path("/mnt/c/Users/me")
+
+
+class WslPathToWindowsTests(unittest.TestCase):
+    """Cover the inverse of ``_translate_windows_drive_path``.
+
+    The remove-worktree routing logic depends on this helper to decide
+    when to swap WSL ``git`` for ``git.exe`` and to format the argv
+    path the way the Windows-stamped worktree records expect. Each
+    edge case below would otherwise leak through as either a
+    silently-skipped reroute (``None``) or a malformed Windows arg.
+    """
+
+    def test_drive_root_translates_to_backslash(self) -> None:
+        assert _wsl_path_to_windows("/mnt/c") == "C:\\"
+        assert _wsl_path_to_windows("/mnt/c/") == "C:\\"
+
+    def test_nested_path_uses_backslashes(self) -> None:
+        assert _wsl_path_to_windows("/mnt/c/src/Foo") == "C:\\src\\Foo"
+
+    def test_drive_letter_is_uppercased(self) -> None:
+        assert _wsl_path_to_windows("/mnt/q/pm2") == "Q:\\pm2"
+        assert _wsl_path_to_windows("/mnt/Q/pm2") == "Q:\\pm2"
+
+    def test_path_with_spaces_preserved(self) -> None:
+        assert _wsl_path_to_windows("/mnt/c/src/Foo Bar") == "C:\\src\\Foo Bar"
+
+    def test_pathlike_input_accepted(self) -> None:
+        assert _wsl_path_to_windows(Path("/mnt/d/repo")) == "D:\\repo"
+
+    def test_non_mount_paths_return_none(self) -> None:
+        assert _wsl_path_to_windows("/home/burakkose/muxdeck") is None
+        assert _wsl_path_to_windows("/repo/worktrees/task") is None
+        assert _wsl_path_to_windows("/") is None
+
+    def test_multichar_mount_segment_rejected(self) -> None:
+        # ``/mnt/wsl`` and ``/mnt/cc`` are not Windows drive mounts —
+        # routing them through git.exe would emit a garbage ``WSL:\``
+        # arg that breaks the remove command outright.
+        assert _wsl_path_to_windows("/mnt/wsl/foo") is None
+        assert _wsl_path_to_windows("/mnt/cc/foo") is None
+
+    def test_lookalike_paths_rejected(self) -> None:
+        # ``/mnt/cfoo`` shares the prefix but isn't a drive mount.
+        assert _wsl_path_to_windows("/mnt/cfoo") is None
+        assert _wsl_path_to_windows("mnt/c/foo") is None
+
+
+class BuildRemoveWorktreeCommandWslRoutingTests(unittest.TestCase):
+    """Pin the WSL-mount detour for ``build_remove_worktree_command``.
+
+    The user-visible bug: invoking ``delete`` on a worktree that lives
+    on a Windows drive (``/mnt/c/...``) under WSL fails because WSL
+    ``git`` cannot match its POSIX argument against the Windows-stamped
+    ``.git/worktrees/<name>/gitdir`` records. Routing through
+    ``git.exe`` with a native ``C:\\...`` argument is what the fix
+    actually does — these tests stop a future refactor from
+    silently regressing back to WSL ``git`` for Windows-drive targets.
+    """
+
+    def test_uses_windows_git_and_translated_path_on_wsl_mount(self) -> None:
+        adapter = GitAdapter(FakeRunner(()), is_wsl_runtime=True)
+        assert adapter.build_remove_worktree_command(
+            "/mnt/c/src/CosmosDB",
+            force=True,
+        ) == (
+            "git.exe",
+            "worktree",
+            "remove",
+            "--force",
+            "C:\\src\\CosmosDB",
+        )
+
+    def test_uses_windows_git_without_force_flag(self) -> None:
+        adapter = GitAdapter(FakeRunner(()), is_wsl_runtime=True)
+        assert adapter.build_remove_worktree_command("/mnt/d/repo") == (
+            "git.exe",
+            "worktree",
+            "remove",
+            "D:\\repo",
+        )
+
+    def test_keeps_default_binary_for_posix_repo_on_wsl(self) -> None:
+        # Local Linux worktrees (``/home/...``, ``/repo/...``) must
+        # continue to use WSL git even when the runtime is WSL —
+        # ``git.exe`` would refuse to open a Linux-only path.
+        adapter = GitAdapter(FakeRunner(()), is_wsl_runtime=True)
+        assert adapter.build_remove_worktree_command("/repo/worktrees/task-one") == (
+            "git",
+            "worktree",
+            "remove",
+            "/repo/worktrees/task-one",
+        )
+
+    def test_keeps_default_binary_off_wsl(self) -> None:
+        # Outside WSL the ``/mnt/c/...`` path is just a regular POSIX
+        # directory (or nothing); using ``git.exe`` would either fail
+        # to launch or address the wrong filesystem.
+        adapter = GitAdapter(FakeRunner(()), is_wsl_runtime=False)
+        assert adapter.build_remove_worktree_command("/mnt/c/src/CosmosDB", force=True) == (
+            "git",
+            "worktree",
+            "remove",
+            "--force",
+            "/mnt/c/src/CosmosDB",
+        )
+
+    def test_custom_windows_binary_is_honoured(self) -> None:
+        # Operators with ``git.exe`` shimmed under a different name
+        # (e.g. a chocolatey/scoop alias) should still be able to
+        # route through the configured Windows binary.
+        adapter = GitAdapter(
+            FakeRunner(()),
+            is_wsl_runtime=True,
+            windows_binary="/mnt/c/Program Files/Git/cmd/git.exe",
+        )
+        command = adapter.build_remove_worktree_command("/mnt/c/src/Foo", force=True)
+        assert command[0] == "/mnt/c/Program Files/Git/cmd/git.exe"
+        assert command[-1] == "C:\\src\\Foo"
+
+
+class RemoveWorktreeWslRoutingFlowTests(unittest.TestCase):
+    """End-to-end coverage that ``remove_worktree`` actually dispatches
+    the Windows-routed command (and not just the builder).
+
+    The builder tests pin the command shape; this one pins the
+    runtime invocation against the ``FakeRunner`` so any future
+    short-circuit, caching, or refactor that bypasses
+    ``build_remove_worktree_command`` still gets caught.
+    """
+
+    def test_remove_worktree_invokes_windows_git_for_wsl_mount(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    ("git", "rev-parse", "--path-format=absolute", "--show-toplevel"),
+                    stdout="/mnt/c/src/CosmosDB\n",
+                ),
+                _result(
+                    ("git", "rev-parse", "--path-format=absolute", "--git-common-dir"),
+                    stdout="/mnt/c/src/CosmosDB/.git\n",
+                ),
+                _result(
+                    ("git", "worktree", "list", "--porcelain"),
+                    stdout="\n".join(
+                        (
+                            "worktree /mnt/c/src/CosmosDB",
+                            "HEAD 1111",
+                            "branch refs/heads/main",
+                            "",
+                            "worktree /mnt/c/src/CosmosDB-feature",
+                            "HEAD 2222",
+                            "branch refs/heads/feature",
+                            "",
+                        )
+                    ),
+                ),
+                # force=True skips the status pre-check, so the next
+                # command must be the actual remove — routed through
+                # git.exe with a backslash Windows path.
+                _result(
+                    (
+                        "git.exe",
+                        "worktree",
+                        "remove",
+                        "--force",
+                        "C:\\src\\CosmosDB-feature",
+                    ),
+                    stdout="",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner, is_wsl_runtime=True)
+
+        outcome = adapter.remove_worktree("/mnt/c/src/CosmosDB-feature", force=True)
+
+        assert outcome.path == Path("/mnt/c/src/CosmosDB-feature")
+        # The final invocation must be the Windows-routed remove —
+        # pre-validation uses WSL git, but the destructive call MUST
+        # be git.exe so the worktree record on disk matches.
+        final_command, _final_cwd, _timeout = runner.calls[-1]
+        assert final_command == (
+            "git.exe",
+            "worktree",
+            "remove",
+            "--force",
+            "C:\\src\\CosmosDB-feature",
+        )

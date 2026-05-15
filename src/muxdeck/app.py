@@ -701,7 +701,12 @@ def build_runtime(config: AppConfig | None = None) -> MuxdeckRuntime:
     # sqlite3 access.  Both connections target the same WAL-mode database.
     sync_store = SQLiteStore.from_config(resolved_config, check_same_thread=False)
     process_adapter = ProcessAdapter()
-    git_adapter = GitAdapter(process_adapter)
+    # Detect WSL up-front so the git adapter can route worktree
+    # operations on Windows-drive paths through git.exe instead of WSL
+    # git — the worktree records are stamped by git.exe and WSL git
+    # refuses to match POSIX argv paths against them.
+    windows_host: WindowsHostInfo = detect_windows_host(env=os.environ)
+    git_adapter = GitAdapter(process_adapter, is_wsl_runtime=windows_host.is_wsl)
     tmux_adapter = TmuxAdapter(process_adapter, socket_path=resolved_config.tmux.socket_path)
     copilot_adapter = CopilotAdapter(process_adapter)
     action_service = TmuxActionService(tmux=tmux_adapter, copilot=copilot_adapter)
@@ -730,9 +735,10 @@ def build_runtime(config: AppConfig | None = None) -> MuxdeckRuntime:
         persistent_cache_path=default_cache_dir() / "copilot_sessions_cache.json",
     )
     # WSL users launch some agents through pwsh.exe, which stores its
-    # session state under the Windows %USERPROFILE%. Bridge that here so
-    # both roots feed the same Sessions screen and Setup diagnostics.
-    windows_host: WindowsHostInfo = detect_windows_host(env=os.environ)
+    # session state under the Windows %USERPROFILE%. ``windows_host``
+    # was resolved up-front above so the git adapter can already route
+    # worktree calls through git.exe; reuse it here for the session
+    # store bridge so both code paths see the same detection result.
     if windows_host.is_available and windows_host.session_state_dir is not None:
         copilot_session_store.set_extra_roots(
             [SessionStoreRoot(windows_host.session_state_dir, "windows")]
