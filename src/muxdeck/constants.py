@@ -58,6 +58,18 @@ def default_state_home(env: Mapping[str, str] | None = None) -> Path:
     return _home_dir(environment) / ".local" / "state"
 
 
+def default_cache_home(env: Mapping[str, str] | None = None) -> Path:
+    environment = _env(env)
+    configured = environment.get("XDG_CACHE_HOME")
+    if configured:
+        return Path(configured).expanduser()
+    return _home_dir(environment) / ".cache"
+
+
+def default_cache_dir(env: Mapping[str, str] | None = None) -> Path:
+    return default_cache_home(env) / APP_NAME
+
+
 def default_config_path(env: Mapping[str, str] | None = None) -> Path:
     return default_config_home(env) / APP_NAME / CONFIG_FILE_NAME
 

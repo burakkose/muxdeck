@@ -432,6 +432,244 @@ def _stat_mtime(path: Path) -> datetime | None:
     return datetime.fromtimestamp(st.st_mtime, tz=UTC)
 
 
+def _path_is_under(candidate: Path, ancestor: Path) -> bool:
+    """Return True if ``candidate`` is the same as or under ``ancestor``."""
+    try:
+        candidate.relative_to(ancestor)
+    except ValueError:
+        return False
+    return True
+
+
+# ── Persistent on-disk cache ────────────────────────────────────────
+#
+# Bump on any breaking change to the serialised payload shape so old
+# files are dropped instead of producing wrong sessions on load.
+_PERSISTENT_CACHE_VERSION = 1
+
+
+def _serialize_dt(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _deserialize_dt(value: object | None) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    return _parse_iso(value)
+
+
+def _serialize_path(value: Path | None) -> str | None:
+    return str(value) if value is not None else None
+
+
+def _deserialize_path(value: object | None) -> Path | None:
+    if not isinstance(value, str):
+        return None
+    return Path(value)
+
+
+def _usage_to_json(usage: CopilotSessionUsage | None) -> dict[str, int | None] | None:
+    if usage is None:
+        return None
+    return {
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "cache_read_tokens": usage.cache_read_tokens,
+        "cache_write_tokens": usage.cache_write_tokens,
+        "premium_requests": usage.premium_requests,
+    }
+
+
+def _usage_from_json(payload: object) -> CopilotSessionUsage | None:
+    if not isinstance(payload, dict):
+        return None
+
+    def _opt_int(value: object) -> int | None:
+        return value if isinstance(value, int) else None
+
+    return CopilotSessionUsage(
+        input_tokens=_opt_int(payload.get("input_tokens")),
+        output_tokens=_opt_int(payload.get("output_tokens")),
+        cache_read_tokens=_opt_int(payload.get("cache_read_tokens")),
+        cache_write_tokens=_opt_int(payload.get("cache_write_tokens")),
+        premium_requests=_opt_int(payload.get("premium_requests")),
+    )
+
+
+def _session_to_json(session: CopilotLocalSession) -> dict[str, object]:
+    """Stable wire format for one ``CopilotLocalSession`` cache entry.
+
+    The shape is intentionally explicit (not :func:`dataclasses.asdict`)
+    so future field additions don't silently start writing data we
+    haven't validated, and so ``Path``/``datetime`` round-trip cleanly
+    through JSON.
+    """
+    return {
+        "session_id": session.session_id,
+        "cwd": _serialize_path(session.cwd),
+        "git_root": _serialize_path(session.git_root),
+        "repository": session.repository,
+        "branch": session.branch,
+        "name": session.name,
+        "summary": session.summary,
+        "created_at": _serialize_dt(session.created_at),
+        "updated_at": _serialize_dt(session.updated_at),
+        "last_event_type": session.last_event_type,
+        "last_event_at": _serialize_dt(session.last_event_at),
+        "checkpoint_count": session.checkpoint_count,
+        "usage": _usage_to_json(session.usage),
+        "is_cleanly_closed": session.is_cleanly_closed,
+        "origin": session.origin,
+        "windows_cwd": session.windows_cwd,
+        "windows_git_root": session.windows_git_root,
+    }
+
+
+def _session_from_json(payload: object) -> CopilotLocalSession | None:
+    """Inverse of :func:`_session_to_json` with strict validation.
+
+    Returns ``None`` on any structural mismatch so a partially-corrupt
+    cache file evicts only the broken entries rather than the whole
+    file.
+    """
+    if not isinstance(payload, dict):
+        return None
+    session_id = payload.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    origin_raw = payload.get("origin", "local")
+    if origin_raw not in ("local", "windows"):
+        return None
+    origin: SessionOrigin = origin_raw
+
+    def _opt_str(value: object) -> str | None:
+        return value if isinstance(value, str) else None
+
+    checkpoint_count_raw = payload.get("checkpoint_count", 0)
+    checkpoint_count = checkpoint_count_raw if isinstance(checkpoint_count_raw, int) else 0
+    is_cleanly_closed = bool(payload.get("is_cleanly_closed", False))
+
+    return CopilotLocalSession(
+        session_id=session_id,
+        cwd=_deserialize_path(payload.get("cwd")),
+        git_root=_deserialize_path(payload.get("git_root")),
+        repository=_opt_str(payload.get("repository")),
+        branch=_opt_str(payload.get("branch")),
+        name=_opt_str(payload.get("name")),
+        summary=_opt_str(payload.get("summary")),
+        created_at=_deserialize_dt(payload.get("created_at")),
+        updated_at=_deserialize_dt(payload.get("updated_at")),
+        last_event_type=_opt_str(payload.get("last_event_type")),
+        last_event_at=_deserialize_dt(payload.get("last_event_at")),
+        checkpoint_count=checkpoint_count,
+        usage=_usage_from_json(payload.get("usage")),
+        is_cleanly_closed=is_cleanly_closed,
+        origin=origin,
+        windows_cwd=_opt_str(payload.get("windows_cwd")),
+        windows_git_root=_opt_str(payload.get("windows_git_root")),
+    )
+
+
+def _entry_to_json(path: Path, entry: _CachedEntry) -> dict[str, object]:
+    return {
+        "path": str(path),
+        "events_mtime_ns": entry.events_mtime_ns,
+        "workspace_mtime_ns": entry.workspace_mtime_ns,
+        "session": _session_to_json(entry.session),
+    }
+
+
+def _entry_from_json(payload: object) -> tuple[Path, _CachedEntry] | None:
+    if not isinstance(payload, dict):
+        return None
+    path_str = payload.get("path")
+    if not isinstance(path_str, str) or not path_str:
+        return None
+    events_mtime_raw = payload.get("events_mtime_ns", 0)
+    workspace_mtime_raw = payload.get("workspace_mtime_ns", 0)
+    if not isinstance(events_mtime_raw, int) or not isinstance(workspace_mtime_raw, int):
+        return None
+    session = _session_from_json(payload.get("session"))
+    if session is None:
+        return None
+    return Path(path_str), _CachedEntry(
+        session=session,
+        events_mtime_ns=events_mtime_raw,
+        workspace_mtime_ns=workspace_mtime_raw,
+    )
+
+
+def _load_persistent_cache_file(path: Path) -> dict[Path, _CachedEntry]:
+    """Read a persistent cache file and return its parsed entries.
+
+    Returns an empty dict on any failure -- missing file, corrupt JSON,
+    version mismatch, or structural validation error -- so callers
+    transparently fall back to a cold scan without crashing the app.
+    Failures are logged at debug because a missing cache on first run
+    is normal and we don't want to spam warnings.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        _log.warning("failed to read persistent cache %s: %s", path, exc)
+        return {}
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        _log.warning("persistent cache %s is corrupt, ignoring: %s", path, exc)
+        return {}
+
+    if not isinstance(payload, dict):
+        _log.warning("persistent cache %s has unexpected top-level type", path)
+        return {}
+    if payload.get("version") != _PERSISTENT_CACHE_VERSION:
+        _log.debug(
+            "persistent cache %s version mismatch (expected %d, got %r); dropping",
+            path,
+            _PERSISTENT_CACHE_VERSION,
+            payload.get("version"),
+        )
+        return {}
+    raw_entries = payload.get("entries")
+    if not isinstance(raw_entries, list):
+        return {}
+
+    loaded: dict[Path, _CachedEntry] = {}
+    for raw in raw_entries:
+        parsed = _entry_from_json(raw)
+        if parsed is None:
+            continue
+        entry_path, entry = parsed
+        loaded[entry_path] = entry
+    return loaded
+
+
+def _save_persistent_cache_file(path: Path, entries: dict[Path, _CachedEntry]) -> None:
+    """Atomically write the cache to disk via tmp file + rename.
+
+    The rename is in-place on the same directory so it's atomic across
+    crashes; concurrent writers see either the old or the new file,
+    never a half-written one. Failures here are non-fatal -- the cache
+    is an optimization, not a correctness invariant.
+    """
+    payload = {
+        "version": _PERSISTENT_CACHE_VERSION,
+        "entries": [_entry_to_json(p, e) for p, e in entries.items()],
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Use a per-pid temp name so two muxdeck processes writing to
+        # the same path don't clobber each other's tmp files mid-flight.
+        tmp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp_path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        tmp_path.replace(path)
+    except OSError as exc:
+        _log.warning("failed to write persistent cache %s: %s", path, exc)
+
+
 @dataclass(slots=True)
 class _CachedEntry:
     """Parsed session plus the mtimes that make it current.
@@ -490,23 +728,50 @@ class CopilotSessionStore:
     # is acceptable in exchange for fresher data.
     cache_ttl_sec: float = 10.0
     extra_roots: tuple[SessionStoreRoot, ...] = ()
+    # Optional path to a JSON file used to persist the per-entry mtime
+    # cache across muxdeck runs. Default ``None`` means "in-memory
+    # only" -- tests and any direct construction skip persistence
+    # unless they opt in. The runtime bootstrap sets this to a
+    # well-known cache path so the first ``discover`` after a fresh
+    # process launch can use the warm path for previously-scanned
+    # session dirs instead of paying the ~2 s cold-scan cost on a
+    # 9P-mounted Windows root.
+    persistent_cache_path: Path | None = None
 
     _cache: list[CopilotLocalSession] = field(default_factory=list, init=False, repr=False)
     _cache_time: float = field(default=0.0, init=False, repr=False)
     _entry_cache: dict[Path, _CachedEntry] = field(default_factory=dict, init=False, repr=False)
     _by_id: dict[str, CopilotLocalSession] = field(default_factory=dict, init=False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _persistent_cache_loaded: bool = field(default=False, init=False, repr=False)
+    # Serialises persistent-cache writes so two concurrent ``discover``
+    # callers don't race each other on the rename. Held only briefly,
+    # outside ``_lock``, around the actual write.
+    _persistent_cache_write_lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
 
     def discover(self, *, force: bool = False) -> list[CopilotLocalSession]:
         """Return all local sessions, using cache if fresh."""
+        snapshot_to_save: dict[Path, _CachedEntry] | None = None
         with self._lock:
             now = time.monotonic()
             if not force and self._cache and (now - self._cache_time) < self.cache_ttl_sec:
                 return list(self._cache)
+            self._maybe_load_persistent_cache_locked()
             self._cache = self._scan()
             self._by_id = {s.session_id: s for s in self._cache}
             self._cache_time = now
-            return list(self._cache)
+            if self.persistent_cache_path is not None:
+                # Snapshot under the lock; the actual disk write
+                # happens after the lock is released so the next
+                # ``discover`` doesn't block on a 9P rename.
+                snapshot_to_save = dict(self._entry_cache)
+            result = list(self._cache)
+
+        if snapshot_to_save is not None:
+            self._persist_cache_snapshot(snapshot_to_save)
+        return result
 
     def invalidate(self) -> None:
         """Drop the TTL cache so the next :meth:`discover` re-scans.
@@ -624,6 +889,54 @@ class CopilotSessionStore:
             seen.add(extra.path)
             roots.append(extra)
         return roots
+
+    def _maybe_load_persistent_cache_locked(self) -> None:
+        """Seed ``_entry_cache`` from disk on the first scan of this process.
+
+        The load is filtered to entries whose path is under one of the
+        currently configured roots so a cache file containing entries
+        from a different muxdeck configuration (e.g. a previous
+        invocation with different ``extra_roots``) doesn't leak unused
+        entries into memory or get clobbered when we save back.
+
+        ``_lock`` MUST be held. Idempotent: only the first call does
+        any work; subsequent calls return immediately so the cache
+        isn't re-loaded over fresh in-memory state.
+        """
+        if self._persistent_cache_loaded:
+            return
+        self._persistent_cache_loaded = True
+        if self.persistent_cache_path is None:
+            return
+
+        loaded = _load_persistent_cache_file(self.persistent_cache_path)
+        if not loaded:
+            return
+
+        root_paths = tuple(root.path for root in self._iter_roots())
+        for entry_path, entry in loaded.items():
+            # Only seed entries that fall under a currently configured
+            # root. Entries outside the roots will never be exercised
+            # by ``_scan_root`` and would otherwise be dropped on the
+            # next save anyway.
+            if not any(_path_is_under(entry_path, root) for root in root_paths):
+                continue
+            # Don't overwrite an in-memory entry that may have been
+            # populated by an earlier call (e.g. ``scan_local_only``).
+            self._entry_cache.setdefault(entry_path, entry)
+
+    def _persist_cache_snapshot(self, snapshot: dict[Path, _CachedEntry]) -> None:
+        """Write a ``_entry_cache`` snapshot to ``persistent_cache_path``.
+
+        Called outside ``_lock`` so the disk write can't block other
+        ``discover``/``get_session`` callers. Serialised against
+        concurrent writers via ``_persistent_cache_write_lock`` so two
+        worker threads don't race on the rename.
+        """
+        if self.persistent_cache_path is None:
+            return
+        with self._persistent_cache_write_lock:
+            _save_persistent_cache_file(self.persistent_cache_path, snapshot)
 
     def _scan(self) -> list[CopilotLocalSession]:
         cutoff: datetime | None = None

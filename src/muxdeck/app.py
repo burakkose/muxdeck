@@ -35,6 +35,7 @@ from muxdeck.adapters.subagent_reader import SubAgentReader
 from muxdeck.adapters.windows_host import WindowsHostInfo, detect_windows_host
 from muxdeck.bindings import GLOBAL_BINDINGS
 from muxdeck.config import AppConfig, load_config
+from muxdeck.constants import default_cache_dir
 from muxdeck.controllers import (
     AgentController,
     AttentionController,
@@ -719,7 +720,15 @@ def build_runtime(config: AppConfig | None = None) -> MuxdeckRuntime:
         sync_store,
         sync_store,
     )
-    copilot_session_store = CopilotSessionStore()
+    # Persist the per-entry mtime cache to disk so a fresh muxdeck
+    # process can use the warm path on its first scan instead of
+    # paying the ~2 s cold-walk cost on a 9P-mounted Windows session
+    # state dir. The cache is keyed by (path, events.jsonl mtime), so
+    # entries that haven't changed between launches skip the
+    # workspace.yaml read and last-event scan.
+    copilot_session_store = CopilotSessionStore(
+        persistent_cache_path=default_cache_dir() / "copilot_sessions_cache.json",
+    )
     # WSL users launch some agents through pwsh.exe, which stores its
     # session state under the Windows %USERPROFILE%. Bridge that here so
     # both roots feed the same Sessions screen and Setup diagnostics.

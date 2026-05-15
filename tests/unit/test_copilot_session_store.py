@@ -11,6 +11,7 @@ import pytest
 
 from muxdeck.adapters.copilot_session_store import (
     CopilotSessionStore,
+    _CachedEntry,
     _parse_session_dir,
     _parse_workspace_yaml,
     _read_last_valid_event,
@@ -1005,6 +1006,230 @@ def test_count_by_origin_categorises_sessions(tmp_path: Path) -> None:
     store = CopilotSessionStore(session_state_dir=tmp_path, cache_ttl_sec=0)
     assert store.count_by_origin("local") == 1
     assert store.count_by_origin("windows") == 0
+
+
+# ── Persistent cache ────────────────────────────────────────────────
+
+
+def test_persistent_cache_round_trip_seeds_new_store(tmp_path: Path) -> None:
+    """A fresh store seeded from disk skips re-parsing unchanged sessions.
+
+    First store does a cold scan and writes the cache file. Second
+    store points at the same file and the same session dir; its
+    discover() must reuse the persisted ``_entry_cache`` and skip the
+    full parse path. Pin both halves: the second store's ``discover``
+    returns the same session AND the parser is NOT invoked (we patch
+    ``_parse_session_dir`` to detect any call).
+    """
+    cache_path = tmp_path / "cache" / "sessions.json"
+    sessions_root = tmp_path / "sessions"
+    sessions_root.mkdir()
+    _make_session(sessions_root, "persisted-1", summary="Persisted")
+
+    store1 = CopilotSessionStore(
+        session_state_dir=sessions_root,
+        cache_ttl_sec=0,
+        persistent_cache_path=cache_path,
+    )
+    first = store1.discover()
+    assert len(first) == 1
+    assert first[0].summary == "Persisted"
+    assert cache_path.exists()
+
+    # Second store, fresh in-memory state, but same cache file.
+    store2 = CopilotSessionStore(
+        session_state_dir=sessions_root,
+        cache_ttl_sec=0,
+        persistent_cache_path=cache_path,
+    )
+
+    from muxdeck.adapters import copilot_session_store as mod
+
+    parse_calls = 0
+    real_parse = mod._parse_session_dir
+
+    def _counting_parse(*args: object, **kwargs: object) -> object:
+        nonlocal parse_calls
+        parse_calls += 1
+        return real_parse(*args, **kwargs)  # type: ignore[arg-type]
+
+    original = mod._parse_session_dir
+    try:
+        mod._parse_session_dir = _counting_parse  # type: ignore[assignment]
+        second = store2.discover()
+    finally:
+        mod._parse_session_dir = original  # type: ignore[assignment]
+
+    assert len(second) == 1
+    assert second[0].summary == "Persisted"
+    assert parse_calls == 0, "persistent cache should bypass _parse_session_dir"
+
+
+def test_persistent_cache_corrupt_file_falls_back_to_cold_scan(tmp_path: Path) -> None:
+    """A corrupt cache file must not crash the store."""
+    cache_path = tmp_path / "cache" / "sessions.json"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text("this is not json {{{")
+
+    sessions_root = tmp_path / "sessions"
+    sessions_root.mkdir()
+    _make_session(sessions_root, "fallback-1", summary="Fresh")
+
+    store = CopilotSessionStore(
+        session_state_dir=sessions_root,
+        cache_ttl_sec=0,
+        persistent_cache_path=cache_path,
+    )
+    # Must not raise; cold scan succeeds and overwrites the bad file.
+    result = store.discover()
+    assert len(result) == 1
+    assert result[0].summary == "Fresh"
+    # The save path should also recover and produce a valid file.
+    import json as _json
+
+    payload = _json.loads(cache_path.read_text())
+    assert isinstance(payload, dict)
+    assert payload.get("version") == 1
+
+
+def test_persistent_cache_version_mismatch_drops_cache(tmp_path: Path) -> None:
+    """Older/newer cache schema versions are ignored."""
+    import json as _json
+
+    cache_path = tmp_path / "cache" / "sessions.json"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text(_json.dumps({"version": 999, "entries": []}))
+
+    sessions_root = tmp_path / "sessions"
+    sessions_root.mkdir()
+    _make_session(sessions_root, "v-mismatch", summary="Should be re-parsed")
+
+    store = CopilotSessionStore(
+        session_state_dir=sessions_root,
+        cache_ttl_sec=0,
+        persistent_cache_path=cache_path,
+    )
+    result = store.discover()
+    # The mismatched cache was dropped; result comes from a fresh
+    # parse of the on-disk session.
+    assert len(result) == 1
+    assert result[0].summary == "Should be re-parsed"
+
+
+def test_persistent_cache_filters_entries_outside_configured_roots(tmp_path: Path) -> None:
+    """Loaded entries outside the current root set must be ignored.
+
+    A cache file written by a previous muxdeck run with different
+    roots may contain entries the current store can never observe.
+    Loading them into the in-memory cache would risk drift between
+    what's surfaced and what's actually configured. Pin that they're
+    silently filtered out.
+    """
+    import json as _json
+
+    foreign_dir = tmp_path / "foreign-root"
+    foreign_dir.mkdir()
+    foreign_session_dir = foreign_dir / "ghost-session"
+    foreign_session_dir.mkdir()
+
+    cache_path = tmp_path / "cache" / "sessions.json"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_text(
+        _json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {
+                        "path": str(foreign_session_dir),
+                        "events_mtime_ns": 0,
+                        "workspace_mtime_ns": 0,
+                        "session": {
+                            "session_id": "ghost-session",
+                            "summary": "should not appear",
+                            "origin": "local",
+                            "checkpoint_count": 0,
+                            "is_cleanly_closed": False,
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    sessions_root = tmp_path / "sessions"
+    sessions_root.mkdir()
+    # Note: no real session in sessions_root; result must be empty.
+
+    store = CopilotSessionStore(
+        session_state_dir=sessions_root,
+        cache_ttl_sec=0,
+        persistent_cache_path=cache_path,
+    )
+    result = store.discover()
+    assert result == []
+    assert all(not str(p).startswith(str(foreign_dir)) for p in store._entry_cache), (
+        "foreign-root entries should be filtered out on load"
+    )
+
+
+def test_persistent_cache_disabled_when_path_is_none(tmp_path: Path) -> None:
+    """No path = no persistence (default for tests + direct construction)."""
+    sessions_root = tmp_path / "sessions"
+    sessions_root.mkdir()
+    _make_session(sessions_root, "no-persist", summary="x")
+
+    store = CopilotSessionStore(
+        session_state_dir=sessions_root,
+        cache_ttl_sec=0,
+        persistent_cache_path=None,
+    )
+    store.discover()
+    # No file should appear anywhere under tmp_path.
+    cache_files = list(tmp_path.rglob("*.json"))
+    assert cache_files == []
+
+
+def test_persistent_cache_writes_outside_lock(tmp_path: Path) -> None:
+    """The disk write must NOT happen while the scan lock is held.
+
+    Otherwise concurrent ``discover``/``get_session`` callers would
+    queue behind a slow 9P rename. Pin this by replacing the save
+    helper with one that asserts the lock is currently free.
+    """
+    cache_path = tmp_path / "cache" / "sessions.json"
+    sessions_root = tmp_path / "sessions"
+    sessions_root.mkdir()
+    _make_session(sessions_root, "lock-check", summary="x")
+
+    store = CopilotSessionStore(
+        session_state_dir=sessions_root,
+        cache_ttl_sec=0,
+        persistent_cache_path=cache_path,
+    )
+
+    saw_unlocked = False
+
+    def _spy_save(path: Path, entries: dict[Path, _CachedEntry]) -> None:
+        nonlocal saw_unlocked
+        # Try to acquire ``_lock`` non-blocking. If it succeeds we
+        # know the scan released it before calling us.
+        acquired = store._lock.acquire(blocking=False)
+        if acquired:
+            saw_unlocked = True
+            store._lock.release()
+        # Simulate a real save so the round-trip stays valid.
+        _real_save(path, entries)
+
+    from muxdeck.adapters import copilot_session_store as mod
+
+    _real_save = mod._save_persistent_cache_file
+    try:
+        mod._save_persistent_cache_file = _spy_save  # type: ignore[assignment]
+        store.discover()
+    finally:
+        mod._save_persistent_cache_file = _real_save  # type: ignore[assignment]
+
+    assert saw_unlocked, "persistent-cache write must run after _lock is released"
 
 
 # ── _parse_session_dir for windows-style cwd ─────────────────────────
