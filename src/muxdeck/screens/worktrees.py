@@ -68,6 +68,81 @@ def _build_delete_worktree_message(
 
 
 @dataclass(frozen=True, slots=True)
+class _ForceDeleteHint:
+    """Why basic delete failed and how to phrase the follow-up confirmation."""
+
+    reason: str
+    warning: str
+
+
+def _force_delete_hint(exc: BaseException) -> _ForceDeleteHint | None:
+    """Detect failures recoverable by retrying with ``force=True``.
+
+    Inspects the exception text for the known markers raised by both
+    :class:`GitCommandError` (from ``GitAdapter.remove_worktree`` and
+    git.exe itself) and :class:`DomainValidationError` (from
+    ``WorktreeService.remove_worktree``'s pre-checks). Returns ``None``
+    when the failure is unrelated to a missing ``--force`` flag (e.g.
+    "refusing to remove the main worktree"), so the caller surfaces the
+    raw error instead of prompting for a destructive retry.
+    """
+
+    text = str(exc).lower()
+    if not text:
+        return None
+
+    discard_warning = "This will discard any untracked or modified files in the worktree."
+    safeguard_warning = (
+        "This bypasses muxdeck's active-agent/session safeguard."
+        " Only continue if the agent or session is stale."
+    )
+
+    if "assigned to agent" in text:
+        return _ForceDeleteHint(
+            reason="worktree is still assigned to an agent",
+            warning=safeguard_warning,
+        )
+    if "still has cached session context" in text:
+        return _ForceDeleteHint(
+            reason="worktree still has cached session context",
+            warning=safeguard_warning,
+        )
+
+    force_marker = "rerun with force=true" in text or "use --force" in text
+    if force_marker:
+        if "untracked" in text or "uncommitted" in text or "modified" in text:
+            return _ForceDeleteHint(
+                reason="worktree has uncommitted or untracked changes",
+                warning=discard_warning,
+            )
+        if "unmerged" in text or "merge conflict" in text:
+            return _ForceDeleteHint(
+                reason="worktree has unresolved merge conflicts",
+                warning=discard_warning,
+            )
+        if "lock" in text:
+            return _ForceDeleteHint(
+                reason="worktree is locked",
+                warning=discard_warning,
+            )
+        return _ForceDeleteHint(
+            reason="git requires --force to remove this worktree",
+            warning=discard_warning,
+        )
+    if "contains modified or untracked files" in text:
+        return _ForceDeleteHint(
+            reason="worktree has untracked or modified files",
+            warning=discard_warning,
+        )
+    if "is locked" in text:
+        return _ForceDeleteHint(
+            reason="worktree is locked",
+            warning=discard_warning,
+        )
+    return None
+
+
+@dataclass(frozen=True, slots=True)
 class _LoadedWorktreesState:
     worktrees: tuple[WorktreeSummaryView, ...]
     detail: WorktreeDetailView | None
@@ -569,35 +644,69 @@ class WorktreesScreen(ShellScreen):
         if self._detail.summary.is_main_worktree:
             self.set_status("✗ cannot delete the main worktree")
             return
+        # Capture the target id in the callback so an async refresh or
+        # later selection change can't redirect the delete to a
+        # different row between the prompt and the confirmation.
+        deleted_id = self._selected_worktree_id
         message = _build_delete_worktree_message(
             self._detail.summary,
-            self._selected_worktree_id,
+            deleted_id,
         )
         self.app.push_screen(
             ConfirmScreen(
                 message=message,
                 title="Delete Worktree",
             ),
-            callback=self._on_delete_confirmed,
+            callback=lambda confirmed: self._on_delete_confirmed(confirmed, deleted_id),
         )
 
-    def _on_delete_confirmed(self, confirmed: bool | None) -> None:
+    def _on_delete_confirmed(self, confirmed: bool | None, deleted_id: str) -> None:
         if not confirmed:
             self.set_status("delete cancelled")
             return
-        if self._selected_worktree_id is None:
-            return
-        deleted_id = self._selected_worktree_id
+        self._attempt_delete(deleted_id, force=False)
+
+    def _attempt_delete(self, deleted_id: str, *, force: bool) -> None:
         try:
             action_view = self.runtime.worktrees.remove_worktree(
                 deleted_id,
-                force=False,
+                force=force,
             )
         except Exception as exc:
+            if not force:
+                hint = _force_delete_hint(exc)
+                if hint is not None:
+                    self._prompt_force_delete(deleted_id, exc, hint)
+                    return
             self.set_status(f"✗ delete failed: {exc}")
             return
         self._drop_worktree_from_local_state(deleted_id)
         self._refresh_after_worktree_action(action_view)
+
+    def _prompt_force_delete(
+        self,
+        deleted_id: str,
+        exc: BaseException,
+        hint: _ForceDeleteHint,
+    ) -> None:
+        _log.info(
+            "worktree delete: non-force attempt failed (%s); prompting force",
+            exc,
+        )
+        message = f"Delete failed: {hint.reason}.\n{hint.warning}\nForce delete?"
+        self.app.push_screen(
+            ConfirmScreen(
+                message=message,
+                title="Force Delete Worktree",
+            ),
+            callback=lambda confirmed: self._on_force_delete_confirmed(deleted_id, confirmed),
+        )
+
+    def _on_force_delete_confirmed(self, deleted_id: str, confirmed: bool | None) -> None:
+        if not confirmed:
+            self.set_status("force delete cancelled")
+            return
+        self._attempt_delete(deleted_id, force=True)
 
     def _drop_worktree_from_local_state(self, worktree_id: str) -> None:
         """Repaint the list/detail without the deleted row before the worker reloads."""

@@ -33,6 +33,7 @@ from muxdeck.screens.worktrees import (
     _WORKER_NAME,
     WorktreesScreen,
     _build_delete_worktree_message,
+    _force_delete_hint,
     _LoadedWorktreesState,
 )
 from muxdeck.services.action_service import ActionModelHint, ActionResult
@@ -109,6 +110,7 @@ class _RecordingWorktreeService:
     create_result: WorktreeActionView | Exception | None = None
     attach_result: WorktreeActionView | Exception | None = None
     remove_result: WorktreeActionView | Exception | None = None
+    remove_results: list[WorktreeActionView | Exception] | None = None
     prune_result: WorktreeActionView | Exception | None = None
     create_calls: list[tuple[str, str | None]] = field(default_factory=list)
     attach_calls: list[Path] = field(default_factory=list)
@@ -150,6 +152,14 @@ class _RecordingWorktreeService:
 
     def remove_worktree(self, worktree_id: str, *, force: bool) -> WorktreeActionView:
         self.remove_calls.append((worktree_id, force))
+        if self.remove_results is not None:
+            if not self.remove_results:
+                msg = "remove_results queue exhausted"
+                raise AssertionError(msg)
+            outcome = self.remove_results.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
         if isinstance(self.remove_result, Exception):
             raise self.remove_result
         assert self.remove_result is not None
@@ -398,7 +408,7 @@ class WorktreesActionTests(unittest.TestCase):
                 screen = WorktreesScreen(runtime)
                 await app.push_screen(screen)
                 await pilot.pause()
-                screen._on_delete_confirmed(False)
+                screen._on_delete_confirmed(False, "wt-1")
                 await pilot.pause()
                 return screen._status
 
@@ -406,7 +416,12 @@ class WorktreesActionTests(unittest.TestCase):
 
     def test_on_delete_confirmed_failure_sets_failure_status(self) -> None:
         async def scenario() -> str:
-            wts = _RecordingWorktreeService(remove_result=DomainValidationError("locked"))
+            # "permission denied" is not a force-recoverable failure
+            # signature, so the screen should surface it directly rather
+            # than push a force-delete prompt.
+            wts = _RecordingWorktreeService(
+                remove_result=DomainValidationError("permission denied"),
+            )
             runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
             app = _Harness(runtime)
             async with app.run_test(size=(160, 60)) as pilot:
@@ -415,7 +430,7 @@ class WorktreesActionTests(unittest.TestCase):
                 await pilot.pause()
                 screen._selected_worktree_id = "wt-1"
                 screen._detail = _detail()
-                screen._on_delete_confirmed(True)
+                screen._on_delete_confirmed(True, "wt-1")
                 await pilot.pause()
                 return screen._status
 
@@ -1686,24 +1701,6 @@ class WorktreesActionResultTests(unittest.TestCase):
         # ``attach_worktree`` receives the path verbatim from the modal result.
         assert calls == [cast(Path, "/repo/wt-1")]
 
-    def test_on_delete_confirmed_no_selection_returns_silently(self) -> None:
-        async def scenario() -> str:
-            wts = _RecordingWorktreeService(remove_result=_action_view())
-            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
-            app = _Harness(runtime)
-            async with app.run_test(size=(160, 60)) as pilot:
-                screen = WorktreesScreen(runtime)
-                await app.push_screen(screen)
-                await pilot.pause()
-                screen.set_status("baseline")
-                screen._selected_worktree_id = None
-                screen._on_delete_confirmed(True)
-                await pilot.pause()
-                return screen._status
-
-        # Confirmed delete with no selection is a noop — status stays put.
-        assert asyncio.run(scenario()) == "baseline"
-
     def test_on_delete_confirmed_success_drops_local_state_and_refreshes(self) -> None:
         async def scenario() -> tuple[str, list[tuple[str, bool]], tuple[str, ...]]:
             wts = _RecordingWorktreeService(remove_result=_action_view())
@@ -1716,7 +1713,7 @@ class WorktreesActionResultTests(unittest.TestCase):
                 screen._selected_worktree_id = "wt-1"
                 screen._detail = _detail()
                 screen._worktrees = (_summary(worktree_id="wt-1"), _summary(worktree_id="wt-2"))
-                screen._on_delete_confirmed(True)
+                screen._on_delete_confirmed(True, "wt-1")
                 await pilot.pause()
                 return (
                     screen._status,
@@ -1735,7 +1732,11 @@ class WorktreesActionResultTests(unittest.TestCase):
 
     def test_on_delete_confirmed_failure_uses_failure_status(self) -> None:
         async def scenario() -> str:
-            wts = _RecordingWorktreeService(remove_result=RuntimeError("locked"))
+            # "permission denied" doesn't match any force-recoverable
+            # marker, so the original failure surfaces immediately.
+            wts = _RecordingWorktreeService(
+                remove_result=RuntimeError("permission denied"),
+            )
             runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
             app = _Harness(runtime)
             async with app.run_test(size=(160, 60)) as pilot:
@@ -1744,7 +1745,7 @@ class WorktreesActionResultTests(unittest.TestCase):
                 await pilot.pause()
                 screen._selected_worktree_id = "wt-1"
                 screen._detail = _detail()
-                screen._on_delete_confirmed(True)
+                screen._on_delete_confirmed(True, "wt-1")
                 await pilot.pause()
                 return screen._status
 
@@ -2258,6 +2259,259 @@ class BuildDeleteWorktreeMessageTests(unittest.TestCase):
         message = _build_delete_worktree_message(summary, None)
 
         assert message == ("Delete worktree 'unknown' (branch: unknown)?\nFull path: unknown")
+
+
+class ForceDeleteHintTests(unittest.TestCase):
+    """``_force_delete_hint`` decodes which failures recover via ``--force``."""
+
+    def test_git_command_error_with_uncommitted_changes_is_recoverable(self) -> None:
+        # Mirrors the exact wrapper format from ``CommandError.__str__``.
+        exc = RuntimeError(
+            "command failed: git worktree remove '/repo/wt-1', "
+            "exit_code=128, "
+            "stderr=worktree has uncommitted changes; rerun with force=True to override"
+        )
+
+        hint = _force_delete_hint(exc)
+
+        assert hint is not None
+        assert hint.reason == "worktree has uncommitted or untracked changes"
+        assert "discard" in hint.warning.lower()
+
+    def test_git_command_error_with_unmerged_changes_is_recoverable(self) -> None:
+        exc = RuntimeError(
+            "command failed: git worktree remove '/repo/wt-1', "
+            "exit_code=128, "
+            "stderr=worktree has unresolved merge conflicts; "
+            "rerun with force=True to override"
+        )
+
+        hint = _force_delete_hint(exc)
+
+        assert hint is not None
+        assert hint.reason == "worktree has unresolved merge conflicts"
+
+    def test_locked_worktree_uses_force_marker(self) -> None:
+        exc = RuntimeError(
+            "command failed: git worktree remove '/repo/wt-1', exit_code=128, "
+            "stderr=worktree contains stale lock 'edit'; rerun with force=True to override"
+        )
+
+        hint = _force_delete_hint(exc)
+
+        assert hint is not None
+        assert hint.reason == "worktree is locked"
+
+    def test_native_git_modified_or_untracked_error_is_recoverable(self) -> None:
+        # The verbatim phrasing from git for Windows when running
+        # ``worktree remove`` against a dirty working tree.
+        exc = RuntimeError(
+            "command failed: 'C:/Program Files/Git/cmd/git.exe' worktree remove "
+            "'Q:\\\\src\\\\CosmosDB.worktrees\\\\agents-x', exit_code=128, "
+            "stderr=fatal: 'Q:\\\\src\\\\CosmosDB.worktrees\\\\agents-x' contains "
+            "modified or untracked files, use --force to delete it"
+        )
+
+        hint = _force_delete_hint(exc)
+
+        assert hint is not None
+        # The "modified or untracked" branch fires before the secondary
+        # marker because "use --force" also matches, but either path
+        # yields a discard-warning reason.
+        assert "untracked" in hint.reason
+        assert "discard" in hint.warning.lower()
+
+    def test_assigned_agent_uses_safeguard_warning(self) -> None:
+        # ``WorktreeService`` raises ``DomainValidationError`` rather
+        # than ``GitCommandError`` for this safeguard. The force prompt
+        # surfaces the muxdeck-specific risk, not a "discard files"
+        # message that would mislead the operator.
+        exc = DomainValidationError("worktree /repo/wt-1 is assigned to agent agent-42")
+
+        hint = _force_delete_hint(exc)
+
+        assert hint is not None
+        assert hint.reason == "worktree is still assigned to an agent"
+        assert "safeguard" in hint.warning.lower()
+
+    def test_cached_session_context_uses_safeguard_warning(self) -> None:
+        exc = DomainValidationError("worktree /repo/wt-1 still has cached session context")
+
+        hint = _force_delete_hint(exc)
+
+        assert hint is not None
+        assert hint.reason == "worktree still has cached session context"
+        assert "safeguard" in hint.warning.lower()
+
+    def test_main_worktree_refusal_is_not_force_recoverable(self) -> None:
+        # The adapter intentionally rejects this regardless of force, so
+        # the screen must keep showing the raw failure instead of
+        # prompting the operator with a destructive retry.
+        exc = RuntimeError(
+            "command failed: git worktree remove '/repo', exit_code=128, "
+            "stderr=refusing to remove the main worktree"
+        )
+
+        assert _force_delete_hint(exc) is None
+
+    def test_unrecognized_failure_returns_none(self) -> None:
+        exc = RuntimeError("permission denied")
+
+        assert _force_delete_hint(exc) is None
+
+    def test_empty_exception_returns_none(self) -> None:
+        assert _force_delete_hint(RuntimeError("")) is None
+
+
+class ForceDeleteFlowTests(unittest.TestCase):
+    """End-to-end behavior of the two-step force-delete prompt."""
+
+    def test_force_recoverable_failure_pushes_force_prompt(self) -> None:
+        async def scenario() -> tuple[str, list[tuple[str, bool]]]:
+            wts = _RecordingWorktreeService(
+                remove_result=DomainValidationError(
+                    "worktree has uncommitted changes; rerun with force=True to override"
+                ),
+            )
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_worktree_id = "wt-1"
+                screen._detail = _detail()
+                screen._on_delete_confirmed(True, "wt-1")
+                await pilot.pause()
+                # The force-prompt is the screen at the top of the stack.
+                top = type(app.screen).__name__
+                return top, list(wts.remove_calls)
+
+        top, calls = asyncio.run(scenario())
+        # First call must be non-force; the screen reaches for force
+        # only after the operator confirms the secondary prompt.
+        assert calls == [("wt-1", False)]
+        assert top == "ConfirmScreen"
+
+    def test_force_confirmed_retries_with_force_true(self) -> None:
+        async def scenario() -> tuple[str, list[tuple[str, bool]]]:
+            wts = _RecordingWorktreeService(
+                remove_results=[
+                    DomainValidationError(
+                        "worktree has uncommitted changes; rerun with force=True to override"
+                    ),
+                    _action_view(),
+                ],
+            )
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_worktree_id = "wt-1"
+                screen._detail = _detail()
+                screen._worktrees = (
+                    _summary(worktree_id="wt-1"),
+                    _summary(worktree_id="wt-2"),
+                )
+                screen._on_delete_confirmed(True, "wt-1")
+                await pilot.pause()
+                # Simulate the operator confirming the secondary prompt.
+                screen._on_force_delete_confirmed("wt-1", True)
+                await pilot.pause()
+                return screen._status, list(wts.remove_calls)
+
+        status, calls = asyncio.run(scenario())
+        # Both attempts target the same id; only the second carries force.
+        assert calls == [("wt-1", False), ("wt-1", True)]
+        assert status.startswith("✓")
+
+    def test_force_cancelled_sets_status_and_no_retry(self) -> None:
+        async def scenario() -> tuple[str, list[tuple[str, bool]]]:
+            wts = _RecordingWorktreeService(
+                remove_result=DomainValidationError(
+                    "worktree has uncommitted changes; rerun with force=True to override"
+                ),
+            )
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_worktree_id = "wt-1"
+                screen._detail = _detail()
+                screen._on_delete_confirmed(True, "wt-1")
+                await pilot.pause()
+                screen._on_force_delete_confirmed("wt-1", False)
+                await pilot.pause()
+                return screen._status, list(wts.remove_calls)
+
+        status, calls = asyncio.run(scenario())
+        # The cancellation must not trigger an additional remove call.
+        assert calls == [("wt-1", False)]
+        assert status == "force delete cancelled"
+
+    def test_force_retry_also_fails_surfaces_error_without_loop(self) -> None:
+        async def scenario() -> tuple[str, list[tuple[str, bool]]]:
+            wts = _RecordingWorktreeService(
+                remove_results=[
+                    DomainValidationError(
+                        "worktree has uncommitted changes; rerun with force=True to override"
+                    ),
+                    DomainValidationError("git fatal: I/O error"),
+                ],
+            )
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_worktree_id = "wt-1"
+                screen._detail = _detail()
+                screen._on_delete_confirmed(True, "wt-1")
+                await pilot.pause()
+                screen._on_force_delete_confirmed("wt-1", True)
+                await pilot.pause()
+                return screen._status, list(wts.remove_calls)
+
+        status, calls = asyncio.run(scenario())
+        # Two attempts max — the loop must not re-prompt on the forced
+        # failure even if the second error contains force-like phrasing.
+        assert calls == [("wt-1", False), ("wt-1", True)]
+        assert "delete failed" in status
+
+    def test_action_delete_worktree_captures_target_in_callback(self) -> None:
+        async def scenario() -> tuple[str, list[tuple[str, bool]]]:
+            wts = _RecordingWorktreeService(remove_result=_action_view())
+            runtime = _runtime_with(worktrees=wts, actions=_RecordingActions())
+            app = _Harness(runtime)
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = WorktreesScreen(runtime)
+                await app.push_screen(screen)
+                await pilot.pause()
+                screen._selected_worktree_id = "wt-1"
+                screen._detail = _detail()
+                screen._worktrees = (
+                    _summary(worktree_id="wt-1"),
+                    _summary(worktree_id="wt-2"),
+                )
+                screen.action_delete_worktree()
+                await pilot.pause()
+                # Simulate the operator changing focus before confirming.
+                screen._selected_worktree_id = "wt-2"
+                # Dismiss the confirm dialog with True — the captured
+                # callback must still target wt-1, not the new selection.
+                top_screen = app.screen
+                top_screen.dismiss(True)
+                await pilot.pause()
+                return screen._status, list(wts.remove_calls)
+
+        status, calls = asyncio.run(scenario())
+        assert calls == [("wt-1", False)]
+        assert status.startswith("✓")
 
 
 # Touch unused refs so they don't trip ruff.
