@@ -27,6 +27,7 @@ from muxdeck.controllers import (
     DashboardSubTaskView,
 )
 from muxdeck.domain.enums import AgentStatus
+from muxdeck.formatting import format_duration_seconds
 from muxdeck.services.operator_status_service import (
     OperatorStatus,
     OperatorStatusKind,
@@ -2020,12 +2021,7 @@ def _raw_output_header(
 
 def _format_delta_seconds(seconds: float) -> str:
     """Compact ``Ns`` / ``NmMs`` / ``NhMm`` for the freshness header."""
-    total = int(max(seconds, 0))
-    if total < 60:
-        return f"{total}s"
-    if total < 3600:
-        return f"{total // 60}m{total % 60:02d}s"
-    return f"{total // 3600}h{(total % 3600) // 60:02d}m"
+    return format_duration_seconds(seconds)
 
 
 def _highlight_log_line(content: str, default_style: str) -> Text:

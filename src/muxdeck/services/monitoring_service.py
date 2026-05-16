@@ -12,6 +12,7 @@ from muxdeck.adapters.copilot_session_resolver import CopilotSessionResolution
 from muxdeck.domain.enums import AgentStatus
 from muxdeck.domain.models import Agent
 from muxdeck.domain.value_objects import ensure_aware_datetime, utc_now
+from muxdeck.formatting import format_duration_seconds
 from muxdeck.services.agent_service import AgentFactInput, PaneClassification
 from muxdeck.types import Clock
 
@@ -605,7 +606,7 @@ def compute_status_heuristics(
             attention_reason=reason,
         )
     if idle_seconds >= applied_thresholds.attention_idle_after_seconds:
-        reason = f"idle for {idle_seconds}s"
+        reason = f"idle for {format_duration_seconds(idle_seconds)}"
         if blocking_kind is not None and blocking_kind != "waiting_for_confirmation":
             # The agent went quiet while one of these signals was on
             # screen — worth surfacing as the attention reason even

@@ -20,6 +20,7 @@ from muxdeck.domain.subagents import (
     SubAgentTree,
 )
 from muxdeck.domain.value_objects import utc_now
+from muxdeck.formatting import format_duration_seconds
 from muxdeck.parsers.copilot_output_parser import parse_copilot_output
 from muxdeck.perf import timed
 from muxdeck.services.operator_status_service import (
@@ -549,7 +550,9 @@ class DashboardController:
                 else _STALE_THRESHOLD_SECONDS
             )
             needs_attention = True
-            attention_reason = f"output unchanged for {stale_secs}s — may be stuck"
+            attention_reason = (
+                f"output unchanged for {format_duration_seconds(stale_secs)} — may be stuck"
+            )
 
         idle_seconds = _effective_idle_seconds(agent, now)
         operator_status = describe_operator_status(
