@@ -13,6 +13,7 @@ they are exercised through the existing controller tests.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import unittest
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -142,6 +143,8 @@ class _RecordingDashboardCtrl:
     state_to_return: DashboardState
     build_calls: int = 0
     subagent_calls: list[str] = field(default_factory=list)
+    last_precomputed_items: tuple[DashboardAgentListItemView, ...] | None = None
+    last_precomputed_selected: DashboardSelectedAgentView | None = None
 
     def build_state(
         self,
@@ -151,9 +154,13 @@ class _RecordingDashboardCtrl:
         selected_agent_id: str | None = None,
         preview_line_limit: int = 8,
         alert_limit: int = 5,
+        precomputed_items: tuple[DashboardAgentListItemView, ...] | None = None,
+        precomputed_selected: DashboardSelectedAgentView | None = None,
     ) -> DashboardState:
         del filters, sort, selected_agent_id, preview_line_limit, alert_limit
         self.build_calls += 1
+        self.last_precomputed_items = precomputed_items
+        self.last_precomputed_selected = precomputed_selected
         return self.state_to_return
 
     def load_subagents(self, agent_id: str) -> DashboardSubAgentTreeView:
@@ -1243,6 +1250,49 @@ class DashboardScreenAdditionalTests(unittest.TestCase):
             before = screen._filters.text_query
             screen.on_input_changed(event)
             assert screen._filters.text_query == before
+
+        self._run_with_screen(runtime, body)
+
+    def test_on_input_changed_uses_cached_items_without_worker(self) -> None:
+        item = _agent_view()
+        sel = _selected_view(item)
+        st = _state(agents=(item,), selected=sel)
+        ctrl = _RecordingDashboardCtrl(state_to_return=st)
+        runtime = _runtime_with(
+            dashboard_ctrl=ctrl,
+            agents_ctrl=_RecordingAgents(),
+        )
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._cached_agent_items = (item,)
+            screen._cached_selected_view = sel
+            calls_before = ctrl.build_calls
+            input_widget = screen.query_one(FilterBar).query_one(Input)
+            input_widget.value = ""
+            event = Input.Changed(input_widget, "auth")
+            screen.on_input_changed(event)
+            assert screen._filters.text_query == "auth"
+            assert screen._filter_timer is None
+            assert ctrl.build_calls == calls_before + 1
+            assert ctrl.last_precomputed_items == (item,)
+            assert ctrl.last_precomputed_selected is sel
+
+        self._run_with_screen(runtime, body)
+
+    def test_apply_state_caches_unfiltered_items_and_selected(self) -> None:
+        item = _agent_view()
+        sel = _selected_view(item)
+        st = _state(agents=(item,), selected=sel)
+        st = dataclasses.replace(st, all_agent_items=(item,))
+        runtime = _runtime_with(
+            dashboard_ctrl=_RecordingDashboardCtrl(state_to_return=_state()),
+            agents_ctrl=_RecordingAgents(),
+        )
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._apply_state(st, None)
+            assert screen._cached_agent_items == (item,)
+            assert screen._cached_selected_view is sel
 
         self._run_with_screen(runtime, body)
 

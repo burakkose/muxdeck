@@ -119,6 +119,16 @@ class DashboardScreen(ShellScreen):
         self._live_tail_stream: PaneStreamAdapter | None = None
         self._live_tail_lines: dict[str, tuple[DashboardLogLineView, ...]] = {}
         self._live_tail_sequence: int = 0
+        # ── Cached items for fast filter/sort changes ──
+        # Each successful ``_apply_state`` snapshots the unfiltered
+        # ``all_agent_items`` and the rendered ``selected_agent`` view
+        # so subsequent filter-typing / sort-toggling can re-derive the
+        # visible state on the UI thread without re-querying SQLite or
+        # rebuilding ``_build_selected_agent`` (which costs ~8 SQL +
+        # 1 JSONL read). Sync-driven refreshes always invalidate the
+        # cache by writing fresh values.
+        self._cached_agent_items: tuple[DashboardAgentListItemView, ...] | None = None
+        self._cached_selected_view: DashboardSelectedAgentView | None = None
 
     @property
     def current_filters(self) -> DashboardFilterState:
@@ -273,6 +283,12 @@ class DashboardScreen(ShellScreen):
             self.query_one(AlertPanel),
         )
         self._state = state
+        # Snapshot the unfiltered items + selected view so subsequent
+        # filter/sort-only refreshes can reuse them without re-querying
+        # SQLite. Only the next sync invalidates this cache.
+        if state.all_agent_items:
+            self._cached_agent_items = state.all_agent_items
+        self._cached_selected_view = state.selected_agent
         self._loading = False
         # Bump both tokens so any in-flight workers (detail load, local
         # pre-sync state build) drop their results instead of
@@ -417,13 +433,37 @@ class DashboardScreen(ShellScreen):
             text_query=event.value,
             include_completed=self._filters.include_completed,
         )
-        # Debounce: each keystroke would otherwise kick off a worker
-        # that re-runs ``build_state`` (per-agent SQL queries + JSONL
-        # reads). Coalesce typing bursts into a single rebuild after
-        # the user pauses.
-        if self._filter_timer is not None:
-            self._filter_timer.stop()
-        self._filter_timer = self.set_timer(0.2, self.refresh_data)
+        # Each keystroke used to debounce a worker that re-ran
+        # ``build_state`` (full per-agent SQL + JSONL reads). Now we
+        # re-derive the visible state synchronously from the cached
+        # ``all_agent_items`` snapshot — filtering and sorting an
+        # in-memory tuple. The cached ``selected_agent`` view is reused
+        # whenever the highlighted row is still visible, so we don't
+        # re-issue the ~8 SQL queries of ``_build_selected_agent``
+        # per keystroke. Fall back to the worker only when no cache
+        # exists yet (cold start).
+        if self._cached_agent_items is None:
+            if self._filter_timer is not None:
+                self._filter_timer.stop()
+            self._filter_timer = self.set_timer(0.2, self.refresh_data)
+            return
+        self._apply_local_view_change()
+
+    def _apply_local_view_change(self) -> None:
+        """Re-derive ``DashboardState`` from cached items without SQL."""
+        cached = self._cached_agent_items
+        if cached is None:
+            return
+        dashboard = getattr(self.runtime, "sync_dashboard", None) or self.runtime.dashboard
+        state = dashboard.build_state(
+            filters=self._filters,
+            sort=self._sort,
+            selected_agent_id=self._selected_agent_id,
+            preview_line_limit=self._preview_line_limit(),
+            precomputed_items=cached,
+            precomputed_selected=self._cached_selected_view,
+        )
+        self._apply_state(state, self.muxdeck_app.last_sync_report)
 
     def action_cursor_down(self) -> None:
         self.query_one(AgentListPanel).move_cursor(1)

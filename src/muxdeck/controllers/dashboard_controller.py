@@ -189,6 +189,10 @@ class DashboardSelectedAgentView:
     log_preview: tuple[DashboardLogLineView, ...]
     recent_events: tuple[str, ...] = ()
     sub_tasks: tuple[DashboardSubTaskView, ...] = ()
+    # Depth used to build ``log_preview``. Cached so filter-only
+    # rebuilds can detect when the preview limit changed and avoid
+    # reusing a too-short/too-long preview.
+    log_preview_line_limit: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,6 +274,11 @@ class DashboardState:
     agents: tuple[DashboardAgentListItemView, ...]
     selected_agent_id: str | None
     selected_agent: DashboardSelectedAgentView | None
+    # Unfiltered agent items used to build this state. Cached on the
+    # screen so filter/sort/selection-only changes can re-derive the
+    # view without re-querying SQLite/JSONL. ``()`` for legacy callers
+    # that build state without the precomputed items path (e.g. tests).
+    all_agent_items: tuple[DashboardAgentListItemView, ...] = ()
 
 
 class DashboardController:
@@ -457,6 +466,7 @@ class DashboardController:
         preview_line_limit: int = 8,
         alert_limit: int = 5,
         precomputed_items: Sequence[DashboardAgentListItemView] | None = None,
+        precomputed_selected: DashboardSelectedAgentView | None = None,
     ) -> DashboardState:
         with timed("dashboard.build_state"):
             applied_filters = DashboardFilterState() if filters is None else filters
@@ -471,11 +481,23 @@ class DashboardController:
             selected_item = self._select_agent(sorted_agents, selected_agent_id)
             selected_view = None
             if selected_item is not None:
-                with timed("dashboard.build_selected_agent"):
-                    selected_view = self._build_selected_agent(
-                        selected_item,
-                        preview_line_limit=preview_line_limit,
-                    )
+                # Filter/sort keystrokes pin the cursor on the same row;
+                # rebuilding ``selected_agent`` would re-run ~8 SQL +
+                # one JSONL read for no behavioural change. Reuse the
+                # caller-supplied view when the agent_id and preview
+                # depth match.
+                if (
+                    precomputed_selected is not None
+                    and precomputed_selected.item.agent_id == selected_item.agent_id
+                    and precomputed_selected.log_preview_line_limit == preview_line_limit
+                ):
+                    selected_view = precomputed_selected
+                else:
+                    with timed("dashboard.build_selected_agent"):
+                        selected_view = self._build_selected_agent(
+                            selected_item,
+                            preview_line_limit=preview_line_limit,
+                        )
             alerts = self._build_alerts(agent_views, limit=alert_limit)
             metrics = self._build_metrics(agent_views)
             health = self._build_health_summary(agent_views)
@@ -489,6 +511,7 @@ class DashboardController:
                 agents=sorted_agents,
                 selected_agent_id=selected_item.agent_id if selected_item is not None else None,
                 selected_agent=selected_view,
+                all_agent_items=agent_views,
             )
 
     def _build_agent_item(
@@ -822,6 +845,7 @@ class DashboardController:
                 if self._subtask_registry is not None
                 else ()
             ),
+            log_preview_line_limit=preview_line_limit,
         )
 
     def _build_transcript_preview(

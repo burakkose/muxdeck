@@ -846,6 +846,82 @@ class DashboardControllerTests(unittest.TestCase):
 
         self.assertEqual(len(state.agents), 1)
         self.assertEqual(state.agents[0].agent_id, "agent-1")
+        self.assertEqual(state.all_agent_items, items)
+
+    def test_build_state_reuses_precomputed_selected(self) -> None:
+        """precomputed_selected is reused when agent_id + preview limit match."""
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Agent",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="main",
+            task_title="Task",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_seen_at=observed_at,
+        )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        first = controller.build_state(selected_agent_id="agent-1")
+        first_selected = first.selected_agent
+        assert first_selected is not None
+
+        # _build_selected_agent calls get_latest_event_for_session via
+        # the snapshot path; we capture the call count as our witness.
+        before = list(store.latest_event_calls)
+        items = controller.build_agent_items()
+        # build_agent_items itself queries the latest event per agent;
+        # only the delta from the second build_state matters.
+        baseline = list(store.latest_event_calls)
+        second = controller.build_state(
+            selected_agent_id="agent-1",
+            precomputed_items=items,
+            precomputed_selected=first_selected,
+        )
+        assert second.selected_agent is first_selected
+        assert store.latest_event_calls == baseline
+        del before
+
+    def test_build_state_rebuilds_selected_when_agent_id_differs(self) -> None:
+        """A precomputed selected view for a different agent triggers a rebuild."""
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        for agent_id in ("agent-1", "agent-2"):
+            store.agents[agent_id] = Agent(
+                id=agent_id,
+                name=agent_id,
+                tmux_session_name="muxdeck",
+                tmux_window_id="@1",
+                tmux_pane_id="%1",
+                cwd="/repo",
+                repo_root="/repo",
+                branch="main",
+                task_title="Task",
+                status=AgentStatus.RUNNING,
+                started_at=observed_at,
+                last_seen_at=observed_at,
+            )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        first = controller.build_state(selected_agent_id="agent-1")
+        stale = first.selected_agent
+        assert stale is not None
+
+        items = controller.build_agent_items()
+        rebuilt = controller.build_state(
+            selected_agent_id="agent-2",
+            precomputed_items=items,
+            precomputed_selected=stale,
+        )
+        assert rebuilt.selected_agent is not stale
+        assert rebuilt.selected_agent is not None
+        assert rebuilt.selected_agent.item.agent_id == "agent-2"
 
     def test_log_preview_with_no_logs_returns_empty_tuple(self) -> None:
         """When no logs exist for a session, log preview is empty."""
