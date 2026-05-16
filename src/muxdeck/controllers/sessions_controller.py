@@ -264,6 +264,7 @@ class SessionsController:
         # view-model assembly. When None, fall back to the canonical
         # full discover() so existing call sites keep working.
         raw_sessions = list(sessions) if sessions is not None else self._store.discover()
+        by_id: dict[str, CopilotLocalSession] = {s.session_id: s for s in raw_sessions}
 
         items: list[SessionListItemView] = []
         active_count = 0
@@ -317,7 +318,16 @@ class SessionsController:
         # Build selected detail
         selected: SessionDetailView | None = None
         if resolved_selected_session_id:
-            raw = self._store.get_session(resolved_selected_session_id)
+            # Prefer the row from the scan we just performed — the
+            # selected id was picked from the visible (in-scan) set,
+            # so a second ``self._store.get_session`` call would just
+            # repeat the same lookup (and on cold caches, do another
+            # filesystem round-trip). Fall back to the store only
+            # for the rare race where the row disappeared between
+            # the scan and the selection resolution.
+            raw = by_id.get(resolved_selected_session_id)
+            if raw is None:
+                raw = self._store.get_session(resolved_selected_session_id)
             if raw is not None:
                 status = _session_status(raw, live_session_ids)
                 (
