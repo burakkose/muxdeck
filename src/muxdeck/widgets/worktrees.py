@@ -109,6 +109,12 @@ class WorktreeListPanel(Static, can_focus=True):
         super().__init__(id=widget_id, classes=classes)
         self._worktrees: tuple[WorktreeSummaryView, ...] = ()
         self._selected_index = 0
+        # Pre-rendered per-row Text variants (unselected, selected)
+        # keyed by item index. Rebuilt only when ``set_worktrees`` runs;
+        # cursor moves just pick the right variant per row, so the
+        # rich.text.Text constructor + styled appends below don't run
+        # on every j/k keystroke.
+        self._row_cache: tuple[tuple[Text, Text], ...] = ()
 
     def on_mount(self) -> None:
         pass
@@ -121,6 +127,7 @@ class WorktreeListPanel(Static, can_focus=True):
         notify: bool = True,
     ) -> None:
         self._worktrees = tuple(worktrees)
+        self._rebuild_row_cache()
         if not self._worktrees:
             self._selected_index = 0
             empty = Text()
@@ -190,11 +197,6 @@ class WorktreeListPanel(Static, can_focus=True):
 
     def _build_list(self) -> Text:
         result = Text()
-        # Count branch name occurrences for disambiguation
-        branch_counts: dict[str, int] = {}
-        for wt in self._worktrees:
-            branch_counts[wt.branch] = branch_counts.get(wt.branch, 0) + 1
-
         win_start, win_end = self._visible_window()
 
         # Scroll position indicator at top
@@ -202,58 +204,9 @@ class WorktreeListPanel(Static, can_focus=True):
             result.append(f"  ↑ {win_start} more\n", style=FG4)
 
         for index in range(win_start, win_end):
-            wt = self._worktrees[index]
-            is_selected = index == self._selected_index
-            row_bg = f" on {SELECTED_ROW_BG}" if is_selected else ""
-
-            # Selection indicator
-            if is_selected:
-                result.append(" ▎ ", style=f"bold {BLUE}{row_bg}")
-            else:
-                result.append("   ", style=row_bg)
-
-            # Main/star indicator
-            if wt.is_main_worktree:
-                # Main worktree is structural identity, not a state.
-                # Keep the star in primary text so GREEN stays reserved
-                # for "healthy / running" agents.
-                result.append("★ ", style=f"bold {FG}{row_bg}")
-            else:
-                result.append("  ", style=row_bg)
-
-            # Branch name — full, not truncated
-            branch = wt.branch
-            branch_style = f"bold {FG}{row_bg}" if is_selected else f"{FG2}{row_bg}"
-            result.append(branch, style=branch_style)
-
-            # Disambiguate duplicate branch names with dir name
-            if branch_counts.get(branch, 0) > 1:
-                dir_name = _worktree_dir_name(wt.path)
-                if dir_name:
-                    result.append(f" ({dir_name})", style=f"{FG4}{row_bg}")
-
-            # Status indicators on same line. Dirty is the only state
-            # indicator that earns colour (orange = needs review). The
-            # provenance/agent label is metadata about *who* owns the
-            # worktree, so it sits in the gray family.
-            indicators: list[tuple[str, str]] = []
-            if wt.is_dirty:
-                indicators.append(("D", f"bold {ORANGE}"))
-            if wt.provenance is not None:
-                indicators.append(
-                    (
-                        f"{_provenance_icon(wt.provenance)}{wt.provenance.label}",
-                        FG2,
-                    ),
-                )
-
-            if indicators:
-                result.append("  ", style=row_bg)
-                for label, ind_style in indicators:
-                    result.append(label, style=f"{ind_style}{row_bg}")
-                    result.append(" ", style=row_bg)
-
-            result.append("\n")
+            variants = self._row_cache[index]
+            row_text = variants[1] if index == self._selected_index else variants[0]
+            result.append_text(row_text)
 
         # Scroll position indicator at bottom
         remaining = len(self._worktrees) - win_end
@@ -261,6 +214,86 @@ class WorktreeListPanel(Static, can_focus=True):
             result.append(f"  ↓ {remaining} more\n", style=FG4)
 
         return result
+
+    def _rebuild_row_cache(self) -> None:
+        """Build per-row Text in both selection variants once per data refresh.
+
+        Cursor moves only swap which variant the visible window picks
+        — they never re-execute the styled-append loop below. Branch
+        count disambiguation is also computed once and reused.
+        """
+        if not self._worktrees:
+            self._row_cache = ()
+            return
+        branch_counts: dict[str, int] = {}
+        for wt in self._worktrees:
+            branch_counts[wt.branch] = branch_counts.get(wt.branch, 0) + 1
+        cache: list[tuple[Text, Text]] = []
+        for wt in self._worktrees:
+            cache.append(
+                (
+                    self._build_row_text(wt, is_selected=False, branch_counts=branch_counts),
+                    self._build_row_text(wt, is_selected=True, branch_counts=branch_counts),
+                )
+            )
+        self._row_cache = tuple(cache)
+
+    def _build_row_text(
+        self,
+        wt: WorktreeSummaryView,
+        *,
+        is_selected: bool,
+        branch_counts: dict[str, int],
+    ) -> Text:
+        row = Text()
+        row_bg = f" on {SELECTED_ROW_BG}" if is_selected else ""
+
+        # Selection indicator
+        if is_selected:
+            row.append(" ▎ ", style=f"bold {BLUE}{row_bg}")
+        else:
+            row.append("   ", style=row_bg)
+
+        # Main/star indicator
+        if wt.is_main_worktree:
+            row.append("★ ", style=f"bold {FG}{row_bg}")
+        else:
+            row.append("  ", style=row_bg)
+
+        # Branch name — full, not truncated
+        branch = wt.branch
+        branch_style = f"bold {FG}{row_bg}" if is_selected else f"{FG2}{row_bg}"
+        row.append(branch, style=branch_style)
+
+        # Disambiguate duplicate branch names with dir name
+        if branch_counts.get(branch, 0) > 1:
+            dir_name = _worktree_dir_name(wt.path)
+            if dir_name:
+                row.append(f" ({dir_name})", style=f"{FG4}{row_bg}")
+
+        # Status indicators on same line. Dirty is the only state
+        # indicator that earns colour (orange = needs review). The
+        # provenance/agent label is metadata about *who* owns the
+        # worktree, so it sits in the gray family.
+        indicators: list[tuple[str, str]] = []
+        if wt.is_dirty:
+            indicators.append(("D", f"bold {ORANGE}"))
+        if wt.provenance is not None:
+            indicators.append(
+                (
+                    f"{_provenance_icon(wt.provenance)}{wt.provenance.label}",
+                    FG2,
+                ),
+            )
+
+        if indicators:
+            row.append("  ", style=row_bg)
+            for label, ind_style in indicators:
+                row.append(label, style=f"{ind_style}{row_bg}")
+                row.append(" ", style=row_bg)
+
+        row.append("\n")
+        return row
 
 
 class WorktreeDetailPanel(Static):

@@ -223,6 +223,52 @@ async def test_list_panel_window_scroll_renders_scroll_indicators() -> None:
         assert "more" in rendered
 
 
+@pytest.mark.asyncio
+async def test_list_panel_cursor_move_reuses_cached_rows() -> None:
+    """Cursor moves must not re-execute the per-row Text builder."""
+    panel = WorktreeListPanel(widget_id="wt-list")
+
+    class _Harness(App[None]):
+        def compose(self) -> ComposeResult:
+            yield panel
+
+    worktrees = tuple(_summary(worktree_id=f"wt-{i}", branch=f"branch-{i}") for i in range(5))
+    async with _Harness().run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        panel.set_worktrees(worktrees, selected_worktree_id="wt-0")
+        await pilot.pause()
+        # The cache should contain one (unselected, selected) pair per
+        # worktree after the initial load.
+        assert len(panel._row_cache) == 5
+
+        build_calls = {"count": 0}
+        original_build_row = panel._build_row_text
+
+        def _spy_build_row(
+            wt: object,
+            *,
+            is_selected: bool,
+            branch_counts: dict[str, int],
+        ) -> object:
+            build_calls["count"] += 1
+            return original_build_row(
+                wt,  # type: ignore[arg-type]
+                is_selected=is_selected,
+                branch_counts=branch_counts,
+            )
+
+        panel._build_row_text = _spy_build_row  # type: ignore[assignment,method-assign]
+        try:
+            for _ in range(4):
+                panel.move_cursor(1)
+                await pilot.pause()
+        finally:
+            panel._build_row_text = original_build_row  # type: ignore[method-assign]
+        assert build_calls["count"] == 0, (
+            f"cursor moves recomputed {build_calls['count']} row(s); should reuse the cache"
+        )
+
+
 # ── WorktreeDetailPanel ─────────────────────────────────────────────
 
 
