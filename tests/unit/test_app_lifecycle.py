@@ -25,6 +25,7 @@ from muxdeck.app import (
     MuxdeckApp,
     MuxdeckRuntime,
     _get_tmux_safe_driver,
+    _ui_preference_geometry_changed,
     _urgency_for,
     build_runtime,
 )
@@ -51,7 +52,13 @@ from muxdeck.services.attention_service import (
     AttentionNotification,
 )
 from muxdeck.services.runtime_service import RuntimeSyncReport
-from muxdeck.ui_preferences import UiDensity, UiPreferences
+from muxdeck.ui_preferences import (
+    UiContrast,
+    UiDecorations,
+    UiDensity,
+    UiGlyphs,
+    UiPreferences,
+)
 from muxdeck.widgets.common import KeyHintFooter, TabBar
 
 _TS = datetime(2025, 1, 1, 12, tzinfo=UTC)
@@ -418,7 +425,7 @@ class AppLifecycleAndActionTests(unittest.TestCase):
         app.ui_preferences = UiPreferences(density=UiDensity.COMFORTABLE)
         assert not app.ui_preferences.is_default
         # Stub the screen-touching helpers so the call is synchronous.
-        app._apply_ui_preferences = lambda *, refresh_screen: None  # type: ignore[method-assign]
+        app._apply_ui_preferences = lambda *, refresh_screen, geometry_changed=True: None  # type: ignore[method-assign]
         statuses: list[str] = []
         app._set_screen_status = statuses.append  # type: ignore[assignment]
 
@@ -840,6 +847,75 @@ class SetUiPreferencesGuardsTests(unittest.TestCase):
             return True
 
         assert asyncio.run(scenario()) is True
+
+
+class UiPreferenceGeometryHelperTests(unittest.TestCase):
+    """Geometry-changed predicate gates the layout pass on toggle."""
+
+    def test_glyph_toggle_does_not_require_layout(self) -> None:
+        previous = UiPreferences()
+        current = UiPreferences(glyphs=UiGlyphs.ASCII)
+        assert _ui_preference_geometry_changed(previous, current) is False
+
+    def test_contrast_toggle_does_not_require_layout(self) -> None:
+        previous = UiPreferences()
+        current = UiPreferences(contrast=UiContrast.HIGH)
+        assert _ui_preference_geometry_changed(previous, current) is False
+
+    def test_density_toggle_requires_layout(self) -> None:
+        previous = UiPreferences()
+        current = UiPreferences(density=UiDensity.COMFORTABLE)
+        assert _ui_preference_geometry_changed(previous, current) is True
+
+    def test_decorations_toggle_requires_layout(self) -> None:
+        previous = UiPreferences()
+        current = UiPreferences(decorations=UiDecorations.REDUCED)
+        assert _ui_preference_geometry_changed(previous, current) is True
+
+    def test_wrap_logs_toggle_requires_layout(self) -> None:
+        previous = UiPreferences()
+        current = UiPreferences(wrap_logs=True)
+        assert _ui_preference_geometry_changed(previous, current) is True
+
+    def test_apply_ui_preferences_passes_layout_flag_through_to_refresh(self) -> None:
+        async def scenario() -> tuple[bool, bool]:
+            runtime = _make_runtime()
+            app = MuxdeckApp(runtime)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                refresh_calls: list[tuple[bool, bool]] = []
+                screen = app.screen
+                original_refresh = screen.refresh
+
+                def _spy_refresh(
+                    *args: object,
+                    repaint: bool = True,
+                    layout: bool = False,
+                    **kwargs: object,
+                ) -> object:
+                    refresh_calls.append((repaint, layout))
+                    return original_refresh(
+                        *args,  # type: ignore[arg-type]
+                        repaint=repaint,
+                        layout=layout,
+                        **kwargs,  # type: ignore[arg-type]
+                    )
+
+                cast(Any, screen).refresh = _spy_refresh
+                refresh_calls.clear()
+                app._apply_ui_preferences(refresh_screen=False, geometry_changed=False)
+                # The last call is the explicit ``screen.refresh(...)`` from
+                # ``_apply_ui_preferences``; earlier entries come from
+                # CSS class-swap side effects that we do not control.
+                glyph_layout = refresh_calls[-1][1]
+                refresh_calls.clear()
+                app._apply_ui_preferences(refresh_screen=False, geometry_changed=True)
+                density_layout = refresh_calls[-1][1]
+            return glyph_layout, density_layout
+
+        glyph_layout, density_layout = asyncio.run(scenario())
+        assert glyph_layout is False
+        assert density_layout is True
 
 
 class SetScreenStatusGuardsTests(unittest.TestCase):

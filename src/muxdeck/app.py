@@ -102,6 +102,24 @@ _UI_CLASS_PREFIXES = (
 )
 
 
+def _ui_preference_geometry_changed(
+    previous: UiPreferences,
+    current: UiPreferences,
+) -> bool:
+    """Return ``True`` when the change requires a layout pass.
+
+    Density, decorations and log-wrap influence padding, line wrap,
+    and rendered geometry, so they need a full ``refresh(layout=True)``.
+    Glyph and contrast swaps only change which characters / colors the
+    same cells render, so they can repaint without a layout cycle.
+    """
+    return (
+        previous.density != current.density
+        or previous.decorations != current.decorations
+        or previous.wrap_logs != current.wrap_logs
+    )
+
+
 _URGENCY_BY_SEVERITY: dict[str, str] = {
     "error": "critical",
     "warning": "normal",
@@ -679,11 +697,21 @@ class MuxdeckApp(App[None]):
         if preferences == self.ui_preferences:
             self._set_screen_status(message)
             return
+        previous = self.ui_preferences
         self.ui_preferences = preferences
-        self._apply_ui_preferences(refresh_screen=True)
+        geometry_changed = _ui_preference_geometry_changed(previous, preferences)
+        self._apply_ui_preferences(
+            refresh_screen=True,
+            geometry_changed=geometry_changed,
+        )
         self._set_screen_status(message)
 
-    def _apply_ui_preferences(self, *, refresh_screen: bool) -> None:
+    def _apply_ui_preferences(
+        self,
+        *,
+        refresh_screen: bool,
+        geometry_changed: bool = True,
+    ) -> None:
         for class_name in tuple(self.classes):
             if class_name.startswith(_UI_CLASS_PREFIXES):
                 self.remove_class(class_name)
@@ -705,7 +733,12 @@ class MuxdeckApp(App[None]):
             refresher = getattr(screen, "refresh_data", None)
             if callable(refresher):
                 refresher()
-        screen.refresh(repaint=True, layout=True)
+        # Glyph / contrast toggles only swap CSS classes; skipping the
+        # layout pass on those changes lets Textual avoid a full
+        # measure/arrange cycle (which can be tens of ms on large
+        # screens). Geometry-affecting toggles (density, log wrap,
+        # decorations) still request a full layout.
+        screen.refresh(repaint=True, layout=geometry_changed)
 
     def _set_screen_status(self, message: str) -> None:
         screen = self._current_screen()
