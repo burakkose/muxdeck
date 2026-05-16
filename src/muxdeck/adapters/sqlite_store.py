@@ -27,6 +27,7 @@ from muxdeck.domain.value_objects import (
     utc_now,
 )
 from muxdeck.exceptions import DomainValidationError, PersistenceError
+from muxdeck.perf import timed
 from muxdeck.types import JsonValue, PathLike
 
 AgentBackend = Literal["copilot_cli"]
@@ -1182,7 +1183,7 @@ class SQLiteStore:
     @contextmanager
     def _transaction(self, *, operation: str) -> Iterator[sqlite3.Connection]:
         try:
-            with self._connection:
+            with timed(f"sqlite.{operation}"), self._connection:
                 yield self._connection
         except sqlite3.Error as exc:
             msg = f"failed to {operation}"
@@ -1227,7 +1228,11 @@ class SQLiteStore:
         operation: str,
     ) -> sqlite3.Row | None:
         try:
-            return cast(sqlite3.Row | None, self._connection.execute(sql, params).fetchone())
+            with timed(f"sqlite.{operation}"):
+                return cast(
+                    sqlite3.Row | None,
+                    self._connection.execute(sql, params).fetchone(),
+                )
         except sqlite3.Error as exc:
             msg = f"failed to {operation}"
             raise PersistenceError(msg) from exc
@@ -1240,7 +1245,8 @@ class SQLiteStore:
         operation: str,
     ) -> tuple[sqlite3.Row, ...]:
         try:
-            rows = self._connection.execute(sql, params).fetchall()
+            with timed(f"sqlite.{operation}"):
+                rows = self._connection.execute(sql, params).fetchall()
         except sqlite3.Error as exc:
             msg = f"failed to {operation}"
             raise PersistenceError(msg) from exc

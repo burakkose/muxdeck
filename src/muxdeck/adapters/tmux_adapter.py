@@ -14,6 +14,7 @@ from muxdeck.parsers import (
     TmuxPaneRecord,
     parse_tmux_list_panes_output,
 )
+from muxdeck.perf import timed
 from muxdeck.types import CommandRunner, PathLike
 
 _LIST_PANES_FIELDS: Final[tuple[tuple[str, str], ...]] = (
@@ -171,8 +172,9 @@ class TmuxAdapter:
         self._socket_path = Path(socket_path).expanduser().resolve(strict=False)
 
     def list_panes(self) -> TmuxListPanesParseResult:
-        result = self._run_tmux("list-panes", "-a", "-F", LIST_PANES_FORMAT)
-        return parse_tmux_list_panes_output(result.stdout)
+        with timed("tmux.list_panes"):
+            result = self._run_tmux("list-panes", "-a", "-F", LIST_PANES_FORMAT)
+            return parse_tmux_list_panes_output(result.stdout)
 
     def list_windows(self) -> tuple[TmuxWindowInfo, ...]:
         parsed = self.list_panes()
@@ -269,7 +271,8 @@ class TmuxAdapter:
             args.extend(("-S", str(start_line)))
         if end_line is not None:
             args.extend(("-E", str(end_line)))
-        return self._run_tmux(*args).stdout
+        with timed("tmux.capture_pane"):
+            return self._run_tmux(*args).stdout
 
     def pipe_pane_to_file(
         self,

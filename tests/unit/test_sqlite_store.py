@@ -16,6 +16,7 @@ from muxdeck.domain.events import Event, LogChunk
 from muxdeck.domain.models import Agent, Session, Worktree
 from muxdeck.domain.task_models import Task
 from muxdeck.exceptions import PersistenceError
+from muxdeck.perf import summarize
 
 
 class SQLiteStoreTests(unittest.TestCase):
@@ -1310,6 +1311,22 @@ class StoreCountAndOpenSessionTests(SQLiteStoreTests):
 
     def test_get_open_session_for_agent_returns_none_when_missing(self) -> None:
         self.assertIsNone(self.store.get_open_session_for_agent("missing"))
+
+    def test_hot_read_paths_record_perf_spans(self) -> None:
+        summarize(reset=True)
+        try:
+            agent = self._make_agent()
+            session = self._make_session()
+            self.store.upsert_agent(agent)
+            self.store.upsert_session(session)
+            self.store.get_latest_session_for_agent(agent.id)
+            self.store.list_sessions(agent.id)
+        finally:
+            spans = {s.name for s in summarize(reset=True)}
+        self.assertIn("sqlite.upsert agent", spans)
+        self.assertIn("sqlite.upsert session", spans)
+        self.assertIn("sqlite.get latest session for agent", spans)
+        self.assertIn("sqlite.list sessions", spans)
 
 
 class StoreDatabasePathOverrideTests(unittest.TestCase):

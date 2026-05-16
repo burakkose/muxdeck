@@ -18,6 +18,7 @@ from muxdeck.adapters.tmux_adapter import (
 )
 from muxdeck.domain.value_objects import CommandResult
 from muxdeck.exceptions import CommandError, TmuxCommandError
+from muxdeck.perf import summarize
 
 
 def _command_result(
@@ -551,6 +552,23 @@ class TmuxAdapterTests(unittest.TestCase):
         )
         # Must not raise — a dead pane during teardown is normal.
         TmuxAdapter(runner).stop_pipe_pane("%404")
+
+    def test_list_panes_and_capture_pane_record_perf_spans(self) -> None:
+        runner = FakeCommandRunner(
+            results=[
+                _command_result(("tmux", "list-panes"), stdout=""),
+                _command_result(("tmux", "capture-pane"), stdout=""),
+            ]
+        )
+        summarize(reset=True)
+        try:
+            adapter = TmuxAdapter(runner)
+            adapter.list_panes()
+            adapter.capture_pane("%1")
+        finally:
+            spans = {s.name for s in summarize(reset=True)}
+        self.assertIn("tmux.list_panes", spans)
+        self.assertIn("tmux.capture_pane", spans)
 
 
 class TmuxAdapterValidationTests(unittest.TestCase):

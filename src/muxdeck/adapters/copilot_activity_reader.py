@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from muxdeck.adapters.copilot_session_store import SessionStoreRoot
+from muxdeck.perf import timed
 
 _log = logging.getLogger(__name__)
 
@@ -158,7 +159,7 @@ class CopilotActivityReader:
         was invented by the discovery pipeline and doesn't match a
         real Copilot session).
         """
-        with self._lock:
+        with timed("activity.read"), self._lock:
             return self._read_locked(session_id)
 
     def _read_locked(self, session_id: str) -> AgentActivity | None:

@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from muxdeck.perf import timed
+
 _log = logging.getLogger(__name__)
 
 
@@ -392,11 +394,12 @@ class PaneStreamAdapter:
         here: the compose mirror should match what the operator sees in
         tmux, including hard visual wraps from the pane width.
         """
-        return self._tmux.capture_pane(
-            pane_id,
-            join_wrapped_lines=False,
-            include_escape_sequences=True,
-        )
+        with timed("panestream.capture_snapshot"):
+            return self._tmux.capture_pane(
+                pane_id,
+                join_wrapped_lines=False,
+                include_escape_sequences=True,
+            )
 
     def capture_tail(self, pane_id: str, *, lines: int = 100) -> str:
         """Capture the last ``lines`` rows of the pane plus scrollback.
@@ -411,12 +414,13 @@ class PaneStreamAdapter:
         if lines <= 0:
             msg = "lines must be positive"
             raise ValueError(msg)
-        return self._tmux.capture_pane(
-            pane_id,
-            start_line=-lines,
-            join_wrapped_lines=True,
-            include_escape_sequences=True,
-        )
+        with timed("panestream.capture_tail"):
+            return self._tmux.capture_pane(
+                pane_id,
+                start_line=-lines,
+                join_wrapped_lines=True,
+                include_escape_sequences=True,
+            )
 
     def start_pipe(self, pane_id: str, target_path: Path) -> None:
         """Begin streaming pane output into ``target_path``.
