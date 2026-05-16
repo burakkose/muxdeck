@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from muxdeck.app import run_app
+from muxdeck.cli import main
 
 
-def main() -> int:
-    """Launch the Textual operator shell."""
-    return run_app()
+def _entry() -> int:
+    return main()
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_entry())
+
+
+__all__ = ["main"]
