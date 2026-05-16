@@ -46,6 +46,8 @@ _log = logging.getLogger(__name__)
 
 _WORKER_NAME = "worktrees_load"
 _DETAIL_WORKER_NAME = "worktrees_detail"
+_DELETE_WORKER_NAME = "worktrees_delete"
+_PRUNE_WORKER_NAME = "worktrees_prune"
 
 
 def _build_delete_worktree_message(
@@ -456,6 +458,38 @@ class WorktreesScreen(ShellScreen):
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         super().on_worker_state_changed(event)
         name = event.worker.name
+        if name == _DELETE_WORKER_NAME:
+            if event.state == WorkerState.ERROR:
+                err = event.worker.error
+                self.set_status(f"✗ delete failed: {err}" if err else "✗ delete failed")
+                return
+            if event.state == WorkerState.CANCELLED:
+                self.set_status("delete cancelled")
+                return
+            if event.state != WorkerState.SUCCESS:
+                return
+            delete_payload = cast(
+                "tuple[str, bool, WorktreeActionView | None, BaseException | None] | None",
+                event.worker.result,
+            )
+            self._on_delete_complete(delete_payload)
+            return
+        if name == _PRUNE_WORKER_NAME:
+            if event.state == WorkerState.ERROR:
+                err = event.worker.error
+                self.set_status(f"✗ prune failed: {err}" if err else "✗ prune failed")
+                return
+            if event.state == WorkerState.CANCELLED:
+                self.set_status("prune cancelled")
+                return
+            if event.state != WorkerState.SUCCESS:
+                return
+            prune_payload = cast(
+                "tuple[WorktreeActionView | None, BaseException | None] | None",
+                event.worker.result,
+            )
+            self._on_prune_complete(prune_payload)
+            return
         if name == _DETAIL_WORKER_NAME:
             if event.state != WorkerState.SUCCESS:
                 return
@@ -682,18 +716,47 @@ class WorktreesScreen(ShellScreen):
         self._attempt_delete(deleted_id, force=False)
 
     def _attempt_delete(self, deleted_id: str, *, force: bool) -> None:
-        try:
-            action_view = self.runtime.worktrees.remove_worktree(
-                deleted_id,
-                force=force,
-            )
-        except Exception as exc:
+        # Slow path: the underlying ``git worktree remove`` shells out
+        # over a potentially-remote filesystem (Windows mount on WSL),
+        # which can stall the UI for seconds. Dispatch to a thread so
+        # the operator can keep moving while the delete runs.
+        self.set_status(
+            "force-deleting worktree…" if force else "deleting worktree…",
+        )
+        worktrees = self.runtime.worktrees
+
+        def _delete() -> tuple[str, bool, WorktreeActionView | None, BaseException | None]:
+            try:
+                action_view = worktrees.remove_worktree(deleted_id, force=force)
+            except BaseException as exc:
+                return deleted_id, force, None, exc
+            return deleted_id, force, action_view, None
+
+        self.run_worker(
+            _delete,
+            thread=True,
+            exclusive=False,
+            name=_DELETE_WORKER_NAME,
+        )
+
+    def _on_delete_complete(
+        self,
+        payload: tuple[str, bool, WorktreeActionView | None, BaseException | None] | None,
+    ) -> None:
+        if payload is None:
+            self.set_status("✗ delete failed: worker returned no result")
+            return
+        deleted_id, force, action_view, exc = payload
+        if exc is not None:
             if not force:
                 hint = _force_delete_hint(exc)
                 if hint is not None:
                     self._prompt_force_delete(deleted_id, exc, hint)
                     return
             self.set_status(f"✗ delete failed: {exc}")
+            return
+        if action_view is None:
+            self.set_status("✗ delete failed: worker returned no action view")
             return
         self._drop_worktree_from_local_state(deleted_id)
         self._refresh_after_worktree_action(action_view)
@@ -772,13 +835,40 @@ class WorktreesScreen(ShellScreen):
             return
         if self._detail is None:
             return
-        try:
-            action_view = self.runtime.worktrees.prune_worktrees(
-                self._detail.summary.repo_root,
-                dry_run=False,
-            )
-        except Exception as exc:
+        # ``git worktree prune`` may scan the entire repo plumbing on a
+        # slow filesystem; run it off the UI thread so the operator
+        # isn't staring at a frozen screen.
+        repo_root = self._detail.summary.repo_root
+        worktrees = self.runtime.worktrees
+        self.set_status("pruning worktrees…")
+
+        def _prune() -> tuple[WorktreeActionView | None, BaseException | None]:
+            try:
+                view = worktrees.prune_worktrees(repo_root, dry_run=False)
+            except BaseException as exc:
+                return None, exc
+            return view, None
+
+        self.run_worker(
+            _prune,
+            thread=True,
+            exclusive=False,
+            name=_PRUNE_WORKER_NAME,
+        )
+
+    def _on_prune_complete(
+        self,
+        payload: tuple[WorktreeActionView | None, BaseException | None] | None,
+    ) -> None:
+        if payload is None:
+            self.set_status("✗ prune failed: worker returned no result")
+            return
+        action_view, exc = payload
+        if exc is not None:
             self.set_status(f"✗ prune failed: {exc}")
+            return
+        if action_view is None:
+            self.set_status("✗ prune failed: worker returned no action view")
             return
         self._refresh_after_worktree_action(action_view)
 

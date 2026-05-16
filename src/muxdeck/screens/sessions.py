@@ -40,6 +40,8 @@ if TYPE_CHECKING:
 
 
 _WORKER_NAME = "sessions_load"
+_BULK_DELETE_WORKER_NAME = "sessions_bulk_delete"
+_SINGLE_DELETE_WORKER_NAME = "sessions_delete"
 
 # Terminal agent statuses are excluded from the SESSIONS screen's
 # "live" set. The dashboard already filters on the same pair (see
@@ -165,6 +167,10 @@ class SessionsScreen(ShellScreen):
         # overwrite "✓ deleted 3" with the default "X sessions · Y
         # active" line as soon as the worker finishes.
         self._pending_status_after_refresh: str | None = None
+        # In-flight single-delete bookkeeping. Caches the target label
+        # so the worker's completion handler can still reference the
+        # original selection even after focus has moved on.
+        self._pending_delete_target: tuple[str, str] | None = None
         # Activation-refresh throttle. Switching tabs back to this
         # screen would otherwise trigger a full discover() rescan
         # (slow on WSL / Windows-mounted roots) every time, even when
@@ -365,7 +371,39 @@ class SessionsScreen(ShellScreen):
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         super().on_worker_state_changed(event)
-        if event.worker.name != _WORKER_NAME:
+        name = event.worker.name
+        if name == _BULK_DELETE_WORKER_NAME:
+            if event.state == WorkerState.ERROR:
+                err = event.worker.error
+                self.set_status(f"✗ bulk delete failed: {err}" if err else "✗ bulk delete failed")
+                return
+            if event.state == WorkerState.CANCELLED:
+                self.set_status("bulk delete cancelled")
+                return
+            if event.state != WorkerState.SUCCESS:
+                return
+            result = cast("BulkDeleteResult | None", event.worker.result)
+            self._on_bulk_delete_complete(result)
+            return
+        if name == _SINGLE_DELETE_WORKER_NAME:
+            if event.state == WorkerState.ERROR:
+                err = event.worker.error
+                self._pending_delete_target = None
+                self.set_status(f"✗ delete failed: {err}" if err else "✗ delete failed")
+                return
+            if event.state == WorkerState.CANCELLED:
+                self._pending_delete_target = None
+                self.set_status("delete cancelled")
+                return
+            if event.state != WorkerState.SUCCESS:
+                return
+            payload = cast(
+                "tuple[str, str, BaseException | None] | None",
+                event.worker.result,
+            )
+            self._on_single_delete_complete(payload)
+            return
+        if name != _WORKER_NAME:
             return
         if event.state == WorkerState.ERROR:
             self._loading = False
@@ -840,22 +878,55 @@ class SessionsScreen(ShellScreen):
         if sessions_ctrl is None:
             self.set_status("✗ session controller unavailable")
             return
-        try:
-            sessions_ctrl.delete_session(
-                session_id,
-                live_session_ids=self._live_session_ids,
-            )
-        except PermissionError as exc:
+        # Cheap pre-flight so the worker thread doesn't even start for
+        # a live session -- this also lets us surface the live-session
+        # PermissionError synchronously with the existing UX wording.
+        if session_id in self._live_session_ids:
+            self.set_status("✗ session is live; stop the agent before deleting")
+            return
+        # Cache the target so the worker completion handler can surface
+        # a meaningful success/failure message even if the operator
+        # has since moved the selection.
+        self._pending_delete_target = (session_id, label)
+        self.set_status(f"deleting {label}…")
+
+        store = sessions_ctrl  # captured for the worker closure
+
+        def _delete() -> tuple[str, str, BaseException | None]:
+            try:
+                store.delete_session(
+                    session_id,
+                    live_session_ids=self._live_session_ids,
+                )
+            except BaseException as exc:
+                return session_id, label, exc
+            return session_id, label, None
+
+        self.run_worker(
+            _delete,
+            thread=True,
+            exclusive=False,
+            name=_SINGLE_DELETE_WORKER_NAME,
+        )
+
+    def _on_single_delete_complete(
+        self,
+        payload: tuple[str, str, BaseException | None] | None,
+    ) -> None:
+        self._pending_delete_target = None
+        if payload is None:
+            self.set_status("✗ delete failed: worker returned no result")
+            return
+        session_id, label, exc = payload
+        if isinstance(exc, PermissionError):
             self.set_status(f"✗ {exc}")
             return
-        except OSError as exc:
+        if isinstance(exc, OSError):
             self.set_status(f"✗ delete failed: {exc}")
             return
-
-        # Selection survives across refreshes via remember_session_selection,
-        # so clear it explicitly here — otherwise the next refresh would
-        # ask the controller to re-select an id that no longer exists
-        # and the list would land on whatever surfaces alphabetically.
+        if exc is not None:
+            self.set_status(f"✗ delete failed: {exc}")
+            return
         if self._selected_session_id == session_id:
             self._selected_session_id = None
             self._selected_detail = None
@@ -863,8 +934,6 @@ class SessionsScreen(ShellScreen):
             self.muxdeck_app.selected_session_id = None
         message = f"✓ deleted {label}"
         self.set_status(message)
-        # Stash so the post-refresh ``_apply_state`` doesn't overwrite
-        # the outcome with the default "X sessions" summary line.
         self._pending_status_after_refresh = message
         self.refresh_data()
 
@@ -924,10 +993,38 @@ class SessionsScreen(ShellScreen):
         sessions_ctrl = self.runtime.sessions_ctrl
         if sessions_ctrl is None:
             return
-        result: BulkDeleteResult = sessions_ctrl.bulk_delete_older_than(
-            days,
-            live_session_ids=self._live_session_ids,
+        live_ids = self._live_session_ids
+        # No pre-count here -- maintenance_cohorts() is a slow discover()
+        # walk that the confirmation flow already paid for, so we trust
+        # the worker's progress_callback to surface the total as soon
+        # as the first id has been attempted.
+        self.set_status("deleting sessions…")
+        controller = sessions_ctrl
+        screen = self
+
+        def _on_progress(deleted: int, failed: int, total_attempted: int) -> None:
+            done = deleted + failed
+            text = f"deleting {done}/{total_attempted} sessions…"
+            screen.app.call_from_thread(screen.set_status, text)
+
+        def _delete() -> BulkDeleteResult:
+            return controller.bulk_delete_older_than(
+                days,
+                live_session_ids=live_ids,
+                progress_callback=_on_progress,
+            )
+
+        self.run_worker(
+            _delete,
+            thread=True,
+            exclusive=False,
+            name=_BULK_DELETE_WORKER_NAME,
         )
+
+    def _on_bulk_delete_complete(self, result: BulkDeleteResult | None) -> None:
+        if result is None:
+            self.set_status("✗ bulk delete failed: worker returned no result")
+            return
         deleted = len(result.deleted_ids)
         failed = len(result.failures)
         skipped = len(result.skipped_live)
@@ -938,11 +1035,7 @@ class SessionsScreen(ShellScreen):
             parts.append(f"skipped {skipped} live")
         message = " · ".join(parts)
         self.set_status(message)
-        # Stash so the post-refresh ``_apply_state`` keeps the outcome
-        # visible -- otherwise the worker's "X sessions" summary wins.
         self._pending_status_after_refresh = message
-        # If the previously selected session was reaped, drop the
-        # selection so the post-refresh paint doesn't try to revive it.
         if (
             self._selected_session_id is not None
             and self._selected_session_id in result.deleted_ids

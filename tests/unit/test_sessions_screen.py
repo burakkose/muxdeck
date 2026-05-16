@@ -2085,8 +2085,9 @@ class _DeletingSessionsCtrl(_RecordingSessionsCtrl):
         *,
         live_session_ids: frozenset[str] = frozenset(),
         now: object | None = None,
+        progress_callback: object | None = None,
     ) -> BulkDeleteResult:
-        del now
+        del now, progress_callback
         self.bulk_calls.append((days, live_session_ids))
         if self.bulk_result is not None:
             return self.bulk_result

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -561,17 +562,23 @@ class _DeletingFakeStore:
         return Path(f"/state/{session_id}")
 
     def delete_sessions(
-        self, session_ids: Sequence[str]
+        self,
+        session_ids: Sequence[str],
+        *,
+        progress_callback: Callable[[int, int, int], None] | None = None,
     ) -> tuple[list[str], list[tuple[str, str]]]:
         deleted: list[str] = []
         failures: list[tuple[str, str]] = []
+        total = len(session_ids)
         for sid in session_ids:
             try:
                 self.delete_session(sid)
             except OSError as exc:
                 failures.append((sid, str(exc)))
-                continue
-            deleted.append(sid)
+            else:
+                deleted.append(sid)
+            if progress_callback is not None:
+                progress_callback(len(deleted), len(failures), total)
         return deleted, failures
 
 
@@ -742,3 +749,43 @@ def test_bulk_delete_older_than_with_non_positive_days_is_noop() -> None:
     assert result_zero.failures == ()
     assert result_negative.deleted_ids == ()
     assert store.deleted_calls == []
+
+
+def test_bulk_delete_older_than_streams_progress_to_callback() -> None:
+    """The UI relies on per-id progress to keep the status bar honest.
+
+    Without this seam the bulk worker would freeze the status at
+    "deleting 0/N…" for the entire duration of the rmtree run; that's
+    indistinguishable from the old blocking implementation and
+    defeats the whole point of moving delete off the UI thread.
+    """
+    now = datetime(2026, 5, 15, 12, 0, tzinfo=UTC)
+    sessions = [
+        _session("s-1", updated_at=now - timedelta(days=10)),
+        _session("s-2", updated_at=now - timedelta(days=10)),
+        _session("bad", updated_at=now - timedelta(days=10)),
+        _session("s-3", updated_at=now - timedelta(days=10)),
+    ]
+    store = _DeletingFakeStore(sessions, raise_for_ids=frozenset({"bad"}))
+    ctrl = SessionsController(store)  # type: ignore[arg-type]
+
+    events: list[tuple[int, int, int]] = []
+
+    def _record(deleted: int, failed: int, total: int) -> None:
+        events.append((deleted, failed, total))
+
+    result = ctrl.bulk_delete_older_than(
+        7,
+        now=now,
+        progress_callback=_record,
+    )
+
+    assert len(events) == 4
+    assert events[-1] == (3, 1, 4)
+    # Monotonic non-decreasing per dimension and the total is constant.
+    for prev, curr in pairwise(events):
+        assert curr[0] >= prev[0]
+        assert curr[1] >= prev[1]
+        assert curr[2] == prev[2]
+    assert sorted(result.deleted_ids) == ["s-1", "s-2", "s-3"]
+    assert len(result.failures) == 1

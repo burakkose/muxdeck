@@ -168,6 +168,65 @@ def test_delete_sessions_with_empty_list_is_noop(tmp_path: Path) -> None:
     assert {s.session_id for s in store.discover()} == {"sess-a"}
 
 
+def test_delete_sessions_invokes_progress_callback_for_each_attempt(
+    tmp_path: Path,
+) -> None:
+    """The UI's "deleting N/M…" indicator depends on per-id progress.
+
+    Without per-attempt callbacks the worker would silently churn and
+    the status bar would lie about the operation being stuck at 0/M.
+    """
+    root = tmp_path / "state"
+    root.mkdir()
+    _write_session(root, "sess-a")
+    _write_session(root, "sess-b")
+    _write_session(root, "sess-c")
+    store = CopilotSessionStore(session_state_dir=root, cache_ttl_sec=0.0)
+
+    events: list[tuple[int, int, int]] = []
+
+    def _record(deleted: int, failed: int, total: int) -> None:
+        events.append((deleted, failed, total))
+
+    deleted, failures = store.delete_sessions(
+        ["sess-a", "sess-b", "sess-c"],
+        progress_callback=_record,
+    )
+
+    assert events == [(1, 0, 3), (2, 0, 3), (3, 0, 3)]
+    assert sorted(deleted) == ["sess-a", "sess-b", "sess-c"]
+    assert failures == []
+
+
+def test_delete_sessions_swallows_progress_callback_errors(tmp_path: Path) -> None:
+    """A buggy UI callback must not abort the bulk delete mid-flight.
+
+    The store sees the callback as user-supplied code; if it raises
+    (e.g. the screen is being torn down concurrently), the deletes
+    that already completed have to stick and the remaining ids still
+    have to be attempted -- otherwise a transient UI fault leaves
+    the on-disk state half-deleted.
+    """
+    root = tmp_path / "state"
+    root.mkdir()
+    _write_session(root, "sess-a")
+    _write_session(root, "sess-b")
+    store = CopilotSessionStore(session_state_dir=root, cache_ttl_sec=0.0)
+
+    def _explode(_deleted: int, _failed: int, _total: int) -> None:
+        msg = "ui torn down"
+        raise RuntimeError(msg)
+
+    deleted, failures = store.delete_sessions(
+        ["sess-a", "sess-b"],
+        progress_callback=_explode,
+    )
+
+    assert sorted(deleted) == ["sess-a", "sess-b"]
+    assert failures == []
+    assert {s.session_id for s in store.discover()} == set()
+
+
 def test_delete_session_under_extra_root(tmp_path: Path) -> None:
     primary = tmp_path / "primary"
     secondary = tmp_path / "secondary"

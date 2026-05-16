@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,6 +14,11 @@ if TYPE_CHECKING:
         CopilotSessionStore,
         CopilotSessionUsage,
     )
+
+# A ``(deleted_count, failed_count, total)`` snapshot fired after each
+# delete attempt during a bulk run. Lets UI surfaces stream progress
+# without coupling to the underlying store iteration order.
+type BulkDeleteProgress = Callable[[int, int, int], None]
 
 
 def _relative_time(dt: datetime | None) -> str:
@@ -486,6 +491,7 @@ class SessionsController:
         *,
         live_session_ids: frozenset[str] = frozenset(),
         now: datetime | None = None,
+        progress_callback: BulkDeleteProgress | None = None,
     ) -> BulkDeleteResult:
         """Delete all non-live sessions older than the cohort threshold.
 
@@ -496,6 +502,12 @@ class SessionsController:
         render and the confirmation). Live sessions discovered between
         the two calls are surfaced in ``skipped_live`` rather than
         silently absorbed.
+
+        ``progress_callback`` is forwarded to the underlying store so
+        UI callers can stream a "deleting N/M…" status while the bulk
+        run is in flight; it is invoked once per attempted id with
+        ``(deleted_count, failed_count, total)`` on the caller's
+        thread.
         """
         from datetime import timedelta
 
@@ -519,7 +531,10 @@ class SessionsController:
                 continue
             candidates.append(session.session_id)
 
-        deleted, failures = self._store.delete_sessions(candidates)
+        deleted, failures = self._store.delete_sessions(
+            candidates,
+            progress_callback=progress_callback,
+        )
         return BulkDeleteResult(
             deleted_ids=tuple(deleted),
             failures=tuple(failures),
@@ -528,6 +543,7 @@ class SessionsController:
 
 
 __all__ = [
+    "BulkDeleteProgress",
     "BulkDeleteResult",
     "MaintenanceCohort",
     "MaintenanceCohortsView",

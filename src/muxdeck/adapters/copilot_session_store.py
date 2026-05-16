@@ -14,7 +14,7 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -854,7 +854,10 @@ class CopilotSessionStore:
         return target
 
     def delete_sessions(
-        self, session_ids: Sequence[str]
+        self,
+        session_ids: Sequence[str],
+        *,
+        progress_callback: Callable[[int, int, int], None] | None = None,
     ) -> tuple[list[str], list[tuple[str, str]]]:
         """Bulk-delete sessions. Returns (deleted_ids, failures).
 
@@ -862,17 +865,32 @@ class CopilotSessionStore:
         tuple. The method never raises -- bulk maintenance should
         surface partial successes rather than abort on the first
         permission error or stale-handle hiccup.
+
+        ``progress_callback`` (if provided) is invoked once per attempted
+        id with ``(deleted_count, failed_count, total)``. UI callers use
+        it to surface a streaming "deleting N/M…" status. The callback
+        runs on this method's calling thread; UI bridges that need to
+        touch widgets must marshal back to the event loop themselves
+        (e.g. via ``app.call_from_thread``).
         """
         deleted: list[str] = []
         failures: list[tuple[str, str]] = []
+        total = len(session_ids)
         for sid in session_ids:
             try:
                 path = self.delete_session(sid)
             except OSError as exc:
                 failures.append((sid, str(exc)))
-                continue
-            if path is not None:
-                deleted.append(sid)
+            else:
+                if path is not None:
+                    deleted.append(sid)
+            if progress_callback is not None:
+                # Guard so a flaky UI callback can't poison the bulk
+                # operation -- still surface the failure via logging.
+                try:
+                    progress_callback(len(deleted), len(failures), total)
+                except Exception:
+                    _log.exception("delete_sessions: progress_callback raised")
         return deleted, failures
 
     def _forget_session_id_locked_external(self, session_id: str) -> None:
