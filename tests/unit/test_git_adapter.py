@@ -467,6 +467,128 @@ class GitAdapterTests(unittest.TestCase):
             adapter.discover_repo_root("/outside")
 
 
+class GitAdapterInspectRepoContextTests(unittest.TestCase):
+    def test_inspect_repo_context_uses_single_rev_parse_invocation(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    (
+                        "git",
+                        "rev-parse",
+                        "--path-format=absolute",
+                        "--show-toplevel",
+                        "--git-common-dir",
+                        "--abbrev-ref",
+                        "HEAD",
+                    ),
+                    stdout="/repo/worktrees/task-one\n/repo/.git\nfeat/perf\n",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+
+        context = adapter.inspect_repo_context("/repo/worktrees/task-one")
+
+        assert context.repo_root == Path("/repo")
+        assert context.branch == "feat/perf"
+        assert len(runner.calls) == 1
+        assert runner.calls[0][0] == (
+            "git",
+            "rev-parse",
+            "--path-format=absolute",
+            "--show-toplevel",
+            "--git-common-dir",
+            "--abbrev-ref",
+            "HEAD",
+        )
+
+    def test_inspect_repo_context_falls_back_to_worktree_root_for_separate_git_dir(
+        self,
+    ) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    (
+                        "git",
+                        "rev-parse",
+                        "--path-format=absolute",
+                        "--show-toplevel",
+                        "--git-common-dir",
+                        "--abbrev-ref",
+                        "HEAD",
+                    ),
+                    stdout="/repo/worktrees/task-one\n/git-store\nmain\n",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+
+        context = adapter.inspect_repo_context("/repo/worktrees/task-one")
+
+        assert context.repo_root == Path("/repo/worktrees/task-one")
+        assert context.branch == "main"
+
+    def test_inspect_repo_context_returns_none_branch_for_detached_head(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    (
+                        "git",
+                        "rev-parse",
+                        "--path-format=absolute",
+                        "--show-toplevel",
+                        "--git-common-dir",
+                        "--abbrev-ref",
+                        "HEAD",
+                    ),
+                    stdout="/repo\n/repo/.git\nHEAD\n",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+
+        context = adapter.inspect_repo_context("/repo")
+
+        assert context.repo_root == Path("/repo")
+        assert context.branch is None
+
+    def test_inspect_repo_context_raises_when_output_is_truncated(self) -> None:
+        runner = FakeRunner(
+            (
+                _result(
+                    (
+                        "git",
+                        "rev-parse",
+                        "--path-format=absolute",
+                        "--show-toplevel",
+                        "--git-common-dir",
+                        "--abbrev-ref",
+                        "HEAD",
+                    ),
+                    stdout="/repo\n/repo/.git\n",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+
+        with self.assertRaises(GitCommandError):
+            adapter.inspect_repo_context("/repo")
+
+    def test_inspect_repo_context_propagates_git_errors(self) -> None:
+        runner = FakeRunner(
+            (
+                CommandError(
+                    "git rev-parse",
+                    stderr="fatal: not a git repository",
+                ),
+            )
+        )
+        adapter = GitAdapter(runner)
+
+        with self.assertRaises(GitCommandError):
+            adapter.inspect_repo_context("/outside")
+
+
 def _result(
     command: tuple[str, ...],
     *,

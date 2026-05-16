@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Final, Literal, Protocol, cast, runtime_checkable
 
 from muxdeck.adapters.copilot_session_resolver import CopilotSessionResolution
+from muxdeck.adapters.git_adapter import GitRepoContext
 from muxdeck.domain.enums import AgentStatus
 from muxdeck.domain.models import Agent
 from muxdeck.domain.value_objects import ensure_aware_datetime, utc_now
@@ -59,6 +60,14 @@ class RuntimeGitPort(Protocol):
 
     def current_branch(self, cwd: str | Path, /) -> str | None:
         """Resolve the current branch for a working directory."""
+
+    def inspect_repo_context(self, cwd: str | Path, /) -> GitRepoContext:
+        """Resolve repository root and current branch in one subprocess.
+
+        Optional optimisation surface; runtime callers fall back to
+        the two-call path when an adapter does not implement this
+        method (see ``RuntimeSynchronizer._resolve_git_context``).
+        """
 
 
 @runtime_checkable
@@ -450,10 +459,7 @@ class RuntimeSynchronizer:
                 capture_branch,
             )
         try:
-            git_context = _GitContext(
-                repo_root=str(self._git.discover_repo_root(pane_current_path)),
-                branch=self._git.current_branch(pane_current_path),
-            )
+            git_context = self._resolve_git_context(pane_current_path)
         except GitCommandError as exc:
             if self._is_non_repository_error(exc):
                 git_context_cache[pane_current_path] = None
@@ -469,6 +475,24 @@ class RuntimeSynchronizer:
         return _apply_capture_branch(
             self._apply_git_context(discovery, git_context),
             capture_branch,
+        )
+
+    def _resolve_git_context(self, pane_current_path: str) -> _GitContext:
+        """Discover repo root + branch for ``pane_current_path``.
+
+        Prefers :meth:`GitAdapter.inspect_repo_context` (single
+        ``git rev-parse`` invocation, A2) when the configured port
+        supplies it; otherwise falls back to the legacy two-call
+        path so test fakes and other adapters keep working without
+        churning the port surface.
+        """
+        inspect = getattr(self._git, "inspect_repo_context", None)
+        if callable(inspect):
+            context = inspect(pane_current_path)
+            return _GitContext(repo_root=str(context.repo_root), branch=context.branch)
+        return _GitContext(
+            repo_root=str(self._git.discover_repo_root(pane_current_path)),
+            branch=self._git.current_branch(pane_current_path),
         )
 
     def _apply_git_context(

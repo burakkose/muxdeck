@@ -16,6 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from muxdeck.adapters.copilot_adapter import CopilotCommandDetection
 from muxdeck.adapters.copilot_session_resolver import CopilotSessionResolution
+from muxdeck.adapters.git_adapter import GitRepoContext
 from muxdeck.adapters.sqlite_store import SessionContextRecord
 from muxdeck.domain.enums import AgentStatus
 from muxdeck.domain.models import Agent
@@ -86,6 +87,34 @@ class CountingGit:
     def current_branch(self, cwd: str | Path, /) -> str | None:
         self.branch_calls.append(str(cwd))
         return self.branch
+
+
+class InspectingGit:
+    """``CountingGit`` analogue that also exposes ``inspect_repo_context``.
+
+    Mirrors the production :class:`GitAdapter` surface so the
+    runtime synchronizer takes the A2 single-call fast path
+    instead of the legacy two-call fallback.
+    """
+
+    def __init__(self, repo_root: str = "/repo", branch: str | None = "task/task-one") -> None:
+        self.repo_root = Path(repo_root)
+        self.branch = branch
+        self.repo_root_calls: list[str] = []
+        self.branch_calls: list[str] = []
+        self.inspect_calls: list[str] = []
+
+    def discover_repo_root(self, cwd: str | Path, /) -> Path:
+        self.repo_root_calls.append(str(cwd))
+        return self.repo_root
+
+    def current_branch(self, cwd: str | Path, /) -> str | None:
+        self.branch_calls.append(str(cwd))
+        return self.branch
+
+    def inspect_repo_context(self, cwd: str | Path, /) -> GitRepoContext:
+        self.inspect_calls.append(str(cwd))
+        return GitRepoContext(repo_root=self.repo_root, branch=self.branch)
 
 
 class FakeSessionResolver:
@@ -295,6 +324,46 @@ class RuntimeSynchronizerTests(unittest.TestCase):
             "task/task-one",
             "task/task-one",
         ]
+
+    def test_refresh_uses_inspect_repo_context_when_port_supplies_it(self) -> None:
+        now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        pane = PaneDiscovery(
+            snapshot=DiscoveryPaneSnapshot(
+                pane_id="%21",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@5",
+                pane_current_path="/repo/worktrees/task-one",
+                pane_current_command="copilot chat",
+            ),
+            discovered_at=now,
+            classification="unmanaged_probable_agent",
+            reasons=("command:copilot_binary",),
+            command_detection=CopilotCommandDetection(
+                candidate=("copilot", "chat"),
+                is_likely_copilot=True,
+                reason="copilot_binary",
+            ),
+        )
+        discovery = FakeDiscovery(
+            PaneDiscoveryReport(
+                discovered_at=now,
+                panes=(pane,),
+                managed_agents=(),
+                unmanaged_probable_agents=(pane,),
+                non_agent_panes=(),
+            )
+        )
+        monitoring = FakeMonitoring(now)
+        git = InspectingGit()
+
+        report = RuntimeSynchronizer(discovery, monitoring, git).refresh()
+
+        assert report.error is None
+        assert git.inspect_calls == ["/repo/worktrees/task-one"]
+        assert git.repo_root_calls == []
+        assert git.branch_calls == []
+        assert monitoring.seen[0].snapshot.repo_root == "/repo"
+        assert monitoring.seen[0].snapshot.branch == "task/task-one"
 
     def test_refresh_prefers_branch_from_powershell_prompt_capture(self) -> None:
         now = datetime(2025, 1, 1, 12, tzinfo=UTC)

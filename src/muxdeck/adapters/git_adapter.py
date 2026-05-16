@@ -23,6 +23,14 @@ from muxdeck.types import CommandRunner, PathLike
 
 _GIT_COMMON_DIR_ARGS = ("rev-parse", "--path-format=absolute", "--git-common-dir")
 _GIT_TOPLEVEL_ARGS = ("rev-parse", "--path-format=absolute", "--show-toplevel")
+_GIT_INSPECT_CONTEXT_ARGS = (
+    "rev-parse",
+    "--path-format=absolute",
+    "--show-toplevel",
+    "--git-common-dir",
+    "--abbrev-ref",
+    "HEAD",
+)
 _GIT_STATUS_ARGS = ("status", "--short", "--branch", "--untracked-files=all")
 _GIT_WORKTREE_LIST_ARGS = ("worktree", "list", "--porcelain")
 _GIT_LOG_FORMAT = "%h%x1f%cr%x1f%s"
@@ -276,6 +284,20 @@ class GitRepositorySnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class GitRepoContext:
+    """Slim subset of repository state needed for runtime enrichment.
+
+    Returned by :meth:`GitAdapter.inspect_repo_context`, which does
+    the work of ``discover_repo_root`` + ``current_branch`` in a
+    single ``git rev-parse`` invocation. Both fields preserve the
+    pre-A2 semantics of those calls — see the adapter docstring.
+    """
+
+    repo_root: Path
+    branch: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class GitCommitSummary:
     short_sha: str
     relative_date: str
@@ -445,6 +467,43 @@ class GitAdapter:
     def current_branch(self, cwd: PathLike, /) -> str | None:
         result = self._run_git("branch", "--show-current", cwd=_normalize_path(cwd))
         return _normalize_optional_text(result.stdout)
+
+    def inspect_repo_context(self, cwd: PathLike, /) -> GitRepoContext:
+        """Return repo root and branch in a single ``git rev-parse`` call.
+
+        Combines :meth:`discover_repo_root` and :meth:`current_branch`
+        into one subprocess invocation by asking ``git rev-parse``
+        for ``--show-toplevel`` + ``--git-common-dir`` + ``--abbrev-ref
+        HEAD`` at the same time. The semantics match the two pre-A2
+        calls exactly:
+
+        * ``repo_root`` follows the same precedence as
+          :meth:`discover_repo_root` — the common-dir parent wins
+          when it is named ``.git`` (the normal worktree case),
+          otherwise we fall back to the worktree top-level. Tests
+          ``test_discover_repo_root_*`` codify this behaviour.
+        * ``branch`` mirrors :meth:`current_branch`: ``None`` when
+          ``HEAD`` is detached, otherwise the branch name. The
+          ``--abbrev-ref HEAD`` form reports the literal ``HEAD``
+          for detached heads, which is mapped back to ``None`` here
+          so callers don't need to know about the difference.
+        """
+        normalized_cwd = _normalize_path(cwd)
+        result = self._run_git(*_GIT_INSPECT_CONTEXT_ARGS, cwd=normalized_cwd)
+        lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if len(lines) < 3:
+            self._raise_git_error(
+                tuple(result.command),
+                stderr="git rev-parse returned fewer lines than expected",
+                exit_code=result.exit_code,
+                stdout=result.stdout,
+            )
+        worktree_root_text, common_dir_text, branch_text = lines[0], lines[1], lines[2]
+        worktree_root = _normalize_path(worktree_root_text)
+        common_dir_path = _normalize_path(common_dir_text)
+        repo_root = common_dir_path.parent if common_dir_path.name == ".git" else worktree_root
+        branch = None if branch_text == "HEAD" else _normalize_optional_text(branch_text)
+        return GitRepoContext(repo_root=repo_root, branch=branch)
 
     def status(self, cwd: PathLike, /) -> GitStatusSummary:
         result = self._run_git(*_GIT_STATUS_ARGS, cwd=_normalize_path(cwd))
