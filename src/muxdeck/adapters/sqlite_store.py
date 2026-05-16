@@ -429,6 +429,7 @@ class SQLiteStore:
         )
         self._bootstrap_migrations_table()
         self._run_migrations()
+        self._ensure_perf_indexes()
 
     @classmethod
     def from_config(
@@ -1203,6 +1204,43 @@ class SQLiteStore:
             if migration_name in applied:
                 continue
             self._apply_migration(version, migration_name, migration_sql)
+
+    def _ensure_perf_indexes(self) -> None:
+        """Guarantee the perf-critical indexes exist after migrations.
+
+        Migration ``0004_perf_indexes.sql`` declares the hot-path
+        indexes (``idx_sessions_agent_open``,
+        ``idx_sessions_agent_created``, ``idx_events_session_latest``).
+        On a fresh install they are created by the migration runner;
+        on databases that were last opened before the migration was
+        added, the runner re-applies it during ``_run_migrations``.
+        However, anything that drops an index by hand (sqlite shell,
+        a bad restore from backup, an older muxdeck version that
+        skipped migration 0004 due to a partial failure) silently
+        falls back to table scans on every dashboard refresh, which
+        is exactly the regression this guard exists to prevent.
+
+        Issue ``CREATE INDEX IF NOT EXISTS`` for each perf index and
+        re-run ``ANALYZE``. The DDL is cheap when the indexes are
+        already present (a single existence check) and avoids the
+        "muxdeck got slow after I restored a backup" failure mode
+        without forcing the operator to manually rerun migrations.
+        """
+        ddl = (
+            "CREATE INDEX IF NOT EXISTS idx_sessions_agent_open "
+            "ON sessions(agent_id, ended_at, created_at DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_sessions_agent_created "
+            "ON sessions(agent_id, created_at DESC);",
+            "CREATE INDEX IF NOT EXISTS idx_events_session_latest "
+            "ON events(session_id, occurred_at DESC, storage_order DESC);",
+            "ANALYZE;",
+        )
+        try:
+            with self._connection:
+                for statement in ddl:
+                    self._connection.execute(statement)
+        except sqlite3.Error as exc:
+            raise PersistenceError("failed to ensure perf indexes") from exc
 
     def _apply_migration(self, version: int, migration_name: str, migration_sql: str) -> None:
         applied_at = _serialize_datetime(utc_now())

@@ -169,6 +169,42 @@ class SQLiteStoreTests(unittest.TestCase):
         )
         self.assertEqual(journal_mode, ("wal",))
 
+    def test_bootstrap_recreates_perf_indexes_if_missing(self) -> None:
+        """Regression: dropping a perf index (manual sqlite shell,
+        partial backup restore, etc.) must not silently degrade
+        dashboard query plans. Reopening the store should restore
+        the indexes via the post-migration guard rather than wait
+        for the next operator-initiated migration.
+        """
+        original_path = self.store.database_path
+        with sqlite3.connect(original_path) as connection:
+            connection.execute("DROP INDEX IF EXISTS idx_sessions_agent_open;")
+            connection.execute("DROP INDEX IF EXISTS idx_sessions_agent_created;")
+            connection.execute("DROP INDEX IF EXISTS idx_events_session_latest;")
+            connection.commit()
+
+        # Close + reopen the store via a fresh SQLiteStore instance
+        # so the bootstrap path (which calls _ensure_perf_indexes)
+        # runs against the now-pruned database.
+        self.store.close()
+        self.store = SQLiteStore.from_config(self.config)
+        self.addCleanup(self.store.close)
+
+        with sqlite3.connect(self.store.database_path) as connection:
+            index_names = {
+                row[0]
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'index'"
+                ).fetchall()
+            }
+
+        for required in (
+            "idx_sessions_agent_open",
+            "idx_sessions_agent_created",
+            "idx_events_session_latest",
+        ):
+            assert required in index_names, f"{required} was not recreated on reopen"
+
     def test_upsert_and_query_helpers_round_trip_psd_models(self) -> None:
         agent = self._make_agent()
         self.store.upsert_agent(agent)
