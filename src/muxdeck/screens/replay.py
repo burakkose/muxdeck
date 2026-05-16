@@ -47,6 +47,13 @@ class ReplayScreen(ShellScreen):
     BINDINGS = REPLAY_BINDINGS
     FOOTER_HINTS = REPLAY_HINTS
 
+    # When the user is tail-following a live session we only need enough
+    # entries to render the visible tail. Loading the entire history on
+    # every refresh thrashes SQLite for long-running sessions. The bounded
+    # query path falls back to the unbounded one whenever follow mode is
+    # disabled, so scrolling the full backlog still works.
+    _FOLLOW_PREVIEW_LIMIT = 500
+
     def __init__(
         self,
         runtime: MuxdeckRuntime,
@@ -156,6 +163,7 @@ class ReplayScreen(ShellScreen):
             filter_text = self._filter_text
             presentation = self._presentation
             follow_latest = self._follow_latest
+            preview_limit = self._FOLLOW_PREVIEW_LIMIT if follow_latest else None
 
             def _load_multi() -> ReplayStateView:
                 replay = self.runtime.replay_worker or self.runtime.replay
@@ -165,6 +173,7 @@ class ReplayScreen(ShellScreen):
                     filter_text=filter_text,
                     presentation=presentation,
                     follow_latest=follow_latest,
+                    preview_limit=preview_limit,
                 )
 
             self._loading = True
@@ -206,6 +215,7 @@ class ReplayScreen(ShellScreen):
         filter_text = self._filter_text
         presentation = self._presentation
         follow_latest = self._follow_latest
+        preview_limit = self._FOLLOW_PREVIEW_LIMIT if follow_latest else None
 
         def _load() -> ReplayStateView:
             # Use thread-safe replay controller for worker thread access
@@ -216,6 +226,7 @@ class ReplayScreen(ShellScreen):
                 filter_text=filter_text,
                 presentation=presentation,
                 follow_latest=follow_latest,
+                preview_limit=preview_limit,
             )
 
         self._loading = True

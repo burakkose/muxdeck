@@ -179,11 +179,13 @@ class ReplayController:
         filter_text: str = "",
         presentation: ReplayPresentation = "parsed",
         follow_latest: bool = False,
+        preview_limit: int | None = None,
     ) -> ReplayStateView:
         replay = self._service.load_replay_by_locator(
             session_id=session_id,
             copilot_session_id=copilot_session_id,
             tmux_pane_id=tmux_pane_id,
+            preview_limit=preview_limit,
         )
         return self._build_state(
             replay,
@@ -201,11 +203,12 @@ class ReplayController:
         filter_text: str = "",
         presentation: ReplayPresentation = "parsed",
         follow_latest: bool = False,
+        preview_limit: int | None = None,
     ) -> ReplayStateView:
         if not session_ids:
             msg = "load_multi_state requires at least one session id"
             raise ValueError(msg)
-        replay = self._service.load_multi_session_replay(session_ids)
+        replay = self._service.load_multi_session_replay(session_ids, preview_limit=preview_limit)
         return self._build_multi_state(
             replay,
             selected_index=selected_index,

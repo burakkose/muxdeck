@@ -75,12 +75,17 @@ class ReplayService:
         self._store = store
         self._sessions = sessions
 
-    def load_session_replay(self, session_id: str) -> SessionReplay:
+    def load_session_replay(
+        self,
+        session_id: str,
+        *,
+        preview_limit: int | None = None,
+    ) -> SessionReplay:
         context = self._sessions.assemble_session_context(session_id)
         entries = self._build_entries(
             session_id=session_id,
-            events=self._store.list_events_for_session(session_id),
-            log_chunks=self._store.list_log_chunks(session_id),
+            events=self._fetch_events(session_id, preview_limit=preview_limit),
+            log_chunks=self._fetch_log_chunks(session_id, preview_limit=preview_limit),
         )
         replay = SessionReplay(
             session=context.session,
@@ -95,7 +100,12 @@ class ReplayService:
             jump_markers=self.build_jump_markers(replay),
         )
 
-    def load_multi_session_replay(self, session_ids: Sequence[str]) -> MultiSessionReplay:
+    def load_multi_session_replay(
+        self,
+        session_ids: Sequence[str],
+        *,
+        preview_limit: int | None = None,
+    ) -> MultiSessionReplay:
         if not session_ids:
             msg = "load_multi_session_replay requires at least one session id"
             raise ValueError(msg)
@@ -115,8 +125,8 @@ class ReplayService:
             contexts.append(context)
             entries = self._build_entries(
                 session_id=session_id,
-                events=self._store.list_events_for_session(session_id),
-                log_chunks=self._store.list_log_chunks(session_id),
+                events=self._fetch_events(session_id, preview_limit=preview_limit),
+                log_chunks=self._fetch_log_chunks(session_id, preview_limit=preview_limit),
             )
             all_entries.extend(entries)
         merged = self._merge_and_reordinal(all_entries)
@@ -139,6 +149,7 @@ class ReplayService:
         session_id: str | None = None,
         copilot_session_id: str | None = None,
         tmux_pane_id: str | None = None,
+        preview_limit: int | None = None,
     ) -> SessionReplay:
         lookup = self._sessions.lookup_for_replay(
             session_id=session_id,
@@ -148,7 +159,7 @@ class ReplayService:
         if lookup is None:
             missing = session_id or copilot_session_id or tmux_pane_id or "unknown"
             raise LookupError(f"no replayable session found for {missing}")
-        return self.load_session_replay(lookup.session.id)
+        return self.load_session_replay(lookup.session.id, preview_limit=preview_limit)
 
     def build_jump_markers(self, replay: SessionReplay) -> tuple[ReplayJumpMarker, ...]:
         return self._build_entry_markers(replay.entries)
@@ -279,6 +290,28 @@ class ReplayService:
             self._iter_entries(session_id=session_id, events=events, log_chunks=log_chunks)
         )
         return self._merge_and_reordinal(entries)
+
+    def _fetch_events(self, session_id: str, *, preview_limit: int | None) -> Sequence[Event]:
+        if preview_limit is not None and preview_limit > 0:
+            bounded = getattr(self._store, "list_recent_events_for_session", None)
+            if callable(bounded):
+                result = bounded(session_id, limit=preview_limit)
+                if isinstance(result, tuple):
+                    return result
+                return tuple(result)
+        return self._store.list_events_for_session(session_id)
+
+    def _fetch_log_chunks(
+        self, session_id: str, *, preview_limit: int | None
+    ) -> Sequence[LogChunk]:
+        if preview_limit is not None and preview_limit > 0:
+            bounded = getattr(self._store, "list_recent_log_chunks", None)
+            if callable(bounded):
+                result = bounded(session_id, limit=preview_limit)
+                if isinstance(result, tuple):
+                    return result
+                return tuple(result)
+        return self._store.list_log_chunks(session_id)
 
     def _merge_and_reordinal(self, entries: Sequence[ReplayEntry]) -> tuple[ReplayEntry, ...]:
         ordered = sorted(

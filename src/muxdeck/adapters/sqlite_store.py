@@ -842,6 +842,61 @@ class SQLiteStore:
         )
         return tuple(_row_to_event(row) for row in rows)
 
+    def list_recent_events_for_session(
+        self,
+        session_id: str,
+        /,
+        *,
+        limit: int,
+        before_occurred_at: datetime | None = None,
+        before_storage_order: int | None = None,
+    ) -> tuple[Event, ...]:
+        """Return up to *limit* most recent events for a session.
+
+        Results are returned in chronological order (oldest first) so callers
+        can append directly to existing transcripts. ``before_occurred_at`` +
+        ``before_storage_order`` together form a composite keyset cursor: if
+        both are provided, only events ordered STRICTLY before
+        ``(before_occurred_at, before_storage_order)`` are returned. This
+        matches the ``(occurred_at, storage_order)`` event ordering used
+        across the codebase.
+        """
+        if limit < 0:
+            raise ValueError(f"limit must be non-negative, got {limit}")
+        if limit == 0:
+            return ()
+        if (before_occurred_at is None) ^ (before_storage_order is None):
+            raise ValueError(
+                "before_occurred_at and before_storage_order must be provided together"
+            )
+        if before_occurred_at is None:
+            inner_sql = (
+                f"SELECT storage_order, {', '.join(_EVENT_COLUMNS)} FROM events "
+                "WHERE session_id = ? "
+                "ORDER BY occurred_at DESC, storage_order DESC "
+                "LIMIT ?"
+            )
+            params: tuple[object, ...] = (session_id, limit)
+        else:
+            inner_sql = (
+                f"SELECT storage_order, {', '.join(_EVENT_COLUMNS)} FROM events "
+                "WHERE session_id = ? "
+                "AND ("
+                "  occurred_at < ? "
+                "  OR (occurred_at = ? AND storage_order < ?)"
+                ") "
+                "ORDER BY occurred_at DESC, storage_order DESC "
+                "LIMIT ?"
+            )
+            cursor_ts = before_occurred_at.isoformat()
+            params = (session_id, cursor_ts, cursor_ts, before_storage_order, limit)
+        rows = self._fetch_all(
+            f"SELECT * FROM ({inner_sql}) ORDER BY occurred_at ASC, storage_order ASC",
+            params,
+            operation="list recent session events",
+        )
+        return tuple(_row_to_event(row) for row in rows)
+
     def get_latest_event_for_session(self, session_id: str, /) -> Event | None:
         """Return the most recent event for a session, or None."""
         row = self._fetch_one(
@@ -1162,18 +1217,59 @@ class SQLiteStore:
             return snapshots
 
     def list_recent_log_chunks(
-        self, session_id: str, /, *, limit: int = 20
+        self,
+        session_id: str,
+        /,
+        *,
+        limit: int = 20,
+        before_sequence_no: int | None = None,
+        before_storage_order: int | None = None,
     ) -> tuple[LogChunk, ...]:
-        """Return the most recent *limit* log chunks for a session, in chronological order."""
-        rows = self._fetch_all(
-            (
-                "SELECT * FROM ("
+        """Return the most recent *limit* log chunks for a session, in chronological order.
+
+        ``before_sequence_no`` + ``before_storage_order`` together form a
+        composite keyset cursor: if both are provided, only chunks ordered
+        STRICTLY before ``(before_sequence_no, before_storage_order)`` are
+        returned. This matches the ``(sequence_no, storage_order)``
+        ordering used across the codebase.
+        """
+        if limit < 0:
+            raise ValueError(f"limit must be non-negative, got {limit}")
+        if limit == 0:
+            return ()
+        if (before_sequence_no is None) ^ (before_storage_order is None):
+            raise ValueError(
+                "before_sequence_no and before_storage_order must be provided together"
+            )
+        if before_sequence_no is None:
+            inner_sql = (
                 f"SELECT storage_order, {', '.join(_LOG_CHUNK_COLUMNS)} FROM log_chunks "
                 "WHERE session_id = ? "
                 "ORDER BY sequence_no DESC, storage_order DESC "
-                f"LIMIT ?) ORDER BY sequence_no ASC, storage_order ASC"
-            ),
-            (session_id, limit),
+                "LIMIT ?"
+            )
+            params: tuple[object, ...] = (session_id, limit)
+        else:
+            inner_sql = (
+                f"SELECT storage_order, {', '.join(_LOG_CHUNK_COLUMNS)} FROM log_chunks "
+                "WHERE session_id = ? "
+                "AND ("
+                "  sequence_no < ? "
+                "  OR (sequence_no = ? AND storage_order < ?)"
+                ") "
+                "ORDER BY sequence_no DESC, storage_order DESC "
+                "LIMIT ?"
+            )
+            params = (
+                session_id,
+                before_sequence_no,
+                before_sequence_no,
+                before_storage_order,
+                limit,
+            )
+        rows = self._fetch_all(
+            f"SELECT * FROM ({inner_sql}) ORDER BY sequence_no ASC, storage_order ASC",
+            params,
             operation="list recent log chunks",
         )
         return tuple(_row_to_log_chunk(row) for row in rows)

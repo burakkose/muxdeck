@@ -81,8 +81,9 @@ class _RecordingReplayCtrl:
         filter_text: str,
         presentation: ReplayPresentation,
         follow_latest: bool,
+        preview_limit: int | None = None,
     ) -> ReplayStateView:
-        del selected_index, filter_text, presentation, follow_latest
+        del selected_index, filter_text, presentation, follow_latest, preview_limit
         return self.state_to_return or _empty_state(session_id=session_id)
 
     def apply_errors_only_chip(self) -> str:
@@ -570,6 +571,7 @@ class _FullReplayCtrl:
         filter_text: str,
         presentation: ReplayPresentation,
         follow_latest: bool,
+        preview_limit: int | None = None,
     ) -> ReplayStateView:
         self.load_state_calls.append(
             {
@@ -578,6 +580,7 @@ class _FullReplayCtrl:
                 "filter_text": filter_text,
                 "presentation": presentation,
                 "follow_latest": follow_latest,
+                "preview_limit": preview_limit,
             }
         )
         return self.state_to_return or _empty_state(session_id=session_id)
@@ -590,6 +593,7 @@ class _FullReplayCtrl:
         filter_text: str,
         presentation: ReplayPresentation,
         follow_latest: bool,
+        preview_limit: int | None = None,
     ) -> ReplayStateView:
         self.load_multi_calls.append(
             {
@@ -598,6 +602,7 @@ class _FullReplayCtrl:
                 "filter_text": filter_text,
                 "presentation": presentation,
                 "follow_latest": follow_latest,
+                "preview_limit": preview_limit,
             }
         )
         return self.multi_state_to_return or _empty_state(session_id=session_ids[0])
@@ -877,6 +882,49 @@ class ReplayRefreshDataTests(unittest.TestCase):
         assert loading is True
         assert calls
         assert calls[0]["session_id"] == "s-1"
+
+    def test_refresh_single_session_with_follow_latest_passes_preview_limit(self) -> None:
+        """Live-tail mode must request a bounded slice of the session
+        history. Once the user disables follow-mode, the next refresh
+        loads the unbounded transcript so the full backlog stays
+        scrollable.
+        """
+
+        async def scenario() -> list[dict[str, Any]]:
+            ctrl = _FullReplayCtrl()
+            runtime = _runtime_with_full(ctrl)
+            app = _Harness(runtime)
+            app.resolve_replay_session_id = lambda current=None: "s-1"  # type: ignore[method-assign]
+            async with app.run_test(size=(160, 60)) as pilot:
+                screen = ReplayScreen(runtime)
+                screen.run_worker = MagicMock()  # type: ignore[method-assign]
+                await app.push_screen(screen)
+                await pilot.pause()
+                ctrl.load_state_calls.clear()
+
+                # follow_latest=True → preview_limit must be set
+                screen._follow_latest = True
+                screen._state = None
+                screen.refresh_data()
+                await pilot.pause()
+                screen.run_worker.call_args.args[0]()
+
+                # follow_latest=False → preview_limit must be None
+                screen._follow_latest = False
+                screen.run_worker.reset_mock()
+                screen.refresh_data()
+                await pilot.pause()
+                screen.run_worker.call_args.args[0]()
+
+                return ctrl.load_state_calls
+
+        calls = asyncio.run(scenario())
+        assert len(calls) >= 2
+        follow_call = next(c for c in calls if c["follow_latest"] is True)
+        backlog_call = next(c for c in calls if c["follow_latest"] is False)
+        assert follow_call["preview_limit"] is not None
+        assert follow_call["preview_limit"] > 0
+        assert backlog_call["preview_limit"] is None
 
     def test_refresh_multi_session_uses_load_multi_state(self) -> None:
         async def scenario() -> list[dict[str, Any]]:

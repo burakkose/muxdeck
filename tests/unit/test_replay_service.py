@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 import shutil
@@ -11,7 +11,7 @@ import unittest
 from muxdeck.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
 from muxdeck.config import AppConfig, PathsConfig
 from muxdeck.domain.enums import AgentStatus
-from muxdeck.domain.events import Event
+from muxdeck.domain.events import Event, LogChunk
 from muxdeck.domain.models import Agent, Worktree
 from muxdeck.services.replay_service import ReplayService
 from muxdeck.services.session_service import SessionService
@@ -367,6 +367,85 @@ class ReplayServiceTests(unittest.TestCase):
         with self.assertRaises(LookupError) as cm:
             self.replays.load_replay_by_locator(session_id="nonexistent")
         self.assertIn("no replayable session found", str(cm.exception))
+
+    def test_load_session_replay_preview_limit_uses_bounded_store_api(self) -> None:
+        """Live-tail / follow_latest mode must not materialize the whole
+        session backlog. When ``preview_limit`` is provided, the service
+        calls the bounded store APIs (``list_recent_events_for_session`` /
+        ``list_recent_log_chunks``) and the resulting replay contains at
+        most ``preview_limit`` entries per kind.
+        """
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        # 50 events + 50 log chunks → 101 entries with the session.created
+        # event. preview_limit=5 must return at most 5 events + 5 chunks
+        # + 1 created event ≤ 11 entries.
+        base = datetime(2025, 1, 1, 12, 5, tzinfo=UTC)
+
+        self.sessions.append_events(
+            bundle.session.id,
+            tuple(
+                Event(
+                    occurred_at=base + timedelta(seconds=i),
+                    kind="custom.tick",
+                    payload_json=f'{{"i":{i}}}',
+                )
+                for i in range(50)
+            ),
+        )
+        self.sessions.append_log_capture(
+            bundle.session.id,
+            source="stdout",
+            content_blocks=tuple(f"line-{i}\n" for i in range(50)),
+            captured_at=base,
+        )
+
+        full = self.replays.load_session_replay(bundle.session.id)
+        preview = self.replays.load_session_replay(bundle.session.id, preview_limit=5)
+
+        # Full replay sees everything; preview sees the recent tail only.
+        self.assertGreater(len(full.entries), len(preview.entries))
+        self.assertLessEqual(len(preview.entries), 5 + 5 + 1)
+        # Preview must end at the latest entry (live-tail UX).
+        self.assertEqual(preview.entries[-1].timestamp, full.entries[-1].timestamp)
+
+    def test_load_session_replay_preview_falls_back_for_legacy_stores(self) -> None:
+        """Stores that don't expose the bounded helpers must still work —
+        the service falls back to the unbounded list APIs.
+        """
+
+        class LegacyStore:
+            def __init__(self, store: SQLiteStore) -> None:
+                self._store = store
+
+            def list_events_for_session(self, session_id: str, /) -> tuple[Event, ...]:
+                return self._store.list_events_for_session(session_id)
+
+            def list_log_chunks(self, session_id: str, /) -> tuple[LogChunk, ...]:
+                return self._store.list_log_chunks(session_id)
+
+        bundle = self.sessions.create_session(
+            "agent-123",
+            occurred_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        self.sessions.append_events(
+            bundle.session.id,
+            (
+                Event(
+                    occurred_at=datetime(2025, 1, 1, 12, 5, tzinfo=UTC),
+                    kind="custom.note",
+                    payload_json='{"m":"hi"}',
+                ),
+            ),
+        )
+
+        legacy = ReplayService(store=LegacyStore(self.store), sessions=self.sessions)
+        # Should not raise; should return the full replay regardless of
+        # preview_limit (since the legacy store cannot honour it).
+        replay = legacy.load_session_replay(bundle.session.id, preview_limit=1)
+        self.assertGreaterEqual(len(replay.entries), 2)
 
 
 if __name__ == "__main__":

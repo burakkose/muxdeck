@@ -888,6 +888,158 @@ class SQLiteStoreTests(unittest.TestCase):
         # Empty session
         self.assertEqual(self.store.list_recent_log_chunks("nonexistent"), ())
 
+    def test_list_recent_log_chunks_with_cursor(self) -> None:
+        """Composite cursor: ``before_sequence_no`` + ``before_storage_order``
+        return the previous page (strictly older than the cursor) so the UI
+        can implement reverse-paged "load older" without duplicates.
+        """
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        chunks = tuple(
+            LogChunk(
+                id=f"log-{i:03d}",
+                agent_id="agent-123",
+                session_id="session-123",
+                source="stdout",
+                sequence_no=i,
+                captured_at=datetime(2025, 1, 1, 12, i, tzinfo=UTC),
+                content=f"line-{i}",
+            )
+            for i in range(10)
+        )
+        self.store.append_log_chunks(chunks)
+
+        # Get latest 3 → log-007..log-009 (chronological)
+        tail = self.store.list_recent_log_chunks("session-123", limit=3)
+        self.assertEqual([c.id for c in tail], ["log-007", "log-008", "log-009"])
+
+        # Page older than the oldest of the tail (log-007) using the cursor.
+        # Storage order matches insertion order (1-indexed), so log-007 has
+        # storage_order=8 in this DB.
+        oldest_seq = tail[0].sequence_no  # 7
+        # Find the storage_order of that row via the unbounded listing to
+        # avoid hard-coding implementation details.
+        all_rows = self.store.list_log_chunks("session-123")
+        oldest_full = next(c for c in all_rows if c.sequence_no == oldest_seq)
+        # storage_order is not exposed on LogChunk; use sequence_no+1 as the
+        # cursor companion since storage_order is monotonic with sequence_no
+        # in this test scenario. We just need ANY value paired with
+        # before_sequence_no to satisfy the composite-cursor contract.
+        prev_page = self.store.list_recent_log_chunks(
+            "session-123",
+            limit=3,
+            before_sequence_no=oldest_seq,
+            before_storage_order=oldest_full.sequence_no + 1,
+        )
+        self.assertEqual([c.id for c in prev_page], ["log-004", "log-005", "log-006"])
+
+    def test_list_recent_log_chunks_validates_args(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        # limit=0 is a no-op
+        self.assertEqual(
+            self.store.list_recent_log_chunks("session-123", limit=0),
+            (),
+        )
+        # negative limit is rejected
+        with self.assertRaises(ValueError):
+            self.store.list_recent_log_chunks("session-123", limit=-1)
+        # partial cursor is rejected
+        with self.assertRaises(ValueError):
+            self.store.list_recent_log_chunks("session-123", limit=10, before_sequence_no=5)
+
+    def test_list_recent_events_for_session(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        base = datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
+        events = tuple(
+            Event(
+                id=f"event-{i:03d}",
+                occurred_at=base + timedelta(seconds=i),
+                agent_id="agent-123",
+                session_id="session-123",
+                kind="session.updated",
+                severity="info",
+                payload_json=f'{{"step":{i}}}',
+            )
+            for i in range(25)
+        )
+        self.store.append_events(events)
+
+        # Latest 5 in chronological order
+        recent = self.store.list_recent_events_for_session("session-123", limit=5)
+        self.assertEqual([e.id for e in recent], [f"event-{i:03d}" for i in range(20, 25)])
+
+        # All events when limit exceeds total
+        recent_all = self.store.list_recent_events_for_session("session-123", limit=100)
+        self.assertEqual(len(recent_all), 25)
+        self.assertEqual(recent_all[0].id, "event-000")
+        self.assertEqual(recent_all[-1].id, "event-024")
+
+        # Empty session
+        self.assertEqual(
+            self.store.list_recent_events_for_session("nonexistent", limit=5),
+            (),
+        )
+
+    def test_list_recent_events_for_session_with_cursor(self) -> None:
+        """Composite ``(before_occurred_at, before_storage_order)`` cursor
+        returns the previous page strictly older than the marker."""
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        base = datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
+        events = tuple(
+            Event(
+                id=f"event-{i:03d}",
+                occurred_at=base + timedelta(seconds=i),
+                agent_id="agent-123",
+                session_id="session-123",
+                kind="session.updated",
+                severity="info",
+                payload_json=f'{{"step":{i}}}',
+            )
+            for i in range(10)
+        )
+        self.store.append_events(events)
+
+        # Get latest 3 events
+        tail = self.store.list_recent_events_for_session("session-123", limit=3)
+        self.assertEqual([e.id for e in tail], ["event-007", "event-008", "event-009"])
+
+        # Page back from the oldest of the tail using cursor.
+        # storage_order is internal; passing a low value (0) ensures the
+        # composite condition (occurred_at == cursor.ts AND storage_order < 0)
+        # matches nothing, so the cursor effectively means "events strictly
+        # older than cursor.occurred_at" — excluding event-007 itself.
+        cursor_event = tail[0]
+        prev_page = self.store.list_recent_events_for_session(
+            "session-123",
+            limit=3,
+            before_occurred_at=cursor_event.occurred_at,
+            before_storage_order=0,
+        )
+        # Should return event-004..event-006 (strictly older by occurred_at)
+        self.assertEqual([e.id for e in prev_page], ["event-004", "event-005", "event-006"])
+
+    def test_list_recent_events_for_session_validates_args(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        # limit=0 is a no-op
+        self.assertEqual(
+            self.store.list_recent_events_for_session("session-123", limit=0),
+            (),
+        )
+        # negative limit is rejected
+        with self.assertRaises(ValueError):
+            self.store.list_recent_events_for_session("session-123", limit=-1)
+        # partial cursor is rejected
+        with self.assertRaises(ValueError):
+            self.store.list_recent_events_for_session(
+                "session-123",
+                limit=5,
+                before_occurred_at=datetime(2025, 1, 1, tzinfo=UTC),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
