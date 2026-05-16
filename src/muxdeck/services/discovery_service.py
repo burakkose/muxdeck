@@ -371,6 +371,12 @@ class DiscoveryService:
         discovered_at: datetime,
     ) -> PaneDiscovery:
         snapshot = DiscoveryPaneSnapshot.from_tmux_record(record)
+        # SQL ownership lookups always run so a store mutation
+        # (delete, reassign, rename) is reflected immediately, even
+        # when the A1 capture cache or A5 skip below short-circuit
+        # the subprocess work. These calls are sub-millisecond.
+        matched_context = self._store.get_session_context_by_tmux_pane_id(snapshot.pane_id)
+        managed_agent = self._store.get_agent_by_pane_id(snapshot.pane_id)
         cached = self._capture_cache.get(snapshot.pane_id)
         if cached is not None and not cached.matches(snapshot):
             cached = None
@@ -390,16 +396,30 @@ class DiscoveryService:
                         snapshot.pane_pid,
                         fallback=command_detection,
                     )
-            with timed("discovery.capture_pane"):
-                captured_output = self._tmux.capture_pane(
-                    snapshot.pane_id,
-                    start_line=self._capture_start_line,
-                    join_wrapped_lines=True,
-                )
-            session_evidence = None
-            if captured_output.strip():
-                with timed("discovery.interpret_output"):
-                    session_evidence = self._copilot.interpret_output(captured_output)
+            if self._can_skip_capture(
+                snapshot,
+                command_detection=command_detection,
+                managed_agent=managed_agent,
+                matched_context=matched_context,
+            ):
+                # A5: pane is provably non-agent. classify_pane will
+                # deterministically return non_agent_pane regardless of
+                # scrollback contents (see ``is_non_copilot`` branch),
+                # so the capture-pane fork and interpret_output parse
+                # would be pure overhead.
+                captured_output = ""
+                session_evidence = None
+            else:
+                with timed("discovery.capture_pane"):
+                    captured_output = self._tmux.capture_pane(
+                        snapshot.pane_id,
+                        start_line=self._capture_start_line,
+                        join_wrapped_lines=True,
+                    )
+                session_evidence = None
+                if captured_output.strip():
+                    with timed("discovery.interpret_output"):
+                        session_evidence = self._copilot.interpret_output(captured_output)
             self._capture_cache[snapshot.pane_id] = _PaneCaptureCacheEntry(
                 pane_pid=snapshot.pane_pid,
                 pane_tty=snapshot.pane_tty,
@@ -408,8 +428,6 @@ class DiscoveryService:
                 captured_output=captured_output,
                 session_evidence=session_evidence,
             )
-        matched_context = self._store.get_session_context_by_tmux_pane_id(snapshot.pane_id)
-        managed_agent = self._store.get_agent_by_pane_id(snapshot.pane_id)
         matched_session: Session | None = None
         if session_evidence is not None and session_evidence.copilot_session_id is not None:
             matched_session = self._store.get_session_by_copilot_session_id(
@@ -429,6 +447,37 @@ class DiscoveryService:
             matched_session=matched_session,
             matched_context=matched_context,
         )
+
+    @staticmethod
+    def _can_skip_capture(
+        snapshot: DiscoveryPaneSnapshot,
+        *,
+        command_detection: CopilotCommandDetection,
+        managed_agent: Agent | None,
+        matched_context: SessionContextRecord | None,
+    ) -> bool:
+        """Return True when the pane is provably not an agent.
+
+        Conservative on purpose — the pane scrollback might still
+        contain Copilot evidence, so we only skip the subprocess
+        capture when *all four* of these are true:
+
+        * the foreground command is a known non-Copilot AI CLI
+          (claude, aider, cursor, cody, continue),
+        * the in-process command + process-tree detection both
+          agree this isn't Copilot,
+        * no stored agent owns this pane id,
+        * no stored session context owns this pane id.
+
+        Under those conditions :func:`classify_pane` always returns
+        ``non_agent_pane`` regardless of scrollback evidence, so the
+        capture-pane fork and interpret_output parse are pure waste.
+        """
+        if command_detection.is_likely_copilot:
+            return False
+        if managed_agent is not None or matched_context is not None:
+            return False
+        return _is_non_copilot_command(snapshot.pane_current_command)
 
     def _evict_missing_panes(self, seen_pane_ids: set[str]) -> None:
         stale = [pane_id for pane_id in self._capture_cache if pane_id not in seen_pane_ids]

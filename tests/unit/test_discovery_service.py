@@ -377,6 +377,106 @@ class DiscoveryServiceCaptureCacheTests(unittest.TestCase):
         assert gateway.capture_calls == {"%7": 2}
 
 
+class DiscoveryServiceCaptureSkipTests(unittest.TestCase):
+    """A5: skip capture+interpret when the pane is provably non-agent."""
+
+    def setUp(self) -> None:
+        self.now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        self.copilot = CopilotAdapter(DummyRunner())
+
+    def _pane(
+        self,
+        *,
+        pane_id: str = "%7",
+        command: str = "claude",
+        pane_activity: int | None = 1_700_000_500,
+    ) -> TmuxPaneMetadata:
+        return TmuxPaneMetadata(
+            pane_id=pane_id,
+            session_name="muxdeck",
+            window_id="@1",
+            window_name="ai",
+            pane_pid=1234,
+            pane_tty="/dev/pts/9",
+            pane_current_command=command,
+            pane_current_path="/repo",
+            pane_activity=pane_activity,
+        )
+
+    def _service(
+        self,
+        gateway: CountingTmuxGateway,
+        *,
+        store: InMemoryDiscoveryStore | None = None,
+    ) -> DiscoveryService:
+        return DiscoveryService(
+            gateway,
+            self.copilot,
+            store if store is not None else InMemoryDiscoveryStore(),
+            clock=lambda: self.now,
+        )
+
+    def test_known_non_copilot_command_skips_capture_entirely(self) -> None:
+        pane = self._pane(command="claude")
+        gateway = CountingTmuxGateway((pane,), {"%7": "claude transcript output"})
+        report = self._service(gateway).discover_panes()
+        # No capture-pane fork at all — A5 short-circuits before A1's
+        # capture call site.
+        assert gateway.capture_calls == {}
+        # classify_pane still runs and tags the pane as non-agent.
+        assert len(report.non_agent_panes) == 1
+        non_agent = report.non_agent_panes[0]
+        assert non_agent.captured_output is None
+        assert non_agent.session_evidence is None
+        assert "known non-copilot AI CLI" in non_agent.reasons
+
+    def test_skip_disabled_when_managed_agent_owns_pane(self) -> None:
+        existing_agent = Agent(
+            id="agent-1",
+            name="planner",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%7",
+            cwd="/repo",
+            status=AgentStatus.RUNNING,
+            started_at=self.now,
+            last_seen_at=self.now,
+        )
+        pane = self._pane(command="claude")
+        gateway = CountingTmuxGateway((pane,), {"%7": "scrollback"})
+        store = InMemoryDiscoveryStore(agent=existing_agent)
+        report = self._service(gateway, store=store).discover_panes()
+        # Stored agent association forces the capture path so that
+        # the demotion-to-non-agent transition stays observable.
+        assert gateway.capture_calls == {"%7": 1}
+        assert len(report.non_agent_panes) == 1
+
+    def test_skip_disabled_when_session_context_owns_pane(self) -> None:
+        pane = self._pane(command="claude")
+        gateway = CountingTmuxGateway((pane,), {"%7": "scrollback"})
+        store = InMemoryDiscoveryStore(
+            context=SessionContextRecord(
+                session_id="session-x", tmux_pane_id="%7", updated_at=self.now
+            )
+        )
+        report = self._service(gateway, store=store).discover_panes()
+        assert gateway.capture_calls == {"%7": 1}
+        # Pane still ends up non-agent because the command is a
+        # known non-copilot AI CLI, but we paid for the capture to
+        # confirm — the session context owner deserves the chance
+        # to observe scrollback changes.
+        assert len(report.non_agent_panes) == 1
+
+    def test_skip_disabled_for_shell_panes(self) -> None:
+        # Shells stay on the capture path so previously-running
+        # copilot sessions can still be inferred from scrollback.
+        pane = self._pane(command="bash")
+        gateway = CountingTmuxGateway((pane,), {"%7": "$ ls\nfile1\nfile2\n"})
+        report = self._service(gateway).discover_panes()
+        assert gateway.capture_calls == {"%7": 1}
+        assert len(report.non_agent_panes) == 1
+
+
 class CountingTmuxGateway:
     def __init__(
         self,
