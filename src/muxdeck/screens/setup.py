@@ -1,16 +1,22 @@
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, cast
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.worker import Worker, WorkerState
 
 from muxdeck.bindings import SETUP_BINDINGS, SETUP_HINTS
 from muxdeck.screens.base import ShellScreen
+from muxdeck.services.setup_service import SetupDoctorReport
 from muxdeck.widgets.setup import DoctorDetailPanel, SetupSummaryPanel, SocketListPanel
 
 if TYPE_CHECKING:
     from muxdeck.app import MuxdeckApp, MuxdeckRuntime
+
+
+_SETUP_WORKER = "setup_build_report"
 
 
 class SetupScreen(ShellScreen):
@@ -18,8 +24,21 @@ class SetupScreen(ShellScreen):
     BINDINGS = SETUP_BINDINGS
     FOOTER_HINTS = SETUP_HINTS
 
+    # Tab-hop activations within this window reuse the cached report
+    # instead of re-probing tmux + filesystem + git. The periodic
+    # discovery timer in MuxdeckApp ensures the cached value never
+    # ages past discovery_interval_sec in practice.
+    _ACTIVATION_REFRESH_TTL_SEC: float = 3.0
+
     def __init__(self, runtime: MuxdeckRuntime) -> None:
         super().__init__(runtime)
+        self._loading: bool = False
+        self._cached_report: SetupDoctorReport | None = None
+        self._last_refresh_completed_at: float = 0.0
+        # Coalesce refresh requests that arrive while a worker is
+        # still running so we never queue parallel build_report
+        # invocations on the worker pool.
+        self._refresh_pending: bool = False
 
     def compose_body(self) -> ComposeResult:
         with Vertical(id="setup-root"), Horizontal(id="setup-main", classes="frame"):
@@ -33,6 +52,18 @@ class SetupScreen(ShellScreen):
         self.call_after_refresh(self.query_one(SocketListPanel).focus_list)
 
     def on_show(self) -> None:
+        # Skip when a worker is already in flight: the in-flight
+        # report will paint when it lands, so kicking another one
+        # would just queue duplicate work via _refresh_pending.
+        if self._loading:
+            return
+        # Throttle the show-driven refresh so fast Tab navigation
+        # doesn't re-run build_report on every activation. The first
+        # show after mount falls through because _last_refresh_completed_at
+        # starts at 0.0.
+        elapsed = time.monotonic() - self._last_refresh_completed_at
+        if elapsed < self._ACTIVATION_REFRESH_TTL_SEC and self._cached_report is not None:
+            return
         self.refresh_data()
 
     @property
@@ -47,7 +78,52 @@ class SetupScreen(ShellScreen):
             self.query_one(DoctorDetailPanel).set_report(None)
             self.set_status("setup unavailable")
             return
-        report = service.build_report()
+        if self._loading:
+            # build_report can block for hundreds of ms on WSL while
+            # it probes tmux / scans the socket directory; coalesce
+            # repeat requests rather than queuing parallel work.
+            self._refresh_pending = True
+            return
+        if self._cached_report is None:
+            self.set_status("loading setup report…")
+        self._loading = True
+
+        def _build() -> SetupDoctorReport | None:
+            try:
+                return service.build_report()
+            except Exception:
+                return None
+
+        self.run_worker(_build, thread=True, exclusive=True, name=_SETUP_WORKER)
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        super().on_worker_state_changed(event)
+        if event.worker.name != _SETUP_WORKER:
+            return
+        if event.state in (WorkerState.ERROR, WorkerState.CANCELLED):
+            self._loading = False
+            if self._refresh_pending:
+                self._refresh_pending = False
+                self.refresh_data()
+            return
+        if event.state != WorkerState.SUCCESS:
+            return
+        report = cast("SetupDoctorReport | None", event.worker.result)
+        self._loading = False
+        self._last_refresh_completed_at = time.monotonic()
+        if report is None:
+            self.set_status("setup report failed")
+            if self._refresh_pending:
+                self._refresh_pending = False
+                self.refresh_data()
+            return
+        self._apply_report(report)
+        if self._refresh_pending:
+            self._refresh_pending = False
+            self.refresh_data()
+
+    def _apply_report(self, report: SetupDoctorReport) -> None:
+        self._cached_report = report
         self.query_one(SocketListPanel).set_options(report.socket_options)
         self.query_one(SetupSummaryPanel).set_report(report)
         self.query_one(DoctorDetailPanel).set_report(report)
@@ -76,9 +152,8 @@ class SetupScreen(ShellScreen):
             self.set_status("socket already active")
             return
         report = service.select_socket(option.socket_path)
-        self.query_one(SocketListPanel).set_options(report.socket_options)
-        self.query_one(SetupSummaryPanel).set_report(report)
-        self.query_one(DoctorDetailPanel).set_report(report)
+        self._apply_report(report)
+        self._last_refresh_completed_at = time.monotonic()
         if option.socket_path is None:
             self.set_status("using auto tmux socket selection")
             return
@@ -90,9 +165,8 @@ class SetupScreen(ShellScreen):
             self.set_status("setup unavailable")
             return
         report = service.select_socket(None)
-        self.query_one(SocketListPanel).set_options(report.socket_options)
-        self.query_one(SetupSummaryPanel).set_report(report)
-        self.query_one(DoctorDetailPanel).set_report(report)
+        self._apply_report(report)
+        self._last_refresh_completed_at = time.monotonic()
         self.set_status("using auto tmux socket selection")
 
 

@@ -61,8 +61,10 @@ class _RecordingService:
     report: SetupDoctorReport
     select_calls: list[str | None] = field(default_factory=list)
     next_report_for_select: SetupDoctorReport | None = None
+    build_calls: int = 0
 
     def build_report(self) -> SetupDoctorReport:
+        self.build_calls += 1
         return self.report
 
     def select_socket(self, socket_path: str | None) -> SetupDoctorReport:
@@ -299,3 +301,102 @@ class SetupScreenClearSocketTests(unittest.TestCase):
         status, calls = asyncio.run(scenario())
         assert calls == [None]
         assert status == "using auto tmux socket selection"
+
+
+class SetupScreenThrottleTests(unittest.TestCase):
+    """Tab-hop activations within the TTL window must reuse the cached report."""
+
+    def test_on_show_within_ttl_skips_build_report(self) -> None:
+        async def scenario() -> int:
+            checks = (SetupCheck(key="ok", status="ok", title="ok", detail="all good"),)
+            service = _RecordingService(report=_report(checks=checks))
+            runtime = _runtime_with(service)
+            app = _Harness(runtime)
+            async with app.run_test(size=(140, 60)) as pilot:
+                screen = SetupScreen(runtime)
+                await app.push_screen(screen)
+                # First on_show drives a worker that calls build_report.
+                for _ in range(20):
+                    if screen._cached_report is not None:
+                        break
+                    await pilot.pause()
+                build_calls_after_first = service.build_calls
+                # A second on_show within the TTL must skip the worker.
+                screen.on_show()
+                await pilot.pause()
+                return service.build_calls - build_calls_after_first
+
+        delta = asyncio.run(scenario())
+        assert delta == 0, f"expected no extra build_report; got {delta} more"
+
+    def test_on_show_after_ttl_dispatches_build_report(self) -> None:
+        import time
+
+        async def scenario() -> int:
+            checks = (SetupCheck(key="ok", status="ok", title="ok", detail="all good"),)
+            service = _RecordingService(report=_report(checks=checks))
+            runtime = _runtime_with(service)
+            app = _Harness(runtime)
+            async with app.run_test(size=(140, 60)) as pilot:
+                screen = SetupScreen(runtime)
+                await app.push_screen(screen)
+                for _ in range(20):
+                    if screen._cached_report is not None:
+                        break
+                    await pilot.pause()
+                build_calls_after_first = service.build_calls
+                # Force the throttle to expire before re-showing.
+                screen._last_refresh_completed_at = (
+                    time.monotonic() - screen._ACTIVATION_REFRESH_TTL_SEC - 1.0
+                )
+                screen.on_show()
+                for _ in range(20):
+                    if service.build_calls > build_calls_after_first:
+                        break
+                    await pilot.pause()
+                return service.build_calls - build_calls_after_first
+
+        delta = asyncio.run(scenario())
+        assert delta >= 1
+
+    def test_refresh_data_dispatches_worker(self) -> None:
+        """build_report must not run on the UI thread."""
+
+        async def scenario() -> bool:
+            ran_on_ui_thread: list[bool] = []
+
+            @dataclass(slots=True)
+            class _ThreadProbingService:
+                report: SetupDoctorReport
+                main_thread_id: int
+
+                def build_report(self) -> SetupDoctorReport:
+                    import threading
+
+                    ran_on_ui_thread.append(threading.get_ident() == self.main_thread_id)
+                    return self.report
+
+                def select_socket(self, _path: str | None) -> SetupDoctorReport:
+                    return self.report
+
+            import threading
+
+            checks = (SetupCheck(key="ok", status="ok", title="ok", detail="all good"),)
+            service = _ThreadProbingService(
+                report=_report(checks=checks),
+                main_thread_id=threading.get_ident(),
+            )
+            runtime = _runtime_with(service)
+            app = _Harness(runtime)
+            async with app.run_test(size=(140, 60)) as pilot:
+                screen = SetupScreen(runtime)
+                await app.push_screen(screen)
+                for _ in range(20):
+                    if ran_on_ui_thread:
+                        break
+                    await pilot.pause()
+            assert ran_on_ui_thread, "build_report was never called"
+            return ran_on_ui_thread[0]
+
+        ran_on_ui_thread = asyncio.run(scenario())
+        assert ran_on_ui_thread is False, "build_report ran on the UI thread"
