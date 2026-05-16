@@ -204,6 +204,11 @@ class SessionsScreen(ShellScreen):
                     classes="panel",
                 )
 
+    # See ``DashboardScreen.AUTO_FOCUS`` — without this, Textual's
+    # default ``"*"`` selector focuses the first focusable widget
+    # (the filter Input) on every screen resume, including cold start.
+    AUTO_FOCUS = "#sessions-list"
+
     def on_mount(self) -> None:
         self.refresh_data()
         self.call_after_refresh(self.query_one(SessionListPanel).focus_list)

@@ -2007,6 +2007,70 @@ async def test_modal_dismiss_does_not_reset_focus() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cold_start_focuses_dashboard_agent_list_not_filter() -> None:
+    """Cold start lands focus on the agent list, not the filter Input.
+
+    Regression test for the user-visible "starts with filtering box"
+    complaint: without ``Screen.AUTO_FOCUS`` pinned to the list panel,
+    Textual's default ``"*"`` selector focuses the first focusable
+    widget in the DOM on every ``_on_screen_resume`` — the FilterBar
+    Input — forcing operators to press Escape before navigation keys
+    work even on the very first frame.
+    """
+    from muxdeck.widgets.dashboard import AgentListPanel
+
+    runtime = FakeRuntime()
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            agent_list = app.screen.query_one(AgentListPanel)
+            filter_input = app.screen.query_one("#dashboard-filter-input", Input)
+            assert cast(Any, app.focused) is agent_list, (
+                f"expected focus on agent list, got "
+                f"{type(app.focused).__name__ if app.focused else None}"
+            )
+            assert cast(Any, app.focused) is not filter_input
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_cold_start_after_navigation_focuses_list_not_filter() -> None:
+    """Switching to sessions/worktrees on a fresh app focuses the list.
+
+    The user's complaint applies to every list screen — once the operator
+    leaves the dashboard, the next screen must also land focus on its
+    primary list rather than its filter Input.
+    """
+    from muxdeck.widgets.dashboard import AgentListPanel
+    from muxdeck.widgets.worktrees import WorktreeListPanel
+
+    runtime = FakeRuntime()
+    app = MuxdeckApp(cast(MuxdeckRuntime, runtime))
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert isinstance(app.focused, AgentListPanel)
+
+            app.action_show_sessions()
+            await pilot.pause()
+            await pilot.pause()
+            sessions_list = app.screen.query_one("#sessions-list")
+            sessions_filter = app.screen.query_one("#sessions-filter-input", Input)
+            assert app.focused is sessions_list
+            assert cast(Any, app.focused) is not sessions_filter
+
+            app.action_show_worktrees()
+            await pilot.pause()
+            await pilot.pause()
+            worktree_list = app.screen.query_one(WorktreeListPanel)
+            assert cast(Any, app.focused) is worktree_list
+    finally:
+        runtime.cleanup()
+
+
+@pytest.mark.asyncio
 async def test_restore_default_focus_noop_when_widget_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

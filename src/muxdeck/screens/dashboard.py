@@ -153,6 +153,17 @@ class DashboardScreen(ShellScreen):
                     yield AlertPanel(id="dashboard-alerts", classes="section")
                     yield LogPreviewPanel(id="dashboard-log", classes="section")
 
+    # Textual auto-focuses the first widget matching ``AUTO_FOCUS`` on
+    # every ``_on_screen_resume`` (default selector ``"*"``). Without an
+    # explicit target, the FilterBar Input — the first focusable widget
+    # in the DOM — captures focus on cold start AND on every mode
+    # switch, forcing operators to press Escape before navigation keys
+    # work. Pointing AUTO_FOCUS at the agent list makes Textual land
+    # focus on the list directly. ``restore_default_focus`` covers
+    # subsequent mode switches and ``call_after_refresh`` covers the
+    # case where the list isn't yet matchable at resume time.
+    AUTO_FOCUS = "#dashboard-agents"
+
     def on_mount(self) -> None:
         self.refresh_data()
         self.call_after_refresh(self.query_one(AgentListPanel).focus_list)

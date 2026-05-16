@@ -199,6 +199,13 @@ class WorktreesScreen(ShellScreen):
                     yield ConflictPanel(id="worktrees-conflicts", classes="section-top")
                     yield StartIntentPanel(id="worktrees-intent", classes="section-top")
 
+    # See ``DashboardScreen.AUTO_FOCUS`` — without this, Textual's
+    # default ``"*"`` selector focuses the first focusable widget on
+    # every screen resume. Worktrees has no filter Input, but pinning
+    # AUTO_FOCUS keeps focus on the list rather than whichever sidebar
+    # widget happens to come first.
+    AUTO_FOCUS = "#worktrees-list"
+
     def on_mount(self) -> None:
         self.refresh_data()
         self.call_after_refresh(self.query_one(WorktreeListPanel).focus_list)
