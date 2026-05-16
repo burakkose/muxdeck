@@ -10,7 +10,7 @@ from typing import Any, Literal, Protocol
 
 from muxdeck.adapters.copilot_activity_reader import AgentActivity, TranscriptLine
 from muxdeck.adapters.copilot_session_resolver import CopilotSessionResolution
-from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.adapters.sqlite_store import AgentDashboardSnapshot, SessionContextRecord
 from muxdeck.domain.enums import AgentStatus
 from muxdeck.domain.events import Event, LogChunk
 from muxdeck.domain.models import Agent, Session, Worktree
@@ -390,7 +390,49 @@ class DashboardController:
         """
         with timed("dashboard.build_agent_items"):
             agents = self._store.list_agents()
-            return tuple(self._build_agent_item(agent) for agent in agents)
+            snapshots = self._fetch_agent_snapshots([agent.id for agent in agents])
+            return tuple(self._build_agent_item(agent, snapshots.get(agent.id)) for agent in agents)
+
+    def _fetch_agent_snapshots(self, agent_ids: Sequence[str]) -> dict[str, AgentDashboardSnapshot]:
+        """Pre-fetch the per-agent dashboard snapshot bundle.
+
+        Uses :meth:`DashboardSnapshotStorePort.get_dashboard_agent_snapshots`
+        when the store provides it (collapses ~3 SELECTs per agent
+        into 3 SELECTs total). Falls back to the old per-agent path
+        on stores that don't implement the bulk surface so existing
+        in-memory test doubles keep working.
+        """
+        if not agent_ids:
+            return {}
+        bulk = getattr(self._store, "get_dashboard_agent_snapshots", None)
+        if callable(bulk):
+            try:
+                result = bulk(list(agent_ids))
+            except TypeError:
+                # Older / partial implementations may not accept a list;
+                # try a tuple and fall through to the legacy path if
+                # that fails too.
+                result = bulk(tuple(agent_ids))
+            return dict(result)
+        snapshots: dict[str, AgentDashboardSnapshot] = {}
+        for agent_id in agent_ids:
+            session = self._store.get_latest_session_for_agent(agent_id)
+            latest_event = (
+                self._store.get_latest_event_for_session(session.id)
+                if session is not None
+                else None
+            )
+            latest_log = (
+                self._store.get_latest_log_chunk(session.id) if session is not None else None
+            )
+            if session is None and latest_event is None and latest_log is None:
+                continue
+            snapshots[agent_id] = AgentDashboardSnapshot(
+                session=session,
+                latest_event=latest_event,
+                latest_log=latest_log,
+            )
+        return snapshots
 
     def build_alerts_from_items(
         self,
@@ -449,24 +491,33 @@ class DashboardController:
                 selected_agent=selected_view,
             )
 
-    def _build_agent_item(self, agent: Agent) -> DashboardAgentListItemView:
+    def _build_agent_item(
+        self,
+        agent: Agent,
+        snapshot: AgentDashboardSnapshot | None = None,
+    ) -> DashboardAgentListItemView:
         now = self._clock()
         token_total = _resolved_token_total(
             token_total=agent.token_total,
             token_input=agent.token_input,
             token_output=agent.token_output,
         )
-        latest_session = self._store.get_latest_session_for_agent(agent.id)
-        latest_event = (
-            self._store.get_latest_event_for_session(latest_session.id)
-            if latest_session is not None
-            else None
-        )
-        latest_log = (
-            self._store.get_latest_log_chunk(latest_session.id)
-            if latest_session is not None
-            else None
-        )
+        if snapshot is None:
+            latest_session = self._store.get_latest_session_for_agent(agent.id)
+            latest_event = (
+                self._store.get_latest_event_for_session(latest_session.id)
+                if latest_session is not None
+                else None
+            )
+            latest_log = (
+                self._store.get_latest_log_chunk(latest_session.id)
+                if latest_session is not None
+                else None
+            )
+        else:
+            latest_session = snapshot.session
+            latest_event = snapshot.latest_event
+            latest_log = snapshot.latest_log
         estimated_cost = None
         if agent.estimated_cost_usd is not None:
             estimated_cost = format(agent.estimated_cost_usd, "f")

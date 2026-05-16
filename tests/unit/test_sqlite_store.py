@@ -610,6 +610,136 @@ class SQLiteStoreTests(unittest.TestCase):
         listed = self.store.list_log_chunks("session-123")
         self.assertEqual([c.id for c in listed], ["log-initial", "log-second"])
 
+    def test_get_dashboard_agent_snapshots_returns_latest_per_agent(self) -> None:
+        agent_a = self._make_agent(pane_id="%1")
+        agent_b = Agent(
+            id="agent-b",
+            name="builder",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@2",
+            tmux_window_name="build",
+            tmux_pane_id="%2",
+            pane_tty="/dev/pts/2",
+            cwd="/repo",
+            status=AgentStatus.RUNNING,
+            started_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        self.store.upsert_agent(agent_a)
+        self.store.upsert_agent(agent_b)
+
+        # Agent A: two sessions; newest should win.
+        session_a_old = Session(
+            id="session-a-old",
+            agent_id="agent-123",
+            created_at=datetime(2025, 1, 1, 12, 0, tzinfo=UTC),
+            ended_at=datetime(2025, 1, 1, 12, 5, tzinfo=UTC),
+        )
+        session_a_new = Session(
+            id="session-a-new",
+            agent_id="agent-123",
+            created_at=datetime(2025, 1, 1, 12, 10, tzinfo=UTC),
+        )
+        # Agent B: one session, no events / logs.
+        session_b = Session(
+            id="session-b",
+            agent_id="agent-b",
+            created_at=datetime(2025, 1, 1, 12, 0, tzinfo=UTC),
+        )
+        self.store.upsert_session(session_a_old)
+        self.store.upsert_session(session_a_new)
+        self.store.upsert_session(session_b)
+
+        # Events: only on the NEW session for A. Two ordered events so
+        # we know the snapshot picks the most recent.
+        evt_old = Event(
+            id="evt-a-old",
+            agent_id="agent-123",
+            session_id="session-a-new",
+            kind="tool_start",
+            occurred_at=datetime(2025, 1, 1, 12, 10, 5, tzinfo=UTC),
+            severity="info",
+        )
+        evt_new = Event(
+            id="evt-a-new",
+            agent_id="agent-123",
+            session_id="session-a-new",
+            kind="tool_end",
+            occurred_at=datetime(2025, 1, 1, 12, 10, 10, tzinfo=UTC),
+            severity="info",
+        )
+        # A stray event on the OLD session must NOT be picked.
+        evt_stray = Event(
+            id="evt-a-stray",
+            agent_id="agent-123",
+            session_id="session-a-old",
+            kind="tool_start",
+            occurred_at=datetime(2025, 1, 1, 12, 4, tzinfo=UTC),
+            severity="info",
+        )
+        self.store.append_events((evt_old, evt_new, evt_stray))
+
+        # Log chunks: only on the NEW session for A; two of them.
+        log_first = LogChunk(
+            id="log-a-1",
+            agent_id="agent-123",
+            session_id="session-a-new",
+            source="stdout",
+            sequence_no=0,
+            captured_at=datetime(2025, 1, 1, 12, 10, 6, tzinfo=UTC),
+            content="hello",
+        )
+        log_second = LogChunk(
+            id="log-a-2",
+            agent_id="agent-123",
+            session_id="session-a-new",
+            source="stdout",
+            sequence_no=1,
+            captured_at=datetime(2025, 1, 1, 12, 10, 11, tzinfo=UTC),
+            content="world",
+        )
+        self.store.append_log_chunks((log_first, log_second))
+
+        # Agent with no sessions: must not appear in the dict.
+        snapshots = self.store.get_dashboard_agent_snapshots(
+            ["agent-123", "agent-b", "agent-empty"]
+        )
+
+        self.assertEqual(set(snapshots.keys()), {"agent-123", "agent-b"})
+
+        snap_a = snapshots["agent-123"]
+        assert snap_a.session is not None
+        self.assertEqual(snap_a.session.id, "session-a-new")
+        assert snap_a.latest_event is not None
+        self.assertEqual(snap_a.latest_event.id, "evt-a-new")
+        assert snap_a.latest_log is not None
+        self.assertEqual(snap_a.latest_log.id, "log-a-2")
+
+        snap_b = snapshots["agent-b"]
+        assert snap_b.session is not None
+        self.assertEqual(snap_b.session.id, "session-b")
+        self.assertIsNone(snap_b.latest_event)
+        self.assertIsNone(snap_b.latest_log)
+
+    def test_get_dashboard_agent_snapshots_empty_input(self) -> None:
+        # No agents → no SQL fired, no rows.
+        self.assertEqual(self.store.get_dashboard_agent_snapshots([]), {})
+        # Unknown agents only → empty dict, no exception.
+        self.store.upsert_agent(self._make_agent())
+        self.assertEqual(self.store.get_dashboard_agent_snapshots(["unknown-1", "unknown-2"]), {})
+
+    def test_get_dashboard_agent_snapshots_dedupes_input(self) -> None:
+        # Repeated agent_ids must not duplicate the result and must
+        # not blow up the SQL.
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        snapshots = self.store.get_dashboard_agent_snapshots(
+            ["agent-123", "agent-123", "agent-123"]
+        )
+        self.assertEqual(set(snapshots.keys()), {"agent-123"})
+        snap = snapshots["agent-123"]
+        assert snap.session is not None
+        self.assertEqual(snap.session.id, "session-123")
+
     def test_foreign_keys_reject_orphaned_rows(self) -> None:
         with self.assertRaises(PersistenceError):
             self.store.upsert_session(self._make_session())

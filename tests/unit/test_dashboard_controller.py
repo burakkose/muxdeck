@@ -16,7 +16,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from muxdeck.adapters.copilot_activity_reader import AgentActivity, TranscriptLine
 from muxdeck.adapters.copilot_session_resolver import CopilotSessionResolution
-from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.adapters.sqlite_store import AgentDashboardSnapshot, SessionContextRecord
 from muxdeck.controllers.dashboard_controller import (
     DashboardController,
     DashboardFilterState,
@@ -35,6 +35,9 @@ class InMemoryDashboardStore:
         self.events: list[Event] = []
         self.logs: list[LogChunk] = []
         self.worktrees: dict[str, Worktree] = {}
+        self.latest_session_calls: list[str] = []
+        self.latest_event_calls: list[str] = []
+        self.latest_log_calls: list[str] = []
 
     def list_agents(self) -> tuple[Agent, ...]:
         return tuple(
@@ -61,6 +64,7 @@ class InMemoryDashboardStore:
         return tuple(session for session in sessions if session.agent_id == agent_id)
 
     def get_latest_session_for_agent(self, agent_id: str, /) -> Session | None:
+        self.latest_session_calls.append(agent_id)
         sessions = self.list_sessions(agent_id)
         return sessions[0] if sessions else None
 
@@ -80,6 +84,7 @@ class InMemoryDashboardStore:
         return tuple(event for event in self.events if event.session_id == session_id)
 
     def get_latest_event_for_session(self, session_id: str, /) -> Event | None:
+        self.latest_event_calls.append(session_id)
         events = self.list_events_for_session(session_id)
         return events[-1] if events else None
 
@@ -87,6 +92,7 @@ class InMemoryDashboardStore:
         return tuple(chunk for chunk in self.logs if chunk.session_id == session_id)
 
     def get_latest_log_chunk(self, session_id: str, /) -> LogChunk | None:
+        self.latest_log_calls.append(session_id)
         chunks = self.list_log_chunks(session_id)
         return chunks[-1] if chunks else None
 
@@ -1082,6 +1088,103 @@ class DashboardControllerTests(unittest.TestCase):
             "build_selected_agent_view should fetch exactly one agent "
             f"via get_agent (got {get_agent_calls!r})"
         )
+
+    def test_build_agent_items_uses_bulk_snapshot_when_available(self) -> None:
+        """When the store implements ``get_dashboard_agent_snapshots``,
+        ``build_agent_items`` must take the fast path: one bulk call,
+        zero per-agent ``get_latest_session_for_agent`` /
+        ``get_latest_event_for_session`` / ``get_latest_log_chunk``
+        fan-out. This collapses the dashboard's ~3N SQL round-trips
+        into a single batched fetch on every sync cycle.
+        """
+
+        class _BulkStore(InMemoryDashboardStore):
+            def __init__(self) -> None:
+                super().__init__()
+                self.bulk_calls: list[tuple[str, ...]] = []
+
+            def get_dashboard_agent_snapshots(
+                self, agent_ids: list[str], /
+            ) -> dict[str, AgentDashboardSnapshot]:
+                self.bulk_calls.append(tuple(agent_ids))
+                result: dict[str, AgentDashboardSnapshot] = {}
+                for agent_id in agent_ids:
+                    sessions = self.list_sessions(agent_id)
+                    if not sessions:
+                        continue
+                    session = sessions[0]
+                    events = [e for e in self.events if e.session_id == session.id]
+                    logs = [c for c in self.logs if c.session_id == session.id]
+                    result[agent_id] = AgentDashboardSnapshot(
+                        session=session,
+                        latest_event=events[-1] if events else None,
+                        latest_log=logs[-1] if logs else None,
+                    )
+                return result
+
+        store = _BulkStore()
+        observed_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+        for i in range(3):
+            agent_id = f"agent-{i}"
+            store.agents[agent_id] = Agent(
+                id=agent_id,
+                name=agent_id,
+                tmux_session_name="muxdeck",
+                tmux_window_id=f"@{i}",
+                tmux_pane_id=f"%{i}",
+                cwd="/repo",
+                status=AgentStatus.RUNNING,
+                started_at=observed_at,
+                last_seen_at=observed_at,
+            )
+            store.sessions[f"session-{i}"] = Session(
+                id=f"session-{i}",
+                agent_id=agent_id,
+                created_at=observed_at,
+            )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        items = controller.build_agent_items()
+
+        self.assertEqual(len(items), 3)
+        self.assertEqual(len(store.bulk_calls), 1, "bulk fetch should fire exactly once")
+        self.assertEqual(set(store.bulk_calls[0]), {"agent-0", "agent-1", "agent-2"})
+        assert not store.latest_session_calls, (
+            "bulk path must skip the per-agent get_latest_session_for_agent fallback "
+            f"(saw {store.latest_session_calls!r})"
+        )
+        assert not store.latest_event_calls, store.latest_event_calls
+        assert not store.latest_log_calls, store.latest_log_calls
+
+    def test_build_agent_items_falls_back_when_bulk_missing(self) -> None:
+        """Stores without ``get_dashboard_agent_snapshots`` (older test
+        doubles, alternative backends) must continue to work via the
+        per-agent path so this fast-path is purely additive.
+        """
+        store = InMemoryDashboardStore()
+        observed_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="solo",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            status=AgentStatus.RUNNING,
+            started_at=observed_at,
+            last_seen_at=observed_at,
+        )
+        store.sessions["session-1"] = Session(
+            id="session-1",
+            agent_id="agent-1",
+            created_at=observed_at,
+        )
+
+        controller = DashboardController(store, clock=lambda: observed_at)
+        items = controller.build_agent_items()
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(store.latest_session_calls, ["agent-1"])
 
 
 if __name__ == "__main__":

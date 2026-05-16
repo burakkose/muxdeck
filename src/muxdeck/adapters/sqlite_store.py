@@ -413,6 +413,22 @@ class SessionContextRecord:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class AgentDashboardSnapshot:
+    """Bundle of the latest session/event/log for one agent.
+
+    Returned by :meth:`SQLiteStore.get_dashboard_agent_snapshots` so
+    the dashboard controller can replace its old N+1 pattern (three
+    SELECTs per agent per render cycle) with one batched fetch per
+    cycle. Any field can be ``None`` when the agent has nothing of
+    that kind persisted yet.
+    """
+
+    session: Session | None = None
+    latest_event: Event | None = None
+    latest_log: LogChunk | None = None
+
+
 class SQLiteStore:
     def __init__(
         self,
@@ -954,6 +970,111 @@ class SQLiteStore:
             operation="get open session for agent",
         )
         return None if row is None else _row_to_session(row)
+
+    def get_dashboard_agent_snapshots(
+        self, agent_ids: Sequence[str], /
+    ) -> dict[str, AgentDashboardSnapshot]:
+        """Batch-fetch latest session/event/log for many agents.
+
+        Replaces the dashboard's per-agent triple-SELECT pattern with
+        three batched queries: one across ``sessions`` to pick the
+        latest row per agent_id, one across ``events`` to pick the
+        latest row per session_id, and one across ``log_chunks`` to
+        do the same. On a 16-agent fleet this collapses ~48 round-trips
+        per refresh into 3 — the biggest user-visible win in the perf
+        plan.
+
+        Each query relies on a window function (``ROW_NUMBER() OVER
+        (PARTITION BY ... ORDER BY ...)``) executed inside a CTE so
+        the result is exactly one row per partition without the need
+        for a correlated subquery or a Python-side sort. Window
+        functions have been available in SQLite since 3.25 (2018).
+
+        The returned mapping is keyed by ``agent_id``. Agents that
+        have never had a session persisted are absent from the dict;
+        callers should treat that case as "no snapshot" (i.e. all
+        three fields ``None``). Sessions without events or logs are
+        still present in the dict with ``latest_event=None`` /
+        ``latest_log=None``.
+        """
+        ids = tuple(dict.fromkeys(agent_ids))
+        if not ids:
+            return {}
+        with timed("sqlite.get_dashboard_agent_snapshots"):
+            agent_placeholders = ",".join("?" for _ in ids)
+            session_columns = ", ".join(_SESSION_COLUMNS)
+            session_rows = self._fetch_all(
+                (
+                    "WITH ranked AS ("
+                    f"SELECT {session_columns}, "
+                    "ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY created_at DESC, id DESC) "
+                    "AS rn FROM sessions "
+                    f"WHERE agent_id IN ({agent_placeholders})"
+                    f") SELECT {session_columns} FROM ranked WHERE rn = 1"
+                ),
+                ids,
+                operation="get dashboard agent snapshots (sessions)",
+            )
+            sessions: dict[str, Session] = {}
+            session_id_to_agent: dict[str, str] = {}
+            for row in session_rows:
+                session = _row_to_session(row)
+                if session.agent_id is None:
+                    continue
+                sessions[session.agent_id] = session
+                session_id_to_agent[session.id] = session.agent_id
+
+            events_by_session: dict[str, Event] = {}
+            logs_by_session: dict[str, LogChunk] = {}
+            if session_id_to_agent:
+                session_ids = tuple(session_id_to_agent.keys())
+                session_placeholders = ",".join("?" for _ in session_ids)
+                event_columns = ", ".join(_EVENT_COLUMNS)
+                event_rows = self._fetch_all(
+                    (
+                        "WITH ranked AS ("
+                        f"SELECT {event_columns}, "
+                        "ROW_NUMBER() OVER (PARTITION BY session_id "
+                        "ORDER BY occurred_at DESC, storage_order DESC) AS rn "
+                        "FROM events "
+                        f"WHERE session_id IN ({session_placeholders})"
+                        f") SELECT {event_columns} FROM ranked WHERE rn = 1"
+                    ),
+                    session_ids,
+                    operation="get dashboard agent snapshots (events)",
+                )
+                for row in event_rows:
+                    event = _row_to_event(row)
+                    if event.session_id is not None:
+                        events_by_session[event.session_id] = event
+
+                log_columns = ", ".join(_LOG_CHUNK_COLUMNS)
+                log_rows = self._fetch_all(
+                    (
+                        "WITH ranked AS ("
+                        f"SELECT {log_columns}, "
+                        "ROW_NUMBER() OVER (PARTITION BY session_id "
+                        "ORDER BY sequence_no DESC, storage_order DESC) AS rn "
+                        "FROM log_chunks "
+                        f"WHERE session_id IN ({session_placeholders})"
+                        f") SELECT {log_columns} FROM ranked WHERE rn = 1"
+                    ),
+                    session_ids,
+                    operation="get dashboard agent snapshots (log_chunks)",
+                )
+                for row in log_rows:
+                    chunk = _row_to_log_chunk(row)
+                    if chunk.session_id is not None:
+                        logs_by_session[chunk.session_id] = chunk
+
+            snapshots: dict[str, AgentDashboardSnapshot] = {}
+            for agent_id, session in sessions.items():
+                snapshots[agent_id] = AgentDashboardSnapshot(
+                    session=session,
+                    latest_event=events_by_session.get(session.id),
+                    latest_log=logs_by_session.get(session.id),
+                )
+            return snapshots
 
     def list_recent_log_chunks(
         self, session_id: str, /, *, limit: int = 20
