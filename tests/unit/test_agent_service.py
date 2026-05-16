@@ -1,5 +1,5 @@
 # mypy: disable-error-code=no-untyped-def
-# ruff: noqa: E402,E501,ANN001,ANN201
+# ruff: noqa: E402,E501,ANN001,ANN201,ANN202
 
 from __future__ import annotations
 
@@ -54,11 +54,14 @@ class InMemoryAgentStore:
 class InMemorySessionStore:
     def __init__(self) -> None:
         self.sessions: dict[str, Session] = {}
+        self.open_session_calls: list[str] = []
+        self.list_sessions_calls: list[str | None] = []
 
     def upsert_session(self, session: Session, /) -> None:
         self.sessions[session.id] = session
 
     def list_sessions(self, agent_id: str | None = None, /):
+        self.list_sessions_calls.append(agent_id)
         sessions = tuple(self.sessions.values())
         if agent_id is None:
             return sessions
@@ -72,6 +75,18 @@ class InMemorySessionStore:
             if session.copilot_session_id == copilot_session_id:
                 return session
         return None
+
+    def get_open_session_for_agent(self, agent_id: str, /) -> Session | None:
+        self.open_session_calls.append(agent_id)
+        candidates = [
+            session
+            for session in self.sessions.values()
+            if session.agent_id == agent_id and session.ended_at is None
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda session: (session.created_at, session.id), reverse=True)
+        return candidates[0]
 
 
 class InMemoryEventStore:
@@ -264,6 +279,138 @@ class AgentServiceTests(unittest.TestCase):
             "persist_agent_facts must use get_latest_log_chunk instead of "
             "list_log_chunks on the refresh hot path"
         )
+
+    def test_persist_agent_facts_uses_open_session_fast_path_after_first_cycle(self) -> None:
+        """Regression: the second + subsequent persist for the same
+        managed agent must take the indexed
+        ``get_open_session_for_agent`` route instead of the legacy
+        ``list_sessions(agent_id)`` full scan when neither the
+        copilot_session_id nor the pane-id context resolves the
+        session.
+        """
+        first = self.service.persist_agent_facts(
+            AgentFactInput(
+                classification="unmanaged_probable_agent",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@1",
+                tmux_pane_id="%1",
+                cwd="/repo/worktrees/task-one",
+                observed_at=self.now,
+                status=AgentStatus.RUNNING,
+                capture_text="initial",
+            )
+        )
+        # Drop the cached pane→session context so the lookup is forced
+        # to fall through to the agent-id branch the way it does when
+        # muxdeck restarts mid-cycle on a host with a populated DB.
+        self.context_store.contexts.clear()
+        self.session_store.open_session_calls.clear()
+        before_list_calls = len(self.session_store.list_sessions_calls)
+
+        self.service.persist_agent_facts(
+            AgentFactInput(
+                classification="managed_agent",
+                agent_id=first.agent.id,
+                tmux_session_name="muxdeck",
+                tmux_window_id="@1",
+                tmux_pane_id="%1",
+                cwd="/repo/worktrees/task-one",
+                observed_at=self.now + timedelta(seconds=10),
+                status=AgentStatus.RUNNING,
+                capture_text="step-one",
+            )
+        )
+
+        assert self.session_store.open_session_calls == [first.agent.id]
+        assert len(self.session_store.list_sessions_calls) == before_list_calls, (
+            "AgentService._find_current_session must consult the indexed "
+            "get_open_session_for_agent helper before falling back to a "
+            "full list_sessions(agent_id) scan"
+        )
+
+    def test_persist_agent_facts_falls_back_to_list_when_open_session_helper_absent(
+        self,
+    ) -> None:
+        """Stores without ``get_open_session_for_agent`` (legacy fakes,
+        partial Protocol implementations) must still resolve the
+        session via the original ``list_sessions(agent_id)`` scan so
+        nothing crashes when the optimisation surface is missing.
+        """
+        legacy_store = _LegacySessionStore()
+        legacy_context = InMemoryContextStore()
+        service = AgentService(
+            self.agent_store,
+            legacy_store,
+            self.event_store,
+            self.log_store,
+            legacy_context,
+            clock=lambda: self.now,
+        )
+        first = service.persist_agent_facts(
+            AgentFactInput(
+                classification="unmanaged_probable_agent",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@1",
+                tmux_pane_id="%1",
+                cwd="/repo/worktrees/task-one",
+                observed_at=self.now,
+                status=AgentStatus.RUNNING,
+                capture_text="initial",
+            )
+        )
+        legacy_context.contexts.clear()
+        before_list_calls = len(legacy_store.list_sessions_calls)
+
+        second = service.persist_agent_facts(
+            AgentFactInput(
+                classification="managed_agent",
+                agent_id=first.agent.id,
+                tmux_session_name="muxdeck",
+                tmux_window_id="@1",
+                tmux_pane_id="%1",
+                cwd="/repo/worktrees/task-one",
+                observed_at=self.now + timedelta(seconds=10),
+                status=AgentStatus.RUNNING,
+                capture_text="step-one",
+            )
+        )
+
+        assert second.session.id == first.session.id
+        assert len(legacy_store.list_sessions_calls) == before_list_calls + 1, (
+            "fallback must hit list_sessions exactly once when the helper is absent"
+        )
+
+
+class _LegacySessionStore:
+    """Session store fake that intentionally omits the A4 helper.
+
+    Mirrors what a partial Protocol implementation (or a test fake
+    that hasn't been migrated yet) looks like, so the agent service
+    can be verified to gracefully degrade to the legacy scan path.
+    """
+
+    def __init__(self) -> None:
+        self.sessions: dict[str, Session] = {}
+        self.list_sessions_calls: list[str | None] = []
+
+    def upsert_session(self, session: Session, /) -> None:
+        self.sessions[session.id] = session
+
+    def list_sessions(self, agent_id: str | None = None, /):
+        self.list_sessions_calls.append(agent_id)
+        sessions = tuple(self.sessions.values())
+        if agent_id is None:
+            return sessions
+        return tuple(session for session in sessions if session.agent_id == agent_id)
+
+    def get_session(self, session_id: str, /) -> Session | None:
+        return self.sessions.get(session_id)
+
+    def get_session_by_copilot_session_id(self, copilot_session_id: str, /) -> Session | None:
+        for session in self.sessions.values():
+            if session.copilot_session_id == copilot_session_id:
+                return session
+        return None
 
 
 if __name__ == "__main__":

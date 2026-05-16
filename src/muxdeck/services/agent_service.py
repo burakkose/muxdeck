@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal, Protocol, runtime_checkable
+from typing import Literal, Protocol, cast, runtime_checkable
 
 from muxdeck.adapters.sqlite_store import SessionContextRecord
 from muxdeck.domain.enums import AgentStatus
@@ -45,6 +45,15 @@ class AgentStateStore(Protocol):
 class AgentSessionStore(SessionStore, Protocol):
     def get_session_by_copilot_session_id(self, copilot_session_id: str, /) -> Session | None:
         """Return a session by Copilot session identifier."""
+
+    def get_open_session_for_agent(self, agent_id: str, /) -> Session | None:
+        """Return the newest still-open session for an agent, or ``None``.
+
+        Optional fast-path surface; implementations may delegate to
+        the equivalent indexed query on the underlying store. Callers
+        fall back to ``list_sessions(agent_id)`` + Python-side
+        filtering when the port does not provide this method.
+        """
 
 
 @runtime_checkable
@@ -339,11 +348,29 @@ class AgentService:
             session = self._session_store.get_session(context.session_id)
             if session is not None:
                 return session
+        open_session = self._lookup_open_session_for_agent(agent.id)
+        if open_session is not None:
+            return open_session
         sessions = tuple(self._session_store.list_sessions(agent.id))
         if not sessions:
             return None
         open_sessions = tuple(session for session in sessions if session.ended_at is None)
         return open_sessions[0] if open_sessions else sessions[0]
+
+    def _lookup_open_session_for_agent(self, agent_id: str, /) -> Session | None:
+        """Use the indexed ``get_open_session_for_agent`` when available.
+
+        Falls back to ``None`` (which triggers the legacy
+        ``list_sessions(agent_id)`` scan in
+        :meth:`_find_current_session`) when the store port does not
+        expose the optimised method, keeping older fakes / partial
+        protocol implementations working.
+        """
+        getter = getattr(self._session_store, "get_open_session_for_agent", None)
+        if not callable(getter):
+            return None
+        result = getter(agent_id)
+        return cast("Session | None", result)
 
     def _event_drafts(
         self,
