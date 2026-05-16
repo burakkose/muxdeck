@@ -7,7 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 import sys
 import unittest
-from typing import Literal
+from typing import Literal, cast
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -1261,6 +1261,113 @@ class DashboardControllerTests(unittest.TestCase):
 
         self.assertEqual(len(items), 1)
         self.assertEqual(store.latest_session_calls, ["agent-1"])
+
+
+class DashboardSparklineCacheTests(unittest.TestCase):
+    """C12: unchanged content blob hash skips sparkline rebuild."""
+
+    def setUp(self) -> None:
+        from muxdeck.controllers import dashboard_controller as dc_module
+
+        self._dc_module = dc_module
+        # Reset module-level caches so tests are deterministic and
+        # don't leak state from earlier suites.
+        dc_module._agent_view_cache.clear()
+        dc_module._activity_history.clear()
+        dc_module._output_hashes.clear()
+        self._original_sparkline = dc_module._build_sparkline
+        self.calls: list[int] = []
+
+        def _spy(history: object, *, now: object) -> str:
+            self.calls.append(1)
+            return self._original_sparkline(history, now=now)  # type: ignore[arg-type]
+
+        dc_module._build_sparkline = _spy  # type: ignore[assignment]
+
+    def tearDown(self) -> None:
+        self._dc_module._build_sparkline = self._original_sparkline  # type: ignore[assignment]
+        self._dc_module._agent_view_cache.clear()
+        self._dc_module._activity_history.clear()
+        self._dc_module._output_hashes.clear()
+
+    def _make_controller(self) -> tuple[DashboardController, str]:
+        store = InMemoryDashboardStore()
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Steady",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="task/x",
+            task_title="Hello",
+            status=AgentStatus.RUNNING,
+            started_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+            last_seen_at=datetime(2025, 1, 1, 12, 1, tzinfo=UTC),
+        )
+        controller = DashboardController(
+            store,
+            clock=lambda: datetime(2025, 1, 1, 12, 1, 5, tzinfo=UTC),
+        )
+        return controller, "agent-1"
+
+    def test_unchanged_blob_within_window_skips_sparkline_rebuild(self) -> None:
+        controller, _ = self._make_controller()
+        # First build seeds the cache and runs the sparkline once.
+        controller.build_agent_items()
+        self.assertEqual(len(self.calls), 1)
+        # Second build with the same Agent fields (blob hash matches)
+        # within the refresh window must reuse the cache.
+        controller.build_agent_items()
+        self.assertEqual(len(self.calls), 1, "sparkline rebuilt despite unchanged content blob")
+
+    def test_changed_blob_rebuilds_sparkline(self) -> None:
+        controller, agent_id = self._make_controller()
+        controller.build_agent_items()
+        self.assertEqual(len(self.calls), 1)
+        # Mutate task_title so the content blob hash changes.
+        store = cast(InMemoryDashboardStore, controller._store)
+        store.agents[agent_id] = _replace_task_title(
+            store.agents[agent_id],
+            "Different",
+        )
+        controller.build_agent_items()
+        self.assertEqual(len(self.calls), 2, "sparkline should rebuild when content blob changes")
+
+    def test_cache_expires_after_refresh_window(self) -> None:
+        store = InMemoryDashboardStore()
+        store.agents["agent-1"] = Agent(
+            id="agent-1",
+            name="Steady",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            branch="task/x",
+            task_title="Hello",
+            status=AgentStatus.RUNNING,
+            started_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+            last_seen_at=datetime(2025, 1, 1, 12, 1, tzinfo=UTC),
+        )
+        # Use a mutable clock so we can advance time past the cache TTL.
+        clock_value: list[datetime] = [datetime(2025, 1, 1, 12, 1, 5, tzinfo=UTC)]
+        controller = DashboardController(store, clock=lambda: clock_value[0])
+        controller.build_agent_items()
+        self.assertEqual(len(self.calls), 1)
+        # Advance past _SPARKLINE_REFRESH_INTERVAL_SECONDS so the cache
+        # expires and a rebuild kicks in even when the blob is unchanged.
+        clock_value[0] = datetime(2025, 1, 1, 12, 1, 15, tzinfo=UTC)
+        controller.build_agent_items()
+        self.assertEqual(len(self.calls), 2, "sparkline should refresh when cache TTL expires")
+
+
+def _replace_task_title(agent: Agent, new_title: str) -> Agent:
+    """Test-only helper: rebuild an Agent dataclass with a new task_title."""
+    from dataclasses import replace
+
+    return replace(agent, task_title=new_title)
 
 
 if __name__ == "__main__":

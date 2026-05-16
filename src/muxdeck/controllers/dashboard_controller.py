@@ -38,9 +38,21 @@ _SPARK_CHARS: str = " ▁▂▃▄▅▆▇"
 _ACTIVITY_HISTORY_CAP: int = 100
 _STALE_THRESHOLD_SECONDS: int = 120
 
+# Sparkline gets a coarser refresh than the 2 s discovery tick — its
+# 8-bucket 10-minute window has a per-bar resolution of 75 s, so
+# regenerating the string every cycle is wasted work. Cache the
+# rendered glyphs per agent and only rebuild when activity arrives or
+# the cache is older than this interval.
+_SPARKLINE_REFRESH_INTERVAL_SECONDS: int = 5
+
 # Module-level state for sparkline activity history and heartbeat staleness.
 _activity_history: dict[str, list[datetime]] = {}
 _output_hashes: dict[str, tuple[str, datetime]] = {}
+# Per-agent cache: (output_blob_hash, sparkline_glyphs, sparkline_built_at).
+# When the agent's content blob hash matches the previous cycle and the
+# cached glyphs are still fresh, the sparkline + activity append are
+# skipped entirely. Keeps the dashboard 2 s loop O(1) per quiet agent.
+_agent_view_cache: dict[str, tuple[str, str, datetime]] = {}
 
 
 class DashboardStorePort(Protocol):
@@ -598,23 +610,49 @@ class DashboardController:
             else:
                 attention_reason = "waiting for input"
 
-        # Sparkline: record activity and build visualization
-        _record_activity(agent.id, current_activity, now)
-        sparkline = _build_sparkline(
-            _activity_history.get(agent.id, []),
-            now=now,
-        )
-
-        # Heartbeat: detect stuck agents via output hash staleness
+        # Sparkline + heartbeat: gate on a content blob hash so quiet
+        # agents skip the activity append and the sparkline rebuild on
+        # every 2 s cycle. The sparkline cache also expires every
+        # _SPARKLINE_REFRESH_INTERVAL_SECONDS so a quiet bar still
+        # ticks forward as its 75 s window scrolls.
         output_blob = (agent.task_title or "") + (
             latest_log.content if latest_log is not None else ""
         )
+        current_blob_hash = hashlib.md5(
+            output_blob.encode(),
+            usedforsecurity=False,
+        ).hexdigest()
+        cached = _agent_view_cache.get(agent.id)
+        cache_hit = (
+            cached is not None
+            and cached[0] == current_blob_hash
+            and (now - cached[2]).total_seconds() < _SPARKLINE_REFRESH_INTERVAL_SECONDS
+        )
+        if cache_hit:
+            assert cached is not None
+            sparkline = cached[1]
+        else:
+            # Content changed (or sparkline window expired): record a
+            # fresh activity sample only when the blob actually moved,
+            # then rebuild the sparkline glyphs from history.
+            if cached is None or cached[0] != current_blob_hash:
+                _record_activity(agent.id, current_activity, now)
+            sparkline = _build_sparkline(
+                _activity_history.get(agent.id, []),
+                now=now,
+            )
+            _agent_view_cache[agent.id] = (current_blob_hash, sparkline, now)
+
+        # Heartbeat is time-sensitive even when content is unchanged
+        # (an agent that hasn't moved for > _STALE_THRESHOLD_SECONDS
+        # IS the bug we want to surface), so always evaluate it.
         is_potentially_stuck = _check_stale_output(
             agent.id,
             output_blob,
             now=now,
             agent_status=agent.status,
             observed_at=_latest_output_observed_at(agent, latest_log),
+            output_hash=current_blob_hash,
         )
         if is_potentially_stuck and not needs_attention:
             stale_entry = _output_hashes.get(agent.id)
@@ -1316,13 +1354,17 @@ def _check_stale_output(
     now: datetime,
     agent_status: AgentStatus,
     observed_at: datetime | None = None,
+    output_hash: str | None = None,
 ) -> bool:
     """Return True when running agent output hasn't changed beyond threshold."""
     terminal = {AgentStatus.COMPLETED, AgentStatus.DEAD, AgentStatus.ERROR}
     if agent_status in terminal:
         _output_hashes.pop(agent_id, None)
         return False
-    current_hash = hashlib.md5(output_blob.encode(), usedforsecurity=False).hexdigest()
+    if output_hash is None:
+        current_hash = hashlib.md5(output_blob.encode(), usedforsecurity=False).hexdigest()
+    else:
+        current_hash = output_hash
     previous = _output_hashes.get(agent_id)
     if previous is None:
         baseline = observed_at if observed_at is not None and observed_at <= now else now
