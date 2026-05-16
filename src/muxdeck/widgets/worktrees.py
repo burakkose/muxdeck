@@ -285,7 +285,7 @@ class WorktreeDetailPanel(Static):
         result.append("  ")
         result.append("│ ", style=f"bold {FG4}")
         result.append(glyph, style=f"bold {FG}" if summary.is_main_worktree else FG4)
-        result.append(summary.branch.upper(), style=f"bold {FG}")
+        result.append(summary.branch, style=f"bold {FG}")
         result.append("   ")
         result.append("LOADING…", style=f"bold {FG4}")
         result.append("\n  ")
@@ -345,7 +345,7 @@ class WorktreeDetailPanel(Static):
         # The star marks the canonical worktree, not a state. Keep it
         # in primary text so GREEN remains reserved for "healthy".
         result.append(glyph, style=f"bold {FG}" if summary.is_main_worktree else FG4)
-        result.append(summary.branch.upper(), style=f"bold {FG}")
+        result.append(summary.branch, style=f"bold {FG}")
         result.append("   ")
         result.append(primary_label, style=f"bold {primary_color}")
         # Secondary flags. Skip the one we already used as the primary

@@ -274,9 +274,9 @@ def test_detail_panel_full_render_with_changes_commits_and_conflicts() -> None:
     )
     panel.set_detail(detail)
     rendered = _render(panel)
-    # Round-7 detail banner uppercases the branch name and surfaces
+    # Round-7 detail banner shows the branch name as-is alongside
     # primary + secondary status flags with severity-coloured chips.
-    assert "FEATURE/X" in rendered
+    assert "feature/x" in rendered
     assert "DIRTY" in rendered  # dirty wins precedence over locked
     assert "+LOCKED" in rendered  # locked still shown as secondary chip
     assert "ahead 2, behind 1" in rendered
@@ -297,9 +297,9 @@ def test_detail_panel_minimal_render_skips_optional_sections() -> None:
     )
     panel.set_detail(detail)
     rendered = _render(panel)
-    # Banner uppercases branch names; CLEAN appears for a non-dirty,
+    # Banner preserves branch name case; CLEAN appears for a non-dirty,
     # non-locked, non-conflict worktree.
-    assert "FEATURE/X" in rendered
+    assert "feature/x" in rendered
     assert "CLEAN" in rendered
     assert "press" in rendered
 
@@ -317,9 +317,10 @@ def test_detail_panel_set_pending_renders_summary_and_loading_marker() -> None:
     summary = _summary(branch="feature/new", path="/repo/wt-new")
     panel.set_pending(summary)
     rendered = _render(panel)
-    # Branch is uppercased like the full detail banner so the layout
-    # doesn't flicker when the worker replaces pending with real data.
-    assert "FEATURE/NEW" in rendered
+    # Branch name is rendered as-is — same case in pending and full
+    # banner so the layout doesn't flicker when the worker replaces
+    # pending with real data.
+    assert "feature/new" in rendered
     assert "/repo/wt-new" in rendered
     # Explicit loading marker so the operator knows enrichment is in
     # flight rather than mistaking the partial render for the full one.

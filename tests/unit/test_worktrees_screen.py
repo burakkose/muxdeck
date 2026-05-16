@@ -1918,7 +1918,7 @@ class WorktreesSelectionTests(unittest.TestCase):
 
         detail_render, intent_render = asyncio.run(scenario())
         # The NEW selection's branch must be visible immediately.
-        assert "WT2-BRANCH" in detail_render
+        assert "wt2-branch" in detail_render
         assert "/repo/wt-2" in detail_render
         # And both panels surface the in-flight state so the operator
         # knows the previous selection's stale data is being replaced.

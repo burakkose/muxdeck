@@ -1244,7 +1244,7 @@ class AgentDetailPanel(Static):
         bar_glyph = "│" if preferences.glyphs is UiGlyphs.RICH else "|"
         result.append(f" {bar_glyph} ", style=f"bold {plain_status_style}")
         result.append(f"{glyph_char} ", style=f"bold {glyph_color}")
-        result.append(_truncate(_identity_label(item), 52).upper(), style=f"bold {FG}")
+        result.append(_truncate(_identity_label(item), 52), style=f"bold {FG}")
         result.append("   ")
         result.append(operator_status.display_label, style=bold_status_style)
         result.append("\n")

@@ -1283,7 +1283,7 @@ async def test_textual_shell_navigation_and_updates() -> None:
             # basename when they differ — see ``_identity_label`` in
             # widgets/dashboard.py). The fixture sets ``name="Planner"``
             # / ``window_name="editor"`` so the banner reads ``EDITOR``.
-            assert "EDITOR" in detail_text
+            assert "EDITOR" in detail_text.upper()
             # Dashboard overhaul (c30552f) inlined the former ActivityPanel
             # into the agent detail render and removed the standalone
             # FleetHealthPanel from the dashboard (it now lives on the
@@ -1439,7 +1439,7 @@ async def test_dashboard_live_viewer_and_move_window_use_single_pane_flow() -> N
 
             await pilot.press("escape")
             await pilot.pause()
-            assert "EDITOR" in rendered_text(app.screen.query_one("#dashboard-detail"))
+            assert "EDITOR" in rendered_text(app.screen.query_one("#dashboard-detail")).upper()
 
             await pilot.press("W")
             await pilot.pause()
@@ -1623,7 +1623,7 @@ async def test_copy_details_shortcuts_copy_current_selection(
             # (window_name="review" wins over name="Reviewer"); the rest
             # of the copied details still contain "reviewer" via task
             # title / branch / pane id rows.
-            assert "REVIEW" in copied[-1]
+            assert "review" in copied[-1]
             assert "waiting for operator" in copied[-1]
             assert "task/reviewer" in copied[-1]
             assert (
@@ -1856,7 +1856,7 @@ async def test_worktrees_screen_can_create_and_select_existing_worktrees() -> No
             await pilot.pause()
 
             assert runtime.worktrees.create_calls == [("/repo", "New task")]
-            assert "TASK/NEW-TASK" in rendered_text(app.screen.query_one("#worktrees-detail"))
+            assert "task/new-task" in rendered_text(app.screen.query_one("#worktrees-detail"))
             assert (
                 "created /repo/worktrees/new-task"
                 in rendered_text(app.screen.query_one("#shell-footer")).lower()

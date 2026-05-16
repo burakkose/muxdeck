@@ -532,10 +532,10 @@ class TestDashboardPanels:
         panel.set_agent(selected)
 
         rendered = _render(panel)
-        assert "SESSION A36F5CEE" in rendered
+        assert "session a36f5cee" in rendered
         # The redundant repo name should not dominate the banner; the
         # body rows still surface ``repo muxdeck`` for context.
-        assert " MUXDECK   " not in rendered
+        assert " muxdeck   " not in rendered
 
     def test_focus_panel_banner_falls_back_to_repo_when_no_window(self):
         """When no descriptive identifier is available the banner falls
@@ -557,7 +557,10 @@ class TestDashboardPanels:
         panel.set_agent(selected)
 
         rendered = _render(panel)
-        assert "MUXDECK" in rendered
+        # Banner reads " │ {glyph} muxdeck   {status}" — the three-space
+        # gap is unique to the identity banner so this asserts the
+        # banner row rather than any incidental "muxdeck" body field.
+        assert " muxdeck   " in rendered
 
     def test_log_preview_panel_promotes_output_title_and_lines(self):
         from muxdeck.widgets.dashboard import LogPreviewPanel
