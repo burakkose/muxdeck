@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import time
 import unittest
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -1109,6 +1110,75 @@ class DashboardScreenAdditionalTests(unittest.TestCase):
             # Skip flag flipped, pre-built state was *not* consumed.
             assert screen._skip_next_show_refresh is False
             assert app.last_dashboard_state is not None
+
+        self._run_with_screen(runtime, body)
+
+    def test_on_show_throttles_refresh_within_activation_ttl(self) -> None:
+        """Re-entering the screen within the TTL must not dispatch a worker."""
+        item = _agent_view()
+        ctrl = _RecordingDashboardCtrl(state_to_return=_state(agents=(item,)))
+        runtime = _runtime_with(
+            dashboard_ctrl=ctrl,
+            agents_ctrl=_RecordingAgents(),
+        )
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._skip_next_show_refresh = False
+            # Simulate a fresh _apply_state landing right before the
+            # operator flips back to the dashboard tab.
+            screen._last_refresh_completed_at = time.monotonic()
+            refresh_calls: list[None] = []
+            original_refresh = screen.refresh_data
+            screen.refresh_data = lambda: refresh_calls.append(None)  # type: ignore[method-assign]
+            try:
+                screen.on_show()
+            finally:
+                screen.refresh_data = original_refresh  # type: ignore[method-assign]
+            assert refresh_calls == []
+
+        self._run_with_screen(runtime, body)
+
+    def test_on_show_refreshes_after_activation_ttl_expires(self) -> None:
+        """Tab switches after the TTL window must drive a fresh refresh."""
+        item = _agent_view()
+        ctrl = _RecordingDashboardCtrl(state_to_return=_state(agents=(item,)))
+        runtime = _runtime_with(
+            dashboard_ctrl=ctrl,
+            agents_ctrl=_RecordingAgents(),
+        )
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._skip_next_show_refresh = False
+            screen._last_refresh_completed_at = (
+                time.monotonic() - screen._ACTIVATION_REFRESH_TTL_SEC - 1.0
+            )
+            refresh_calls: list[None] = []
+            original_refresh = screen.refresh_data
+            screen.refresh_data = lambda: refresh_calls.append(None)  # type: ignore[method-assign]
+            try:
+                screen.on_show()
+            finally:
+                screen.refresh_data = original_refresh  # type: ignore[method-assign]
+            assert refresh_calls == [None]
+
+        self._run_with_screen(runtime, body)
+
+    def test_on_show_consumes_prebuilt_state_even_during_throttle(self) -> None:
+        """Pre-built sync state must apply even within the TTL window."""
+        item = _agent_view()
+        st = _state(agents=(item,))
+        runtime = _runtime_with(
+            dashboard_ctrl=_RecordingDashboardCtrl(state_to_return=st),
+            agents_ctrl=_RecordingAgents(),
+        )
+
+        async def body(app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._skip_next_show_refresh = False
+            screen._last_refresh_completed_at = time.monotonic()
+            app.last_dashboard_state = st
+            screen.on_show()
+            # refresh_data drained the pre-built state.
+            assert app.last_dashboard_state is None
 
         self._run_with_screen(runtime, body)
 

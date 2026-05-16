@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -141,6 +142,18 @@ class DashboardScreen(ShellScreen):
         # cache by writing fresh values.
         self._cached_agent_items: tuple[DashboardAgentListItemView, ...] | None = None
         self._cached_selected_view: DashboardSelectedAgentView | None = None
+        # Activation-refresh throttle. Switching tabs back to the
+        # dashboard would otherwise dispatch a fresh build_state +
+        # SQLite scan on every show, even when the periodic sync
+        # already painted the screen seconds ago. Match the pattern
+        # used by SessionsScreen / WorktreesScreen: if the last
+        # _apply_state landed less than _ACTIVATION_REFRESH_TTL_SEC
+        # ago, skip the show-driven refresh entirely. on_mount,
+        # on_input_changed, manual refresh actions, and the periodic
+        # sync timer all bypass this gate so live data still flows.
+        self._last_refresh_completed_at: float = 0.0
+
+    _ACTIVATION_REFRESH_TTL_SEC: float = 3.0
 
     @property
     def current_filters(self) -> DashboardFilterState:
@@ -196,6 +209,26 @@ class DashboardScreen(ShellScreen):
     def on_show(self) -> None:
         if self._skip_next_show_refresh:
             self._skip_next_show_refresh = False
+            return
+        # Always consume freshly-built state from the sync worker —
+        # that path is cheap (no SQLite work) and skipping it would
+        # leave the operator looking at stale data after a sync tick
+        # that finished while the screen was hidden.
+        if self.muxdeck_app.last_dashboard_state is not None:
+            self.refresh_data()
+            if self._selected_agent_id is not None and self._live_tail_timer is None:
+                self._start_live_tail(self._selected_agent_id)
+            return
+        # Otherwise, skip the show-driven refresh when the most recent
+        # _apply_state landed less than _ACTIVATION_REFRESH_TTL_SEC
+        # ago. The periodic sync timer in MuxdeckApp still drives data
+        # updates every discovery_interval_sec seconds, so the operator
+        # never sees stale data for longer than that — they just don't
+        # pay the full build_state cost on every Tab keypress.
+        elapsed = time.monotonic() - self._last_refresh_completed_at
+        if elapsed < self._ACTIVATION_REFRESH_TTL_SEC:
+            if self._selected_agent_id is not None and self._live_tail_timer is None:
+                self._start_live_tail(self._selected_agent_id)
             return
         self.refresh_data()
         if self._selected_agent_id is not None and self._live_tail_timer is None:
@@ -295,6 +328,9 @@ class DashboardScreen(ShellScreen):
             self.query_one(AlertPanel),
         )
         self._state = state
+        # Mark "data is fresh" so subsequent show events within the
+        # activation TTL can no-op instead of re-dispatching the build.
+        self._last_refresh_completed_at = time.monotonic()
         # Snapshot the unfiltered items + selected view so subsequent
         # filter/sort-only refreshes can reuse them without re-querying
         # SQLite. Only the next sync invalidates this cache.
