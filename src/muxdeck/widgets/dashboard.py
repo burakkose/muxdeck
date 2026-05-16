@@ -608,15 +608,36 @@ class StatusBar(Static):
 
 
 class FilterBar(Vertical):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self._input_widget: Input | None = None
+        self._summary_widget: Static | None = None
+
     def compose(self) -> ComposeResult:
         yield Input(placeholder="/ filter", id="dashboard-filter-input")
         yield Static(classes="filter-summary", id="dashboard-filter-summary")
 
+    def on_mount(self) -> None:
+        # Cache child references so set_query / set_state hot paths
+        # don't walk the DOM on every keystroke.
+        self._input_widget = self.query_one(Input)
+        self._summary_widget = self.query_one("#dashboard-filter-summary", Static)
+
+    def _input(self) -> Input:
+        if self._input_widget is None:
+            self._input_widget = self.query_one(Input)
+        return self._input_widget
+
+    def _summary(self) -> Static:
+        if self._summary_widget is None:
+            self._summary_widget = self.query_one("#dashboard-filter-summary", Static)
+        return self._summary_widget
+
     def set_query(self, value: str | None) -> None:
-        self.query_one(Input).value = value or ""
+        self._input().value = value or ""
 
     def focus_input(self) -> None:
-        self.query_one(Input).focus()
+        self._input().focus()
 
     def set_state(
         self,
@@ -655,7 +676,7 @@ class FilterBar(Vertical):
         else:
             summary.append(separator, style=FG4)
             summary.append("search name, branch, task, or status", style=FG4)
-        self.query_one("#dashboard-filter-summary", Static).update(summary)
+        self._summary().update(summary)
 
 
 @dataclass(frozen=True, slots=True)

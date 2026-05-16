@@ -89,6 +89,11 @@ def _append_action(text: Text, key: str, label: str) -> None:
 
 
 class ReplayFilterBar(Vertical):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self._input_widget: Input | None = None
+        self._summary_widget: Static | None = None
+
     def compose(self) -> ComposeResult:
         yield Input(
             placeholder=(
@@ -99,11 +104,27 @@ class ReplayFilterBar(Vertical):
         )
         yield Static(classes="filter-summary", id="replay-filter-summary")
 
+    def on_mount(self) -> None:
+        # Cache child references so set_state / set_query hot paths
+        # don't walk the DOM on every keystroke.
+        self._input_widget = self.query_one(Input)
+        self._summary_widget = self.query_one("#replay-filter-summary", Static)
+
+    def _input(self) -> Input:
+        if self._input_widget is None:
+            self._input_widget = self.query_one(Input)
+        return self._input_widget
+
+    def _summary(self) -> Static:
+        if self._summary_widget is None:
+            self._summary_widget = self.query_one("#replay-filter-summary", Static)
+        return self._summary_widget
+
     def set_query(self, value: str) -> None:
-        self.query_one(Input).value = value
+        self._input().value = value
 
     def focus_input(self) -> None:
-        self.query_one(Input).focus()
+        self._input().focus()
 
     def set_state(
         self,
@@ -137,7 +158,7 @@ class ReplayFilterBar(Vertical):
         else:
             summary.append(separator, style=FG4)
             summary.append("kind:error agent:planner marker:file_edit", style=FG4)
-        self.query_one("#replay-filter-summary", Static).update(summary)
+        self._summary().update(summary)
 
 
 class ReplayBoundListView(ListView):
