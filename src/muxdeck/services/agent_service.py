@@ -46,14 +46,11 @@ class AgentSessionStore(SessionStore, Protocol):
     def get_session_by_copilot_session_id(self, copilot_session_id: str, /) -> Session | None:
         """Return a session by Copilot session identifier."""
 
-    def get_open_session_for_agent(self, agent_id: str, /) -> Session | None:
-        """Return the newest still-open session for an agent, or ``None``.
-
-        Optional fast-path surface; implementations may delegate to
-        the equivalent indexed query on the underlying store. Callers
-        fall back to ``list_sessions(agent_id)`` + Python-side
-        filtering when the port does not provide this method.
-        """
+    # NOTE: ``get_open_session_for_agent`` is an optional fast-path that
+    # ``AgentService`` discovers via ``getattr`` (see
+    # ``_find_current_session``). It is intentionally *not* declared on
+    # this Protocol so legacy in-memory fakes and partial stores remain
+    # structural matches without having to implement it.
 
 
 @runtime_checkable
@@ -80,22 +77,13 @@ class AgentEventStore(EventStore, Protocol):
 
 @runtime_checkable
 class AgentLogStore(LogChunkStore, Protocol):
-    def upsert_log_capture_if_changed(
-        self,
-        *,
-        agent_id: str,
-        session_id: str,
-        source: str,
-        content: str,
-        captured_at: datetime,
-    ) -> LogChunk | None:
-        """Append a new chunk only when the tail content changed.
-
-        Optional fast-path surface. ``AgentService`` falls back to the
-        legacy ``get_latest_log_chunk`` + ``append_log_chunks`` pair
-        when the store does not implement this method, so older test
-        fakes and partial Protocol implementations keep working.
-        """
+    # NOTE: ``upsert_log_capture_if_changed`` is an optional fast-path
+    # discovered via ``getattr`` in ``persist_agent_facts`` (see
+    # ``AgentService._append_log_chunk_if_changed``). It is intentionally
+    # *not* declared on this Protocol so partial stores (test fakes,
+    # in-memory stubs) keep matching structurally without needing to
+    # implement the broader signature exposed by ``SQLiteStore``.
+    pass
 
 
 @dataclass(frozen=True, slots=True)

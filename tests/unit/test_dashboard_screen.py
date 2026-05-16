@@ -3024,7 +3024,7 @@ class DashboardLiveTailTests(unittest.TestCase):
             screen._live_tail_pane_id = item.pane_id
             screen._live_tail_stream = cast("Any", stream)
             screen._live_tail_last_activity = 999
-            screen._current_pane_activity = lambda _pane_id: 999  # type: ignore[method-assign]
+            screen._current_pane_activity = lambda _pane_id: 999  # type: ignore[assignment,method-assign]
             captures_before = len(stream.capture_tail_calls)
             screen._tick_live_tail()
             assert len(stream.capture_tail_calls) == captures_before
@@ -3043,7 +3043,7 @@ class DashboardLiveTailTests(unittest.TestCase):
             screen._live_tail_pane_id = item.pane_id
             screen._live_tail_stream = cast("Any", stream)
             screen._live_tail_last_activity = 999
-            screen._current_pane_activity = lambda _pane_id: 1001  # type: ignore[method-assign]
+            screen._current_pane_activity = lambda _pane_id: 1001  # type: ignore[assignment,method-assign]
             captures_before = len(stream.capture_tail_calls)
             screen._tick_live_tail()
             for _ in range(20):
@@ -3066,7 +3066,7 @@ class DashboardLiveTailTests(unittest.TestCase):
             screen._live_tail_pane_id = item.pane_id
             screen._live_tail_stream = cast("Any", stream)
             screen._live_tail_last_activity = None
-            screen._current_pane_activity = lambda _pane_id: None  # type: ignore[method-assign]
+            screen._current_pane_activity = lambda _pane_id: None  # type: ignore[assignment,method-assign]
             captures_before = len(stream.capture_tail_calls)
             screen._tick_live_tail()
             for _ in range(20):

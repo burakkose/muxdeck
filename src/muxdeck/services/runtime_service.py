@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Final, Literal, Protocol, cast, runtime_checkable
 
 from muxdeck.adapters.copilot_session_resolver import CopilotSessionResolution
-from muxdeck.adapters.git_adapter import GitRepoContext
+from muxdeck.adapters.git_adapter import GitRepoContext  # noqa: F401  # re-export hint for callers
 from muxdeck.domain.enums import AgentStatus
 from muxdeck.domain.models import Agent
 from muxdeck.domain.value_objects import ensure_aware_datetime, utc_now
@@ -61,13 +61,11 @@ class RuntimeGitPort(Protocol):
     def current_branch(self, cwd: str | Path, /) -> str | None:
         """Resolve the current branch for a working directory."""
 
-    def inspect_repo_context(self, cwd: str | Path, /) -> GitRepoContext:
-        """Resolve repository root and current branch in one subprocess.
-
-        Optional optimisation surface; runtime callers fall back to
-        the two-call path when an adapter does not implement this
-        method (see ``RuntimeSynchronizer._resolve_git_context``).
-        """
+    # NOTE: ``inspect_repo_context`` is an optional fast-path that
+    # ``RuntimeSynchronizer._resolve_git_context`` discovers via
+    # ``getattr``. It is intentionally *not* declared on this Protocol
+    # so legacy git fakes that only implement the two-call API remain
+    # structural matches.
 
 
 @runtime_checkable
