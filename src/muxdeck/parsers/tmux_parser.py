@@ -83,6 +83,7 @@ class TmuxPaneRecord:
     pane_tty: str | None = None
     pane_current_path: str | None = None
     pane_current_command: str | None = None
+    pane_activity: int | None = None
     raw_fields: dict[str, str] | None = None
 
 
@@ -90,6 +91,22 @@ class TmuxPaneRecord:
 class TmuxListPanesParseResult:
     panes: tuple[TmuxPaneRecord, ...]
     ignored_lines: tuple[str, ...] = ()
+
+
+def _parse_pane_activity(value: str | None) -> int | None:
+    """Parse the tmux ``#{pane_activity}`` field into an epoch second.
+
+    Returns ``None`` when the field is missing, unparseable, or equal
+    to ``0``. The cached-discovery optimization in
+    :mod:`muxdeck.services.discovery_service` keys off "non-None and
+    unchanged"; a literal ``0`` on legacy tmux builds (or panes that
+    have never produced output) must therefore force a fresh capture
+    rather than freeze the cache.
+    """
+    parsed = _parse_optional_int(value)
+    if parsed is None or parsed <= 0:
+        return None
+    return parsed
 
 
 def parse_tmux_list_panes_output(output: str) -> TmuxListPanesParseResult:
@@ -119,6 +136,7 @@ def parse_tmux_list_panes_output(output: str) -> TmuxListPanesParseResult:
                 pane_tty=_normalize_optional_text(fields.get("pane_tty")),
                 pane_current_path=_normalize_optional_text(fields.get("pane_current_path")),
                 pane_current_command=_normalize_optional_text(fields.get("pane_current_command")),
+                pane_activity=_parse_pane_activity(fields.get("pane_activity")),
                 raw_fields=dict(fields),
             )
         )

@@ -261,5 +261,148 @@ class DiscoveryServiceTests(unittest.TestCase):
         assert report.non_agent_panes[0].managed_agent is None
 
 
+class DiscoveryServiceCaptureCacheTests(unittest.TestCase):
+    """A1: per-pane capture cache keyed on ``pane_activity``."""
+
+    def setUp(self) -> None:
+        self.now = datetime(2025, 1, 1, 12, tzinfo=UTC)
+        self.copilot = CopilotAdapter(DummyRunner())
+
+    def _make_pane(
+        self,
+        *,
+        pane_id: str = "%7",
+        pane_pid: int | None = 1234,
+        pane_tty: str | None = "/dev/pts/9",
+        pane_activity: int | None = 1_700_000_000,
+        pane_current_command: str = "node",
+    ) -> TmuxPaneMetadata:
+        return TmuxPaneMetadata(
+            pane_id=pane_id,
+            session_name="muxdeck",
+            window_id="@1",
+            window_name="agents",
+            pane_pid=pane_pid,
+            pane_tty=pane_tty,
+            pane_current_command=pane_current_command,
+            pane_current_path="/repo",
+            pane_activity=pane_activity,
+        )
+
+    def _gateway(
+        self,
+        panes: tuple[TmuxPaneMetadata, ...],
+        captures: dict[str, str],
+    ) -> CountingTmuxGateway:
+        return CountingTmuxGateway(panes, captures)
+
+    def _service(self, gateway: CountingTmuxGateway) -> DiscoveryService:
+        return DiscoveryService(
+            gateway,
+            self.copilot,
+            InMemoryDiscoveryStore(),
+            clock=lambda: self.now,
+        )
+
+    def test_cache_hit_skips_capture_when_activity_unchanged(self) -> None:
+        pane = self._make_pane(pane_activity=1_700_000_500)
+        gateway = self._gateway((pane,), {"%7": "Copilot session id: c-1\n"})
+        service = self._service(gateway)
+        first = service.discover_panes()
+        second = service.discover_panes()
+        # capture-pane forks exactly once across both cycles.
+        assert gateway.capture_calls == {"%7": 1}
+        # Both cycles return the same classification + session evidence.
+        assert first.panes[0].session_evidence is not None
+        assert second.panes[0].session_evidence is first.panes[0].session_evidence
+        assert first.panes[0].captured_output == second.panes[0].captured_output
+        # Each cycle still re-stamps ``discovered_at`` to the current
+        # clock so downstream consumers see fresh metadata.
+        assert second.discovered_at == self.now
+
+    def test_cache_invalidated_when_pane_activity_advances(self) -> None:
+        pane_v1 = self._make_pane(pane_activity=1_700_000_500)
+        pane_v2 = self._make_pane(pane_activity=1_700_000_501)
+        captures = {"%7": "Copilot session id: c-1\n"}
+        gateway = self._gateway((pane_v1,), captures)
+        service = self._service(gateway)
+        service.discover_panes()
+        gateway.panes = (pane_v2,)
+        service.discover_panes()
+        assert gateway.capture_calls == {"%7": 2}
+
+    def test_cache_invalidated_when_pane_pid_changes(self) -> None:
+        pane_v1 = self._make_pane(pane_pid=1234, pane_activity=1_700_000_500)
+        pane_v2 = self._make_pane(pane_pid=4321, pane_activity=1_700_000_500)
+        gateway = self._gateway((pane_v1,), {"%7": "x"})
+        service = self._service(gateway)
+        service.discover_panes()
+        gateway.panes = (pane_v2,)
+        service.discover_panes()
+        assert gateway.capture_calls == {"%7": 2}
+
+    def test_cache_invalidated_when_pane_tty_changes(self) -> None:
+        pane_v1 = self._make_pane(pane_tty="/dev/pts/9", pane_activity=1_700_000_500)
+        pane_v2 = self._make_pane(pane_tty="/dev/pts/12", pane_activity=1_700_000_500)
+        gateway = self._gateway((pane_v1,), {"%7": "x"})
+        service = self._service(gateway)
+        service.discover_panes()
+        gateway.panes = (pane_v2,)
+        service.discover_panes()
+        assert gateway.capture_calls == {"%7": 2}
+
+    def test_missing_pane_activity_forces_recapture_every_cycle(self) -> None:
+        # Legacy tmux (or panes that have never produced output) report
+        # pane_activity as None — the optimization must degrade
+        # gracefully and never cache, so behaviour matches pre-A1 code.
+        pane = self._make_pane(pane_activity=None)
+        gateway = self._gateway((pane,), {"%7": "x"})
+        service = self._service(gateway)
+        service.discover_panes()
+        service.discover_panes()
+        assert gateway.capture_calls == {"%7": 2}
+
+    def test_evicts_cache_for_panes_that_disappear(self) -> None:
+        pane = self._make_pane(pane_id="%7", pane_activity=1_700_000_500)
+        gateway = self._gateway((pane,), {"%7": "x"})
+        service = self._service(gateway)
+        service.discover_panes()
+        # Pane goes away.
+        gateway.panes = ()
+        service.discover_panes()
+        # Pane reappears with the same id and same activity timestamp:
+        # cache was evicted, so capture must run again.
+        gateway.panes = (pane,)
+        service.discover_panes()
+        assert gateway.capture_calls == {"%7": 2}
+
+
+class CountingTmuxGateway:
+    def __init__(
+        self,
+        panes: tuple[TmuxPaneMetadata, ...],
+        captures: dict[str, str],
+    ) -> None:
+        self.panes: tuple[TmuxPaneMetadata, ...] = panes
+        self._captures = captures
+        self.capture_calls: dict[str, int] = {}
+
+    def list_panes(self) -> tuple[TmuxPaneMetadata, ...]:
+        return self.panes
+
+    def capture_pane(
+        self,
+        target_pane: str,
+        /,
+        *,
+        start_line: str | int | None = None,
+        end_line: str | int | None = None,
+        join_wrapped_lines: bool = False,
+    ) -> str:
+        del start_line, end_line, join_wrapped_lines
+        self.capture_calls[target_pane] = self.capture_calls.get(target_pane, 0) + 1
+        return self._captures.get(target_pane, "")
+
+
 if __name__ == "__main__":
     unittest.main()

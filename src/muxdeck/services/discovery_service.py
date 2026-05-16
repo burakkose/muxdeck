@@ -117,6 +117,7 @@ class DiscoveryPaneSnapshot:
     pane_pid: int | None = None
     pane_active: bool | None = None
     pane_dead: bool | None = None
+    pane_activity: int | None = None
     repo_root: str | None = None
     branch: str | None = None
 
@@ -134,6 +135,7 @@ class DiscoveryPaneSnapshot:
                 pane_pid=record.pane_pid,
                 pane_active=record.pane_active,
                 pane_dead=record.pane_dead,
+                pane_activity=record.pane_activity,
             )
         return cls(
             pane_id=record.pane_id,
@@ -146,6 +148,7 @@ class DiscoveryPaneSnapshot:
             pane_pid=record.pane_pid,
             pane_active=record.pane_active,
             pane_dead=None,
+            pane_activity=record.pane_activity,
         )
 
 
@@ -272,6 +275,42 @@ def classify_pane(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _PaneCaptureCacheEntry:
+    """Memoized per-pane subprocess work for :class:`DiscoveryService`.
+
+    A cache hit lets the next discovery cycle skip ``capture-pane``
+    (a subprocess fork per pane) and ``interpret_output`` (an ANSI /
+    regex parse over the captured scrollback). Hits are only valid
+    while the underlying pane is unchanged — see :meth:`matches`.
+    """
+
+    pane_pid: int | None
+    pane_tty: str | None
+    pane_activity: int | None
+    command_detection: CopilotCommandDetection
+    captured_output: str
+    session_evidence: CopilotSessionEvidence | None
+
+    def matches(self, snapshot: DiscoveryPaneSnapshot, /) -> bool:
+        """Return True when ``snapshot`` describes the same pane state.
+
+        ``pane_activity`` must be present *and* equal: tmux returns
+        the field as epoch seconds, and a missing or zero value
+        (legacy tmux or a pane that has never written output) is
+        normalized to ``None`` by the parser. Treating ``None`` as
+        "unknown — re-capture" keeps the optimization safe across
+        environments.
+        """
+        if snapshot.pane_activity is None or self.pane_activity is None:
+            return False
+        if snapshot.pane_activity != self.pane_activity:
+            return False
+        if snapshot.pane_pid != self.pane_pid:
+            return False
+        return snapshot.pane_tty == self.pane_tty
+
+
 class DiscoveryService:
     def __init__(
         self,
@@ -291,14 +330,26 @@ class DiscoveryService:
         self._capture_start_line = capture_start_line
         self._ignore_pane_ids = ignore_pane_ids
         self._clock = clock
+        # Cache of per-pane capture work keyed by pane_id. Holds the
+        # subprocess-derived state (captured output, command detection,
+        # session evidence) so the next cycle can skip the
+        # ``capture-pane`` fork + ``interpret_output`` parse when the
+        # pane reports the same ``pane_activity`` timestamp it had
+        # last time. Invalidated when ``pane_pid`` or ``pane_tty``
+        # change so a respawned pane is always re-discovered.
+        self._capture_cache: dict[str, _PaneCaptureCacheEntry] = {}
 
     def discover_panes(self) -> PaneDiscoveryReport:
         with timed("discovery.total"):
             discovered_at = ensure_aware_datetime(self._clock(), field_name="value")
-            panes = tuple(
-                self._discover_single(record, discovered_at=discovered_at)
-                for record in self._iter_panes()
-            )
+            seen_pane_ids: set[str] = set()
+            panes_list: list[PaneDiscovery] = []
+            for record in self._iter_panes():
+                discovery = self._discover_single(record, discovered_at=discovered_at)
+                panes_list.append(discovery)
+                seen_pane_ids.add(discovery.snapshot.pane_id)
+            self._evict_missing_panes(seen_pane_ids)
+            panes = tuple(panes_list)
             managed = tuple(pane for pane in panes if pane.classification == "managed_agent")
             probable = tuple(
                 pane for pane in panes if pane.classification == "unmanaged_probable_agent"
@@ -320,27 +371,43 @@ class DiscoveryService:
         discovered_at: datetime,
     ) -> PaneDiscovery:
         snapshot = DiscoveryPaneSnapshot.from_tmux_record(record)
-        command_detection = self._copilot.detect_command(snapshot.pane_current_command or "")
-        if (
-            not command_detection.is_likely_copilot
-            and self._process_inspector is not None
-            and snapshot.pane_pid is not None
-        ):
-            with timed("discovery.process_tree"):
-                command_detection = self._detect_via_process_tree(
-                    snapshot.pane_pid,
-                    fallback=command_detection,
+        cached = self._capture_cache.get(snapshot.pane_id)
+        if cached is not None and not cached.matches(snapshot):
+            cached = None
+        if cached is not None:
+            command_detection = cached.command_detection
+            captured_output = cached.captured_output
+            session_evidence = cached.session_evidence
+        else:
+            command_detection = self._copilot.detect_command(snapshot.pane_current_command or "")
+            if (
+                not command_detection.is_likely_copilot
+                and self._process_inspector is not None
+                and snapshot.pane_pid is not None
+            ):
+                with timed("discovery.process_tree"):
+                    command_detection = self._detect_via_process_tree(
+                        snapshot.pane_pid,
+                        fallback=command_detection,
+                    )
+            with timed("discovery.capture_pane"):
+                captured_output = self._tmux.capture_pane(
+                    snapshot.pane_id,
+                    start_line=self._capture_start_line,
+                    join_wrapped_lines=True,
                 )
-        with timed("discovery.capture_pane"):
-            captured_output = self._tmux.capture_pane(
-                snapshot.pane_id,
-                start_line=self._capture_start_line,
-                join_wrapped_lines=True,
+            session_evidence = None
+            if captured_output.strip():
+                with timed("discovery.interpret_output"):
+                    session_evidence = self._copilot.interpret_output(captured_output)
+            self._capture_cache[snapshot.pane_id] = _PaneCaptureCacheEntry(
+                pane_pid=snapshot.pane_pid,
+                pane_tty=snapshot.pane_tty,
+                pane_activity=snapshot.pane_activity,
+                command_detection=command_detection,
+                captured_output=captured_output,
+                session_evidence=session_evidence,
             )
-        session_evidence = None
-        if captured_output.strip():
-            with timed("discovery.interpret_output"):
-                session_evidence = self._copilot.interpret_output(captured_output)
         matched_context = self._store.get_session_context_by_tmux_pane_id(snapshot.pane_id)
         managed_agent = self._store.get_agent_by_pane_id(snapshot.pane_id)
         matched_session: Session | None = None
@@ -362,6 +429,11 @@ class DiscoveryService:
             matched_session=matched_session,
             matched_context=matched_context,
         )
+
+    def _evict_missing_panes(self, seen_pane_ids: set[str]) -> None:
+        stale = [pane_id for pane_id in self._capture_cache if pane_id not in seen_pane_ids]
+        for pane_id in stale:
+            del self._capture_cache[pane_id]
 
     def _detect_via_process_tree(
         self,

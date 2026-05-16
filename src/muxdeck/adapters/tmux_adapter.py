@@ -31,6 +31,13 @@ _LIST_PANES_FIELDS: Final[tuple[tuple[str, str], ...]] = (
     ("pane_tty", "#{pane_tty}"),
     ("pane_current_path", "#{pane_current_path}"),
     ("pane_current_command", "#{pane_current_command}"),
+    # Last-activity epoch seconds. Used by DiscoveryService to skip
+    # ``capture-pane`` forks for panes that haven't produced new
+    # output since the previous cycle. tmux returns ``0`` (or, on
+    # very old builds, an empty literal) when the value isn't
+    # available — both cases are treated as "unknown" and force a
+    # fresh capture, so the optimization degrades gracefully.
+    ("pane_activity", "#{pane_activity}"),
 )
 _DISPLAY_MESSAGE_FIELDS: Final[tuple[tuple[str, str], ...]] = (
     *_LIST_PANES_FIELDS,
@@ -98,6 +105,7 @@ class TmuxPaneMetadata:
     pane_current_path: str | None = None
     pane_current_command: str | None = None
     pane_dead: bool | None = None
+    pane_activity: int | None = None
     raw_fields: dict[str, str] | None = None
 
     @classmethod
@@ -118,6 +126,7 @@ class TmuxPaneMetadata:
             pane_current_path=record.pane_current_path,
             pane_current_command=record.pane_current_command,
             pane_dead=_parse_optional_bool(raw_fields.get("pane_dead")),
+            pane_activity=record.pane_activity,
             raw_fields=raw_fields,
         )
 
