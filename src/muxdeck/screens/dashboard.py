@@ -119,6 +119,18 @@ class DashboardScreen(ShellScreen):
         self._live_tail_stream: PaneStreamAdapter | None = None
         self._live_tail_lines: dict[str, tuple[DashboardLogLineView, ...]] = {}
         self._live_tail_sequence: int = 0
+        # Last ``pane_activity`` we observed for the live-tail pane,
+        # taken from the most recent ``RuntimeSyncReport.discovery_report``
+        # at capture time. ``_tick_live_tail`` short-circuits the
+        # subprocess fork when the synchronizer reports the same
+        # value — tmux only bumps ``pane_activity`` when bytes were
+        # actually written, so an equal value guarantees the captured
+        # text would be byte-identical. ``None`` means "we have no
+        # signal yet, capture anyway" (covers the cold-start tick,
+        # nested sub-agent panes whose activity tmux doesn't expose
+        # via the outer ``list-panes`` call, and environments that
+        # disable the synchronizer).
+        self._live_tail_last_activity: int | None = None
         # ── Cached items for fast filter/sort changes ──
         # Each successful ``_apply_state`` snapshots the unfiltered
         # ``all_agent_items`` and the rendered ``selected_agent`` view
@@ -1157,8 +1169,12 @@ class DashboardScreen(ShellScreen):
             return
         self._live_tail_pane_id = pane_id
         self._live_tail_stream = stream_adapter
+        # Seed the activity gate with whatever the synchronizer has
+        # observed so far. If the seed capture matches that activity,
+        # the next 1s tick will skip its subprocess fork entirely.
+        seeded_activity = self._current_pane_activity(pane_id)
         if captured_text:
-            self._apply_live_tail(agent_id, token, captured_text)
+            self._apply_live_tail(agent_id, token, captured_text, seeded_activity)
         self._live_tail_timer = self.set_interval(
             _DASHBOARD_LIVE_TAIL_INTERVAL_SEC,
             self._tick_live_tail,
@@ -1172,9 +1188,36 @@ class DashboardScreen(ShellScreen):
         self._live_tail_agent_id = None
         self._live_tail_pane_id = None
         self._live_tail_stream = None
+        self._live_tail_last_activity = None
         # Bump the token so any worker still mid-capture drops its
         # result instead of writing it into the cache.
         self._live_tail_token += 1
+
+    def _current_pane_activity(self, pane_id: str) -> int | None:
+        """Return ``pane_activity`` for ``pane_id`` from the last sync report.
+
+        The synchronizer already calls ``tmux list-panes`` every
+        discovery cycle and stores the metadata in
+        ``RuntimeSyncReport.discovery_report.panes``. Re-using that
+        cached value lets the live tail skip a ``capture-pane`` fork
+        whenever tmux reports no new bytes since the previous tick —
+        without issuing an extra subprocess just to ask. Returns
+        ``None`` when the synchronizer is disabled, the pane is not
+        in the latest discovery report (e.g. a nested sub-agent pane
+        on a different tmux socket), or tmux didn't expose the field
+        on this build. Callers treat ``None`` as "capture anyway"
+        so the gate is fail-open.
+        """
+        report = self.muxdeck_app.last_sync_report
+        if report is None:
+            return None
+        discovery = report.discovery_report
+        if discovery is None:
+            return None
+        for pane in discovery.panes:
+            if pane.snapshot.pane_id == pane_id:
+                return pane.snapshot.pane_activity
+        return None
 
     def _tick_live_tail(self) -> None:
         agent_id = self._live_tail_agent_id
@@ -1182,10 +1225,21 @@ class DashboardScreen(ShellScreen):
         stream = self._live_tail_stream
         if agent_id is None or not pane_id or stream is None:
             return
+        # Skip the subprocess fork when the synchronizer reports the
+        # same ``pane_activity`` we used for the previous capture.
+        # tmux only bumps ``pane_activity`` when bytes are written, so
+        # an equal value means the rendered tail is byte-identical.
+        current_activity = self._current_pane_activity(pane_id)
+        if (
+            current_activity is not None
+            and self._live_tail_last_activity is not None
+            and current_activity == self._live_tail_last_activity
+        ):
+            return
         token = self._live_tail_token
 
         def _capture() -> None:
-            self._capture_live_tail(stream, pane_id, agent_id, token)
+            self._capture_live_tail(stream, pane_id, agent_id, token, current_activity)
 
         self.run_worker(
             _capture,
@@ -1200,6 +1254,7 @@ class DashboardScreen(ShellScreen):
         pane_id: str,
         agent_id: str,
         token: int,
+        pane_activity: int | None,
     ) -> None:
         try:
             text = stream.capture_tail(pane_id, lines=_DASHBOARD_LIVE_TAIL_CAPTURE_LINES)
@@ -1210,13 +1265,26 @@ class DashboardScreen(ShellScreen):
             return
         if token != self._live_tail_token:
             return
-        self.app.call_from_thread(self._apply_live_tail, agent_id, token, text)
+        self.app.call_from_thread(self._apply_live_tail, agent_id, token, text, pane_activity)
 
-    def _apply_live_tail(self, agent_id: str, token: int, captured_text: str) -> None:
+    def _apply_live_tail(
+        self,
+        agent_id: str,
+        token: int,
+        captured_text: str,
+        pane_activity: int | None = None,
+    ) -> None:
         if token != self._live_tail_token:
             return
         if agent_id != self._selected_agent_id:
             return
+        # Record the activity counter we captured at so the next tick
+        # can short-circuit when tmux hasn't bumped it. Only update on
+        # actual capture results — preserving a None on the cold-start
+        # path means the next tick still runs even if the synchronizer
+        # hasn't observed any activity yet.
+        if pane_activity is not None:
+            self._live_tail_last_activity = pane_activity
         self._live_tail_sequence += 1
         captured_at = datetime.now(UTC)
         line_limit = self._preview_line_limit()

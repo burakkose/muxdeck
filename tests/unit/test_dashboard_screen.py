@@ -2903,7 +2903,7 @@ class DashboardLiveTailTests(unittest.TestCase):
             screen._selected_agent_id = item.agent_id
             screen._live_tail_token = 1
             # Should not raise even though the underlying stream throws.
-            screen._capture_live_tail(cast("Any", stream), "%1", item.agent_id, 1)
+            screen._capture_live_tail(cast("Any", stream), "%1", item.agent_id, 1, None)
             # Cache stays empty — transient errors should not blank the panel.
             assert item.agent_id not in screen._live_tail_lines
 
@@ -2939,6 +2939,87 @@ class DashboardLiveTailTests(unittest.TestCase):
             screen._start_live_tail(item.agent_id)
             assert screen._live_tail_timer is None
             assert screen._live_tail_agent_id is None
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_tick_live_tail_skips_capture_when_pane_activity_unchanged(self) -> None:
+        """Live tail must not fork ``capture-pane`` when tmux reports no new activity."""
+        item = _agent_view()
+        stream = _FakeStream(capture_text="x\n")
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._selected_agent_id = item.agent_id
+            screen._live_tail_agent_id = item.agent_id
+            screen._live_tail_pane_id = item.pane_id
+            screen._live_tail_stream = cast("Any", stream)
+            screen._live_tail_last_activity = 999
+            screen._current_pane_activity = lambda _pane_id: 999  # type: ignore[method-assign]
+            captures_before = len(stream.capture_tail_calls)
+            screen._tick_live_tail()
+            assert len(stream.capture_tail_calls) == captures_before
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_tick_live_tail_captures_when_pane_activity_advanced(self) -> None:
+        """Live tail must capture again when tmux bumped ``pane_activity``."""
+        item = _agent_view()
+        stream = _FakeStream(capture_text="payload\n")
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
+            screen._selected_agent_id = item.agent_id
+            screen._live_tail_agent_id = item.agent_id
+            screen._live_tail_pane_id = item.pane_id
+            screen._live_tail_stream = cast("Any", stream)
+            screen._live_tail_last_activity = 999
+            screen._current_pane_activity = lambda _pane_id: 1001  # type: ignore[method-assign]
+            captures_before = len(stream.capture_tail_calls)
+            screen._tick_live_tail()
+            for _ in range(20):
+                if len(stream.capture_tail_calls) > captures_before:
+                    break
+                await pilot.pause()  # type: ignore[attr-defined]
+            assert len(stream.capture_tail_calls) > captures_before
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_tick_live_tail_captures_when_activity_unknown(self) -> None:
+        """Fail-open: ``None`` activity must not block the tick."""
+        item = _agent_view()
+        stream = _FakeStream(capture_text="payload\n")
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, pilot: object) -> None:
+            screen._selected_agent_id = item.agent_id
+            screen._live_tail_agent_id = item.agent_id
+            screen._live_tail_pane_id = item.pane_id
+            screen._live_tail_stream = cast("Any", stream)
+            screen._live_tail_last_activity = None
+            screen._current_pane_activity = lambda _pane_id: None  # type: ignore[method-assign]
+            captures_before = len(stream.capture_tail_calls)
+            screen._tick_live_tail()
+            for _ in range(20):
+                if len(stream.capture_tail_calls) > captures_before:
+                    break
+                await pilot.pause()  # type: ignore[attr-defined]
+            assert len(stream.capture_tail_calls) > captures_before
+
+        self._run(runtime, body, seed_state=st)
+
+    def test_apply_live_tail_records_pane_activity_when_provided(self) -> None:
+        item = _agent_view()
+        stream = _FakeStream()
+        runtime, st = self._build_runtime(stream=stream, item=item)
+
+        async def body(_app: _Harness, screen: DashboardScreen, _pilot: object) -> None:
+            screen._selected_agent_id = item.agent_id
+            screen._live_tail_token = 3
+            screen._apply_live_tail(item.agent_id, 3, "alpha\n", 42)
+            assert screen._live_tail_last_activity == 42
+            # ``None`` from the cold-start path must not clobber a real value.
+            screen._apply_live_tail(item.agent_id, 3, "beta\n", None)
+            assert screen._live_tail_last_activity == 42
 
         self._run(runtime, body, seed_state=st)
 
