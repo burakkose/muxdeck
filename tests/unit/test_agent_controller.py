@@ -401,5 +401,98 @@ class SeedResumedSessionTests(unittest.TestCase):
         self.assertIs(seeded.status, AgentStatus.STARTING)
 
 
+class AgentControllerActionTargetTests(unittest.TestCase):
+    """Verify the AgentController uses the bulk
+    ``get_agent_action_target`` store helper on the action-keystroke
+    hot path, and falls back to the legacy per-method path when the
+    store doesn't expose it.
+    """
+
+    def _make_agent(self) -> Agent:
+        return Agent(
+            id="agent-1",
+            name="Worker",
+            tmux_session_name="muxdeck",
+            tmux_window_id="@1",
+            tmux_pane_id="%1",
+            cwd="/repo",
+            repo_root="/repo",
+            worktree_path="/repo/wt",
+            branch="task/x",
+            task_title="task x",
+            status=AgentStatus.RUNNING,
+            started_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+            last_seen_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+
+    def test_intent_uses_bulk_helper_when_available(self) -> None:
+        from muxdeck.adapters.sqlite_store import AgentActionTarget
+
+        agent = self._make_agent()
+        session = Session(
+            id="session-1",
+            agent_id=agent.id,
+            created_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+
+        class _BulkStore(FakeAgentStore):
+            def __init__(self) -> None:
+                super().__init__(agent)
+                self.bulk_calls: list[str] = []
+                self.list_sessions_calls: list[str | None] = []
+
+            def get_agent_action_target(self, agent_id: str, /) -> AgentActionTarget:
+                self.bulk_calls.append(agent_id)
+                return AgentActionTarget(
+                    latest_session=session,
+                    open_session=session,
+                    context=None,
+                    worktree=None,
+                )
+
+            def list_sessions(self, agent_id: str | None = None, /) -> tuple[Session, ...]:
+                self.list_sessions_calls.append(agent_id)
+                return super().list_sessions(agent_id)
+
+        store = _BulkStore()
+        controller = AgentController(
+            store,
+            FakeSessionService(store, datetime(2025, 1, 1, 12, tzinfo=UTC)),
+        )
+
+        intent = controller.send_input_intent("agent-1", prompt="hi")
+
+        self.assertEqual(intent.kind, "send_input")
+        self.assertEqual(store.bulk_calls, ["agent-1"])
+        assert not store.list_sessions_calls, (
+            "bulk fast-path must skip list_sessions on the intent path "
+            f"(saw {store.list_sessions_calls!r})"
+        )
+
+    def test_intent_falls_back_to_legacy_when_helper_missing(self) -> None:
+        """Stores that don't implement ``get_agent_action_target`` (the
+        existing ``FakeAgentStore`` in this suite) must continue to
+        work without raising — the fast-path is purely additive.
+        """
+        agent = self._make_agent()
+        store = FakeAgentStore(agent)
+        store.sessions["session-1"] = Session(
+            id="session-1",
+            agent_id=agent.id,
+            created_at=datetime(2025, 1, 1, 12, tzinfo=UTC),
+        )
+        controller = AgentController(
+            store,
+            FakeSessionService(store, datetime(2025, 1, 1, 12, tzinfo=UTC)),
+        )
+
+        intent = controller.interrupt_intent("agent-1")
+
+        self.assertEqual(intent.kind, "interrupt")
+        # The legacy path resolves the latest session id via
+        # list_sessions; verify the target was built correctly.
+        self.assertEqual(intent.agent.latest_session_id, "session-1")
+
+
 if __name__ == "__main__":
     unittest.main()

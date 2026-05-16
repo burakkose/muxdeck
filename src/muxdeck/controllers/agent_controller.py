@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal, Protocol
 
-from muxdeck.adapters.sqlite_store import SessionContextRecord
+from muxdeck.adapters.sqlite_store import AgentActionTarget, SessionContextRecord
 from muxdeck.domain.enums import AgentStatus
 from muxdeck.domain.events import Event, LogChunk
 from muxdeck.domain.models import Agent, Session, Worktree
@@ -40,6 +40,11 @@ class AgentQueryPort(Protocol):
     def get_agent_by_pane_id(self, pane_id: str, /) -> Agent | None: ...
 
     def get_agent_by_copilot_session_id(self, copilot_session_id: str, /) -> Agent | None: ...
+
+    # Optional fast-path: stores that implement
+    # ``get_agent_action_target`` collapse the four-call action-keystroke
+    # fetch into one bundled call. The controller probes for it via
+    # ``getattr`` so legacy in-memory test doubles keep working.
 
 
 class AgentSessionPort(Protocol):
@@ -111,8 +116,9 @@ class AgentController:
 
     def adopt(self, agent_id: str, *, task_title: str | None = None) -> AgentActionResult:
         agent = self._require_agent(agent_id)
-        latest_open_session = self._latest_open_session(agent.id)
-        target = self._target_from_agent(agent)
+        bundle = self._resolve_action_target(agent.id)
+        latest_open_session = bundle.open_session
+        target = self._target_from_agent(agent, target=bundle)
         if latest_open_session is not None:
             return AgentActionResult(
                 action="adopt",
@@ -127,14 +133,18 @@ class AgentController:
         )
         return AgentActionResult(
             action="adopt",
-            agent=self._target_from_agent(agent, latest_session_id=created.session.id),
+            agent=self._target_from_agent(
+                agent,
+                latest_session_id=created.session.id,
+                target=bundle,
+            ),
             session_id=created.session.id,
             session_created=True,
         )
 
     def send_input_intent(self, agent_id: str, prompt: str) -> AgentIntentView:
         agent = self._require_agent(agent_id)
-        target = self._target_from_agent(agent)
+        target = self._target_from_agent(agent, target=self._resolve_action_target(agent.id))
         return AgentIntentView(
             kind="send_input",
             agent=target,
@@ -145,7 +155,7 @@ class AgentController:
 
     def interrupt_intent(self, agent_id: str) -> AgentIntentView:
         agent = self._require_agent(agent_id)
-        target = self._target_from_agent(agent)
+        target = self._target_from_agent(agent, target=self._resolve_action_target(agent.id))
         return AgentIntentView(
             kind="interrupt",
             agent=target,
@@ -155,7 +165,7 @@ class AgentController:
 
     def kill_pane_intent(self, agent_id: str) -> AgentIntentView:
         agent = self._require_agent(agent_id)
-        target = self._target_from_agent(agent)
+        target = self._target_from_agent(agent, target=self._resolve_action_target(agent.id))
         return AgentIntentView(
             kind="kill_pane",
             agent=target,
@@ -165,7 +175,7 @@ class AgentController:
 
     def restart_intent(self, agent_id: str, *, model: str | None = None) -> AgentIntentView:
         agent = self._require_agent(agent_id)
-        target = self._target_from_agent(agent)
+        target = self._target_from_agent(agent, target=self._resolve_action_target(agent.id))
         metadata = [
             ("pane_target", target.pane_target),
             ("cwd", agent.worktree_path or agent.cwd),
@@ -187,7 +197,8 @@ class AgentController:
         exit_reason: str = "marked_complete",
     ) -> AgentActionResult:
         agent = self._require_agent(agent_id)
-        latest_open_session = self._latest_open_session(agent.id)
+        bundle = self._resolve_action_target(agent.id)
+        latest_open_session = bundle.open_session
 
         # Update agent status to COMPLETED so the monitoring heuristic
         # preserves it instead of flagging the dead pane as needs_attention.
@@ -199,7 +210,7 @@ class AgentController:
         )
         self._store.upsert_agent(updated_agent)
 
-        target = self._target_from_agent(updated_agent)
+        target = self._target_from_agent(updated_agent, target=bundle)
         if latest_open_session is None:
             return AgentActionResult(
                 action="mark_complete",
@@ -214,7 +225,11 @@ class AgentController:
         )
         return AgentActionResult(
             action="mark_complete",
-            agent=self._target_from_agent(updated_agent, latest_session_id=ended.session.id),
+            agent=self._target_from_agent(
+                updated_agent,
+                latest_session_id=ended.session.id,
+                target=bundle,
+            ),
             session_id=ended.session.id,
             session_ended=True,
         )
@@ -307,7 +322,7 @@ class AgentController:
 
     def open_pane_intent(self, agent_id: str) -> AgentIntentView:
         agent = self._require_agent(agent_id)
-        target = self._target_from_agent(agent)
+        target = self._target_from_agent(agent, target=self._resolve_action_target(agent.id))
         metadata: list[tuple[str, str]] = [("pane_target", target.pane_target)]
         if target.tmux_window_id:
             metadata.append(("window_target", target.tmux_window_id))
@@ -322,7 +337,7 @@ class AgentController:
 
     def open_worktree_intent(self, agent_id: str) -> AgentIntentView:
         agent = self._require_agent(agent_id)
-        target = self._target_from_agent(agent)
+        target = self._target_from_agent(agent, target=self._resolve_action_target(agent.id))
         if target.worktree_path is None:
             msg = f"agent {agent_id} has no worktree path"
             raise PersistenceError(msg)
@@ -335,7 +350,7 @@ class AgentController:
 
     def rename_window_intent(self, agent_id: str, *, new_name: str) -> AgentIntentView:
         agent = self._require_agent(agent_id)
-        target = self._target_from_agent(agent)
+        target = self._target_from_agent(agent, target=self._resolve_action_target(agent.id))
         if target.tmux_window_id is None:
             msg = f"agent {agent_id} has no tmux window"
             raise PersistenceError(msg)
@@ -361,7 +376,7 @@ class AgentController:
         new_window_name: str | None = None,
     ) -> AgentIntentView:
         agent = self._require_agent(agent_id)
-        target = self._target_from_agent(agent)
+        target = self._target_from_agent(agent, target=self._resolve_action_target(agent.id))
         normalized_target = target_window.strip() if target_window is not None else None
         normalized_new_name = new_window_name.strip() if new_window_name is not None else None
         if not normalized_target and not normalized_new_name:
@@ -386,23 +401,68 @@ class AgentController:
         agent: Agent,
         *,
         latest_session_id: str | None = None,
+        target: AgentActionTarget | None = None,
     ) -> AgentTargetView:
-        if latest_session_id is None:
-            latest_session = next(iter(self._store.list_sessions(agent.id)), None)
-            latest_session_id = latest_session.id if latest_session is not None else None
+        """Build the per-action target view for ``agent``.
+
+        When ``target`` is provided (the action bundle pre-fetched
+        once per intent), no further store calls are made: the
+        latest-session / context / worktree fields are read directly
+        off the bundle. When ``target`` is ``None``, falls back to
+        the legacy per-method path so older tests + alt store backends
+        keep working.
+
+        ``latest_session_id`` lets callers override the surfaced
+        session id (e.g., a freshly-created or just-ended session)
+        without needing to refetch the bundle.
+        """
+        if target is None:
+            latest_session_obj = next(iter(self._store.list_sessions(agent.id)), None)
+            resolved_session_id = (
+                latest_session_id
+                if latest_session_id is not None
+                else (latest_session_obj.id if latest_session_obj is not None else None)
+            )
+            worktree_path = agent.worktree_path
+            repo_root = agent.repo_root
+            context: SessionContextRecord | None = None
+            if resolved_session_id is not None:
+                context = self._store.get_session_context(resolved_session_id)
+            if context is not None:
+                worktree_path = context.worktree_path or worktree_path
+                repo_root = context.repo_root or repo_root
+                if context.worktree_id is not None:
+                    worktree = self._store.get_worktree(context.worktree_id)
+                    if worktree is not None:
+                        worktree_path = worktree.path
+                        repo_root = worktree.repo_root
+            return AgentTargetView(
+                agent_id=agent.id,
+                name=agent.name,
+                status=agent.status,
+                pane_target=agent.tmux_pane_id,
+                worktree_path=worktree_path,
+                repo_root=repo_root,
+                branch=agent.branch,
+                latest_session_id=resolved_session_id,
+                tmux_window_id=agent.tmux_window_id or None,
+                tmux_session_name=agent.tmux_session_name or None,
+            )
+
+        if latest_session_id is not None:
+            resolved_session_id = latest_session_id
+        else:
+            resolved_session_id = (
+                target.latest_session.id if target.latest_session is not None else None
+            )
         worktree_path = agent.worktree_path
         repo_root = agent.repo_root
-        context = None
-        if latest_session_id is not None:
-            context = self._store.get_session_context(latest_session_id)
-        if context is not None:
-            worktree_path = context.worktree_path or worktree_path
-            repo_root = context.repo_root or repo_root
-            if context.worktree_id is not None:
-                worktree = self._store.get_worktree(context.worktree_id)
-                if worktree is not None:
-                    worktree_path = worktree.path
-                    repo_root = worktree.repo_root
+        if target.context is not None:
+            worktree_path = target.context.worktree_path or worktree_path
+            repo_root = target.context.repo_root or repo_root
+        if target.worktree is not None:
+            worktree_path = target.worktree.path
+            repo_root = target.worktree.repo_root
         return AgentTargetView(
             agent_id=agent.id,
             name=agent.name,
@@ -411,9 +471,42 @@ class AgentController:
             worktree_path=worktree_path,
             repo_root=repo_root,
             branch=agent.branch,
-            latest_session_id=latest_session_id,
+            latest_session_id=resolved_session_id,
             tmux_window_id=agent.tmux_window_id or None,
             tmux_session_name=agent.tmux_session_name or None,
+        )
+
+    def _resolve_action_target(self, agent_id: str) -> AgentActionTarget:
+        """Fetch the action-target bundle for ``agent_id``.
+
+        Prefers the bulk ``get_agent_action_target`` store helper when
+        available (one store call covers latest session, open session,
+        context, and worktree). Falls back to the legacy path
+        (list_sessions twice + get_session_context + get_worktree) for
+        backends that don't expose the helper, keeping older test
+        doubles working.
+        """
+        bulk = getattr(self._store, "get_agent_action_target", None)
+        if callable(bulk):
+            result = bulk(agent_id)
+            if isinstance(result, AgentActionTarget):
+                return result
+            # Defensive: a non-conforming store should fall through to
+            # the legacy path rather than ship a typed lie downstream.
+        sessions = tuple(self._store.list_sessions(agent_id))
+        latest_session = sessions[0] if sessions else None
+        open_session = next((s for s in sessions if s.ended_at is None), None)
+        context: SessionContextRecord | None = None
+        worktree: Worktree | None = None
+        if latest_session is not None:
+            context = self._store.get_session_context(latest_session.id)
+            if context is not None and context.worktree_id is not None:
+                worktree = self._store.get_worktree(context.worktree_id)
+        return AgentActionTarget(
+            latest_session=latest_session,
+            open_session=open_session,
+            context=context,
+            worktree=worktree,
         )
 
     def _latest_open_session(self, agent_id: str) -> Session | None:

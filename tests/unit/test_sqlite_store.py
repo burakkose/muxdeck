@@ -10,6 +10,7 @@ import sqlite3
 import unittest
 
 from muxdeck.adapters import DEFAULT_DATABASE_FILE_NAME, SQLiteStore
+from muxdeck.adapters.sqlite_store import SessionContextRecord
 from muxdeck.config import AppConfig, PathsConfig
 from muxdeck.domain.enums import AgentStatus, TaskPriority, TaskStatus
 from muxdeck.domain.events import Event, LogChunk
@@ -739,6 +740,72 @@ class SQLiteStoreTests(unittest.TestCase):
         snap = snapshots["agent-123"]
         assert snap.session is not None
         self.assertEqual(snap.session.id, "session-123")
+
+    def test_get_agent_action_target_returns_full_bundle(self) -> None:
+        """Bundle must include the latest session, the currently-open
+        session, the session_context for the latest session, and the
+        worktree referenced by that context — all in one call.
+        """
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_worktree(self._make_worktree())
+        latest = Session(
+            id="session-latest",
+            agent_id="agent-123",
+            created_at=datetime(2025, 1, 1, 13, tzinfo=UTC),
+        )
+        # An older session, already ended, so the open lookup must
+        # find LATEST (open) not this one.
+        ended = Session(
+            id="session-ended",
+            agent_id="agent-123",
+            created_at=datetime(2025, 1, 1, 11, tzinfo=UTC),
+            ended_at=datetime(2025, 1, 1, 11, 30, tzinfo=UTC),
+        )
+        self.store.upsert_session(ended)
+        self.store.upsert_session(latest)
+        self.store.upsert_session_context(
+            SessionContextRecord(
+                session_id="session-latest",
+                agent_id="agent-123",
+                worktree_id="worktree-123",
+                tmux_pane_id="%1",
+                worktree_path="/repo/worktrees/task",
+                repo_root="/repo",
+                branch="task/sqlite-store",
+                updated_at=datetime(2025, 1, 1, 13, tzinfo=UTC),
+            )
+        )
+
+        target = self.store.get_agent_action_target("agent-123")
+
+        assert target.latest_session is not None
+        self.assertEqual(target.latest_session.id, "session-latest")
+        assert target.open_session is not None
+        self.assertEqual(target.open_session.id, "session-latest")
+        assert target.context is not None
+        self.assertEqual(target.context.worktree_id, "worktree-123")
+        assert target.worktree is not None
+        self.assertEqual(target.worktree.path, "/repo/worktrees/task")
+
+    def test_get_agent_action_target_returns_empty_for_unknown_agent(self) -> None:
+        target = self.store.get_agent_action_target("does-not-exist")
+        self.assertIsNone(target.latest_session)
+        self.assertIsNone(target.open_session)
+        self.assertIsNone(target.context)
+        self.assertIsNone(target.worktree)
+
+    def test_get_agent_action_target_no_context_or_worktree(self) -> None:
+        # Agent has a session but no session_context cached → no
+        # worktree resolution attempted.
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        target = self.store.get_agent_action_target("agent-123")
+        assert target.latest_session is not None
+        self.assertEqual(target.latest_session.id, "session-123")
+        # session-123 is ended by self._make_session()
+        self.assertIsNone(target.open_session)
+        self.assertIsNone(target.context)
+        self.assertIsNone(target.worktree)
 
     def test_foreign_keys_reject_orphaned_rows(self) -> None:
         with self.assertRaises(PersistenceError):

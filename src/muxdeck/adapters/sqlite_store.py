@@ -429,6 +429,23 @@ class AgentDashboardSnapshot:
     latest_log: LogChunk | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AgentActionTarget:
+    """Per-agent action-keystroke bundle.
+
+    Returned by :meth:`SQLiteStore.get_agent_action_target` so callers
+    (the agent controller's intent path) can pay one round-trip
+    instead of the legacy 3-4 (list_sessions twice + get_session_context
+    + get_worktree). All fields are optional: a freshly-spawned agent
+    with no session row yet still produces a valid target.
+    """
+
+    latest_session: Session | None = None
+    open_session: Session | None = None
+    context: SessionContextRecord | None = None
+    worktree: Worktree | None = None
+
+
 class SQLiteStore:
     def __init__(
         self,
@@ -970,6 +987,74 @@ class SQLiteStore:
             operation="get open session for agent",
         )
         return None if row is None else _row_to_session(row)
+
+    def get_agent_action_target(self, agent_id: str, /) -> AgentActionTarget:
+        """Bundle the per-agent values the action-keystroke path needs.
+
+        The legacy ``_target_from_agent`` / ``_latest_open_session``
+        pair in :class:`AgentController` fired four store calls on
+        every action intent (two redundant ``list_sessions`` walks
+        plus ``get_session_context`` plus ``get_worktree``). This
+        helper replaces all of that with at most four indexed
+        ``LIMIT 1`` SELECTs that only touch the rows the caller will
+        actually use:
+
+        * latest session for the agent (drives the worktree/context
+          resolution + the ``latest_session_id`` field of the result)
+        * the currently-open session (no ``ended_at``) for the agent
+          (used by ``restart`` / ``end`` action paths)
+        * the session_context cache row for the latest session
+        * the worktree row for that context, if any
+
+        Each field is ``None`` when nothing is persisted — callers
+        must tolerate a freshly-spawned agent with no session yet.
+        """
+        with timed("sqlite.get_agent_action_target"):
+            latest_row = self._fetch_one(
+                (
+                    f"{_SELECT_SESSION_SQL} WHERE agent_id = ? "
+                    "ORDER BY created_at DESC, id DESC LIMIT 1"
+                ),
+                (agent_id,),
+                operation="get agent action target (latest session)",
+            )
+            latest_session = None if latest_row is None else _row_to_session(latest_row)
+
+            open_row = self._fetch_one(
+                (
+                    f"{_SELECT_SESSION_SQL} WHERE agent_id = ? AND ended_at IS NULL "
+                    "ORDER BY created_at DESC LIMIT 1"
+                ),
+                (agent_id,),
+                operation="get agent action target (open session)",
+            )
+            open_session = None if open_row is None else _row_to_session(open_row)
+
+            context: SessionContextRecord | None = None
+            worktree: Worktree | None = None
+            if latest_session is not None:
+                ctx_row = self._fetch_one(
+                    f"{_SELECT_SESSION_CONTEXT_SQL} WHERE session_id = ?",
+                    (latest_session.id,),
+                    operation="get agent action target (session context)",
+                )
+                if ctx_row is not None:
+                    context = _row_to_session_context(ctx_row)
+                    if context.worktree_id is not None:
+                        wt_row = self._fetch_one(
+                            f"{_SELECT_WORKTREE_SQL} WHERE id = ?",
+                            (context.worktree_id,),
+                            operation="get agent action target (worktree)",
+                        )
+                        if wt_row is not None:
+                            worktree = _row_to_worktree(wt_row)
+
+            return AgentActionTarget(
+                latest_session=latest_session,
+                open_session=open_session,
+                context=context,
+                worktree=worktree,
+            )
 
     def get_dashboard_agent_snapshots(
         self, agent_ids: Sequence[str], /
