@@ -498,6 +498,82 @@ class SQLiteStoreTests(unittest.TestCase):
         self.assertEqual(result.id, "log-2")
         self.assertIsNone(self.store.get_latest_log_chunk("nonexistent"))
 
+    def test_upsert_log_capture_if_changed_inserts_first_chunk(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        captured_at = datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
+
+        chunk = self.store.upsert_log_capture_if_changed(
+            agent_id="agent-123",
+            session_id="session-123",
+            source="tmux_capture",
+            content="initial",
+            captured_at=captured_at,
+            chunk_id_factory=lambda: "log-initial",
+        )
+
+        assert chunk is not None
+        self.assertEqual(chunk.id, "log-initial")
+        self.assertEqual(chunk.sequence_no, 0)
+        self.assertEqual(chunk.content, "initial")
+        latest = self.store.get_latest_log_chunk("session-123")
+        assert latest is not None
+        self.assertEqual(latest.id, "log-initial")
+
+    def test_upsert_log_capture_if_changed_skips_duplicate_tail(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        captured_at = datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
+        self.store.upsert_log_capture_if_changed(
+            agent_id="agent-123",
+            session_id="session-123",
+            source="tmux_capture",
+            content="initial",
+            captured_at=captured_at,
+            chunk_id_factory=lambda: "log-initial",
+        )
+
+        result = self.store.upsert_log_capture_if_changed(
+            agent_id="agent-123",
+            session_id="session-123",
+            source="tmux_capture",
+            content="initial",
+            captured_at=captured_at + timedelta(seconds=2),
+            chunk_id_factory=lambda: "log-should-not-exist",
+        )
+
+        self.assertIsNone(result)
+        listed = self.store.list_log_chunks("session-123")
+        self.assertEqual(len(listed), 1)
+        self.assertEqual(listed[0].id, "log-initial")
+
+    def test_upsert_log_capture_if_changed_appends_when_tail_differs(self) -> None:
+        self.store.upsert_agent(self._make_agent())
+        self.store.upsert_session(self._make_session())
+        captured_at = datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
+        self.store.upsert_log_capture_if_changed(
+            agent_id="agent-123",
+            session_id="session-123",
+            source="tmux_capture",
+            content="initial",
+            captured_at=captured_at,
+            chunk_id_factory=lambda: "log-initial",
+        )
+
+        chunk = self.store.upsert_log_capture_if_changed(
+            agent_id="agent-123",
+            session_id="session-123",
+            source="tmux_capture",
+            content="initial\nstep two",
+            captured_at=captured_at + timedelta(seconds=3),
+            chunk_id_factory=lambda: "log-second",
+        )
+
+        assert chunk is not None
+        self.assertEqual(chunk.sequence_no, 1)
+        listed = self.store.list_log_chunks("session-123")
+        self.assertEqual([c.id for c in listed], ["log-initial", "log-second"])
+
     def test_foreign_keys_reject_orphaned_rows(self) -> None:
         with self.assertRaises(PersistenceError):
             self.store.upsert_session(self._make_session())

@@ -104,6 +104,7 @@ class InMemoryLogStore:
     def __init__(self) -> None:
         self.chunks: list[LogChunk] = []
         self.list_log_chunks_calls: int = 0
+        self.get_latest_log_chunk_calls: int = 0
 
     def append_log_chunks(self, chunks, /) -> None:
         self.chunks.extend(chunks)
@@ -113,6 +114,7 @@ class InMemoryLogStore:
         return tuple(chunk for chunk in self.chunks if chunk.session_id == session_id)
 
     def get_latest_log_chunk(self, session_id: str, /) -> LogChunk | None:
+        self.get_latest_log_chunk_calls += 1
         latest: LogChunk | None = None
         for chunk in self.chunks:
             if chunk.session_id != session_id:
@@ -126,6 +128,54 @@ class InMemoryLogStore:
             if chunk.id == log_chunk_id:
                 return chunk
         return None
+
+
+class UpsertingLogStore(InMemoryLogStore):
+    """Log store fake that exposes the A3 transactional upsert."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.upsert_calls: int = 0
+        self.append_log_chunks_calls: int = 0
+
+    def append_log_chunks(self, chunks, /) -> None:
+        self.append_log_chunks_calls += 1
+        super().append_log_chunks(chunks)
+
+    def upsert_log_capture_if_changed(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        source: str,
+        content: str,
+        captured_at: datetime,
+    ) -> LogChunk | None:
+        self.upsert_calls += 1
+        # Inline the equivalent dedup logic rather than calling the
+        # tracked ``get_latest_log_chunk`` helper, so the test can
+        # distinguish the new transactional path from the legacy
+        # ``get_latest_log_chunk`` + ``append_log_chunks`` pair.
+        latest: LogChunk | None = None
+        for chunk in self.chunks:
+            if chunk.session_id != session_id:
+                continue
+            if latest is None or chunk.sequence_no > latest.sequence_no:
+                latest = chunk
+        if latest is not None and latest.content == content:
+            return None
+        next_sequence = latest.sequence_no + 1 if latest is not None else 0
+        new_chunk = LogChunk(
+            id=f"upsert-{len(self.chunks)}",
+            agent_id=agent_id,
+            session_id=session_id,
+            source=source,  # type: ignore[arg-type]
+            sequence_no=next_sequence,
+            captured_at=captured_at,
+            content=content,
+        )
+        self.chunks.append(new_chunk)
+        return new_chunk
 
 
 class InMemoryContextStore:
@@ -379,6 +429,60 @@ class AgentServiceTests(unittest.TestCase):
         assert len(legacy_store.list_sessions_calls) == before_list_calls + 1, (
             "fallback must hit list_sessions exactly once when the helper is absent"
         )
+
+    def test_persist_agent_facts_uses_transactional_upsert_when_log_store_supports_it(
+        self,
+    ) -> None:
+        """Regression: when the log store exposes the A3 transactional
+        ``upsert_log_capture_if_changed`` helper, the agent service
+        must call it instead of the legacy ``get_latest_log_chunk``
+        + ``append_log_chunks`` pair so the dashboard hot path pays
+        a single BEGIN/COMMIT per changed capture.
+        """
+        upserting_log_store = UpsertingLogStore()
+        service = AgentService(
+            self.agent_store,
+            self.session_store,
+            self.event_store,
+            upserting_log_store,
+            self.context_store,
+            clock=lambda: self.now,
+        )
+
+        result = service.persist_agent_facts(
+            AgentFactInput(
+                classification="unmanaged_probable_agent",
+                tmux_session_name="muxdeck",
+                tmux_window_id="@1",
+                tmux_pane_id="%1",
+                cwd="/repo/worktrees/task-one",
+                observed_at=self.now,
+                status=AgentStatus.RUNNING,
+                capture_text="initial",
+            )
+        )
+        second = service.persist_agent_facts(
+            AgentFactInput(
+                classification="managed_agent",
+                agent_id=result.agent.id,
+                tmux_session_name="muxdeck",
+                tmux_window_id="@1",
+                tmux_pane_id="%1",
+                cwd="/repo/worktrees/task-one",
+                observed_at=self.now + timedelta(seconds=1),
+                status=AgentStatus.RUNNING,
+                capture_text="initial\nstep-two",
+            )
+        )
+
+        assert upserting_log_store.upsert_calls == 2
+        # The legacy two-call read+write path should be entirely
+        # bypassed when the fast helper is available.
+        assert upserting_log_store.get_latest_log_chunk_calls == 0
+        assert upserting_log_store.append_log_chunks_calls == 0
+        assert len(upserting_log_store.chunks) == 2
+        assert result.log_chunks[0].content == "initial"
+        assert second.log_chunks[0].content == "initial\nstep-two"
 
 
 class _LegacySessionStore:

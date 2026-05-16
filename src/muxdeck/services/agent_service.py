@@ -80,7 +80,22 @@ class AgentEventStore(EventStore, Protocol):
 
 @runtime_checkable
 class AgentLogStore(LogChunkStore, Protocol):
-    pass
+    def upsert_log_capture_if_changed(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        source: str,
+        content: str,
+        captured_at: datetime,
+    ) -> LogChunk | None:
+        """Append a new chunk only when the tail content changed.
+
+        Optional fast-path surface. ``AgentService`` falls back to the
+        legacy ``get_latest_log_chunk`` + ``append_log_chunks`` pair
+        when the store does not implement this method, so older test
+        fakes and partial Protocol implementations keep working.
+        """
 
 
 @dataclass(frozen=True, slots=True)
@@ -467,6 +482,20 @@ class AgentService:
     ) -> tuple[LogChunk, ...]:
         if facts.capture_text is None:
             return ()
+        # Prefer the transactional upsert when the store exposes it
+        # (A3): bundles the existing dedup read and the insert into a
+        # single BEGIN/COMMIT, halving the fsync count for every
+        # changed capture on the hot path.
+        upsert = getattr(self._log_store, "upsert_log_capture_if_changed", None)
+        if callable(upsert):
+            chunk = upsert(
+                agent_id=agent_id,
+                session_id=session_id,
+                source=facts.source,
+                content=facts.capture_text,
+                captured_at=facts.observed_at,
+            )
+            return (chunk,) if chunk is not None else ()
         # Only the tail matters: we need the previous content to detect
         # a no-op append, and the previous ``sequence_no`` to compute the
         # next one. Pulling every chunk for the session here used to cost

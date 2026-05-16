@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -870,6 +870,59 @@ class SQLiteStore:
             operation="get latest log chunk",
         )
         return None if row is None else _row_to_log_chunk(row)
+
+    def upsert_log_capture_if_changed(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        source: LogSource,
+        content: str,
+        captured_at: datetime,
+        chunk_id_factory: Callable[[], str] | None = None,
+    ) -> LogChunk | None:
+        """Append a new log chunk only when the tail content changed.
+
+        Performs the ``SELECT latest`` + ``INSERT new`` pair inside one
+        transaction so the dashboard hot path pays a single BEGIN/COMMIT
+        instead of two. Returns the newly-persisted chunk when the
+        content differs from the existing tail, or ``None`` when the
+        capture is a no-op duplicate (in which case the caller can
+        skip downstream work like event-fanout).
+
+        ``chunk_id_factory`` lets callers inject a generator for the
+        new chunk's primary key without coupling this adapter to the
+        domain ``LogChunkId`` helper; the default uses ``uuid4``.
+        """
+        if chunk_id_factory is None:
+            from uuid import uuid4
+
+            chunk_id_factory = lambda: str(uuid4())  # noqa: E731
+
+        with self._transaction(operation="upsert log capture") as connection:
+            cursor = connection.execute(
+                (
+                    f"{_SELECT_LOG_CHUNK_SQL} WHERE session_id = ? "
+                    "ORDER BY sequence_no DESC, storage_order DESC LIMIT 1"
+                ),
+                (session_id,),
+            )
+            row = cursor.fetchone()
+            latest = None if row is None else _row_to_log_chunk(row)
+            if latest is not None and latest.content == content:
+                return None
+            next_sequence = latest.sequence_no + 1 if latest is not None else 0
+            chunk = LogChunk(
+                id=chunk_id_factory(),
+                agent_id=agent_id,
+                session_id=session_id,
+                source=source,
+                sequence_no=next_sequence,
+                captured_at=captured_at,
+                content=content,
+            )
+            connection.execute(_INSERT_LOG_CHUNK_SQL, self._log_chunk_params(chunk))
+            return chunk
 
     def get_latest_session_for_agent(self, agent_id: str, /) -> Session | None:
         """Return the most recent session for an agent, or None."""
